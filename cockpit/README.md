@@ -17,6 +17,9 @@ reloads instead. It also polls in the background and auto-refreshes when the boa
 
 ## Run it
 
+From the kit root, `npm run dev` installs these deps (if missing) and starts everything.
+Or run it directly from here:
+
 ```bash
 cd cockpit
 npm install

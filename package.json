@@ -13,6 +13,8 @@
     "init": "node bin/cli.mjs init",
     "validate": "node scripts/validate-board.mjs board/data.json",
     "sync": "node render/sync.mjs",
+    "dev": "npm run board",
+    "preboard": "node -e \"require('fs').existsSync('cockpit/node_modules')||require('child_process').execSync('npm --prefix cockpit install --no-audit --no-fund',{stdio:'inherit'})\"",
     "board": "npm --prefix cockpit run dev",
     "cockpit:install": "npm --prefix cockpit install"
   },

@@ -62,8 +62,7 @@ node ~/maestro/bin/cli.mjs init
 
 # 3. Watch/edit the board in the console (optional UI)
 cd ~/maestro
-npm run cockpit:install   # first time only
-npm run board             # data service on :4600, UI on http://localhost:5273
+npm run dev               # installs cockpit deps if needed, then opens http://localhost:5273
 ```
 
 Then, from a Claude Code (or compatible) session in your repo, invoke the **`orchestrator`**
@@ -186,8 +185,7 @@ board while you're looking at it, the console reloads instead of overwriting the
 </details>
 
 ```bash
-cd ~/maestro && npm run cockpit:install   # first time only
-npm run board                             # → http://localhost:5273
+cd ~/maestro && npm run dev   # installs cockpit deps if needed, then → http://localhost:5273
 ```
 
 ## Status

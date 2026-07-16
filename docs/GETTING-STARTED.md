@@ -241,9 +241,10 @@ between tickets.
 From the kit itself you can open a visual console:
 
 ```bash
-npm run cockpit:install   # first time only
-npm run board             # data service on :4600, UI at http://localhost:5273
+npm run dev   # installs the cockpit's deps if needed, then serves the UI at http://localhost:5273
 ```
+
+(`npm run board` and `npm run cockpit:install` still work if you prefer the explicit steps.)
 
 ## 7. Keep it clean
 
