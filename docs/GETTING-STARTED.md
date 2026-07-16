@@ -66,27 +66,34 @@ You maintain **three things**: `config.json`, `context.md`, and the **board**. E
 
 ---
 
-## The fast path: clone into your project + `make board`
+## The fast path: clone in + one questionnaire
 
-The simplest way — clone Maestro into your project and let one command set it up:
+The simplest way — clone Maestro into your project and answer two questions:
 
 ```bash
 cd ~/code/my-app                                          # your project
 git clone https://github.com/spourali/maestro.git maestro
-cd maestro
-make board            # first run asks name + areas, renders, and opens the console
+node maestro/bin/cli.mjs setup                            # asks name + areas
 ```
 
-Here the cloned `maestro/` folder **is** your workspace: your `config.json`, `context.md`, and
-`board/` live inside it, and `make board` reopens the console any time. This is all most people
-need — jump to [step 6, Run the orchestrator](#6-run-the-orchestrator).
+**No install, nothing running.** The core kit is dependency-free, so `setup` just:
 
-- **No `make`?** Run `node bin/cli.mjs setup` then `npm run dev`.
-- **Keep the kit out of your project's git** (it has its own `.git`): add `maestro/` to your
-  project's `.gitignore`, or `rm -rf maestro/.git` to vendor it as a plain folder.
-- **Update the kit later:** `git -C maestro pull` (or re-clone), then `make sync`.
+- writes your `config.json` + `context.md` inside `maestro/`, and seeds `maestro/board/`;
+- renders the agents & skills to **`./.claude/` and `./CLAUDE.md` at your repo root** — where
+  Claude Code discovers them, so the orchestrator operates on *your* repo (not the `maestro/`
+  subfolder). An existing root `CLAUDE.md` is never overwritten.
 
-The rest of this page (manual steps + the separate-repo layout below) is for when you'd rather
+That's all most people need — jump to [step 6, Run the orchestrator](#6-run-the-orchestrator).
+
+- **The visual board is optional** (the only part that runs a server):
+  `cd maestro && npm run board`.
+- **Keep the kit out of your project's git** (it has its own `.git`): `rm -rf maestro/.git` to
+  vendor it as a plain folder, or add `maestro/` to your `.gitignore` (then commit `.claude/`
+  and `CLAUDE.md`, which live at your root).
+- **Update the kit later:** `git -C maestro pull` (or re-clone), then
+  `node maestro/render/sync.mjs --project maestro`.
+
+The rest of this page (manual steps + the separate-repo layouts below) is for when you'd rather
 keep the tooling in one place and reuse it across several repos.
 
 ### Alternative: keep the kit separate, as a sub-capsule

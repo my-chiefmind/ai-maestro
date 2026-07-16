@@ -54,6 +54,15 @@ if (!existsSync(configPath)) {
 }
 const config = readJSON(configPath);
 
+// Where generated files (.claude/, CLAUDE.md, .maestro.lock) are written. Defaults to the
+// project dir; setups that keep config in a subfolder point this at the repo root (via --out
+// or config.outDir) so the coding tool discovers .claude/ there.
+const OUT = argValue("--out")
+  ? resolve(argValue("--out"))
+  : config.outDir
+    ? resolve(PROJECT, config.outDir)
+    : PROJECT;
+
 // Resolve the kit root: explicit --kit, else config.kitSource.path, else this repo.
 const KIT = resolve(
   kitArg ?? (config.kitSource?.path ? join(PROJECT, config.kitSource.path) : THIS_KIT)
@@ -153,13 +162,13 @@ const lockContent = JSON.stringify(lock, null, 2) + "\n";
 if (checkMode) {
   let drift = 0;
   for (const [rel, content] of generated) {
-    const abs = join(PROJECT, rel);
+    const abs = join(OUT, rel);
     if (!existsSync(abs) || readFileSync(abs, "utf8") !== content) {
       console.log(`  ✗ drift: ${rel}`);
       drift++;
     }
   }
-  const lockPath = join(PROJECT, ".maestro.lock");
+  const lockPath = join(OUT, ".maestro.lock");
   if (!existsSync(lockPath) || readFileSync(lockPath, "utf8") !== lockContent) {
     console.log("  ✗ drift: .maestro.lock");
     drift++;
@@ -176,16 +185,16 @@ if (checkMode) {
 // Prune only files THIS tool generated last time (recorded in the prior lock) and no longer
 // generates — so a removed roster entry disappears, but anything else a user placed under
 // .claude/ is never touched. This is the safety fix: sync never deletes files it didn't create.
-const lockPath = join(PROJECT, ".maestro.lock");
+const lockPath = join(OUT, ".maestro.lock");
 const priorLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : null;
 if (priorLock?.files) {
   for (const rel of Object.keys(priorLock.files)) {
     if (generated.has(rel)) continue;
-    const abs = join(PROJECT, rel);
+    const abs = join(OUT, rel);
     if (existsSync(abs)) rmSync(abs, { force: true });
   }
   // Drop now-empty .claude/skills/<name> dirs left behind by a pruned skill.
-  const skillsRoot = join(PROJECT, ".claude", "skills");
+  const skillsRoot = join(OUT, ".claude", "skills");
   if (existsSync(skillsRoot)) {
     for (const d of readdirSync(skillsRoot)) {
       const abs = join(skillsRoot, d);
@@ -194,12 +203,24 @@ if (priorLock?.files) {
   }
 }
 
+// Safety: never overwrite a CLAUDE.md we didn't generate (a project may already have its own
+// at the repo root). Skip it, warn, and keep it out of the lock so --check stays honest.
+const skip = new Set();
+for (const rel of generated.keys()) {
+  if (rel === "CLAUDE.md" && existsSync(join(OUT, rel)) && !priorLock?.files?.[rel]) skip.add(rel);
+}
+
 for (const [rel, content] of generated) {
-  const abs = join(PROJECT, rel);
+  if (skip.has(rel)) {
+    console.log(`  ⚠ kept your existing ${rel} at ${OUT} (not overwritten). Add your project context to config/context.md and reference it there if you like.`);
+    continue;
+  }
+  const abs = join(OUT, rel);
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, content);
 }
-writeFileSync(lockPath, lockContent);
+for (const rel of skip) delete lock.files[rel];
+writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 
 const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
 const skillCount = [...generated.keys()].filter((r) => r.endsWith("SKILL.md")).length;

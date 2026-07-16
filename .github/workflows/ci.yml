@@ -26,7 +26,16 @@ jobs:
           node render/sync.mjs --project /tmp/proj --kit . --check
           node scripts/validate-board.mjs /tmp/proj/board/data.json --agents ./agents
 
-      - name: init smoke test
+      - name: setup smoke test (clone-into-project flow)
+        run: |
+          rm -rf /tmp/app && mkdir -p /tmp/app/src
+          rsync -a --exclude .git --exclude node_modules ./ /tmp/app/maestro/
+          node /tmp/app/maestro/bin/cli.mjs setup --yes --name ci-app --areas backend,web
+          test -d /tmp/app/.claude/agents      # rendered to the repo root, not into maestro/
+          test -f /tmp/app/CLAUDE.md
+          test ! -d /tmp/app/maestro/.claude   # must NOT render inside the kit folder
+
+      - name: init smoke test (separate-capsule flow)
         run: |
           rm -rf /tmp/repo && mkdir -p /tmp/repo
           node bin/cli.mjs init --dir /tmp/repo --name ci-app --areas backend,web --yes

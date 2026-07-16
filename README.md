@@ -45,31 +45,31 @@ same way of working.
 | [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
-| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` / `init` (interactive setup), `sync`, `validate` |
-| [`Makefile`](./Makefile) | `make board` (set up + open the console), `make setup` / `sync` / `validate` |
+| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` (questionnaire onboarding), `sync`, `validate`, `init` |
 | [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
 
 ## Quickstart
 
-Clone Maestro **into your project** and run one command:
+Clone Maestro **into your project**, then answer two questions:
 
 ```bash
 cd ~/code/my-app                                          # your project
 git clone https://github.com/spourali/maestro.git maestro
-cd maestro
-make board            # first run asks a couple of questions, then opens http://localhost:5273
+node maestro/bin/cli.mjs setup                            # asks project name + areas
 ```
 
-That's it. `make board` sets up your project (name + areas), renders the agents & skills, and
-opens the board console. Run it again any time to reopen the board.
+That's the whole setup — **no install, nothing running.** The core kit is dependency-free, so
+`setup` just writes your config and renders the agents & skills into `./.claude/` at your repo
+root. Now open the repo in Claude Code and ask the **`orchestrator`** agent to start; it picks
+up the first unblocked ticket and runs it.
 
-Then, from a Claude Code (or compatible) session, invoke the **`orchestrator`** agent — it picks
-up the first unblocked ticket and runs it. Full walkthrough:
-[`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+**Want the visual board?** It's optional (the only part that runs a server):
 
-> **No `make`?** The same two steps are `node bin/cli.mjs setup` then `npm run dev`.
-> **Want the kit kept separate from your project** (updated independently, reused across repos)?
-> See the [alternative layout](./docs/GETTING-STARTED.md#self-contained-clone-the-kit-into-your-repo).
+```bash
+cd maestro && npm run board      # installs the cockpit's deps, then → http://localhost:5273
+```
+
+Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
 ## The core idea in one ticket
 

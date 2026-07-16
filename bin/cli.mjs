@@ -112,26 +112,30 @@ async function init(args) {
 }
 
 /**
- * setup — configure the kit *in place*, for the "clone into your project" workflow:
+ * setup — the whole onboarding, in one questionnaire. For the "clone into your project" flow:
  *
  *   cd ~/code/my-app
- *   git clone <maestro> maestro && cd maestro
- *   make board            # runs this, then opens the console
+ *   git clone <maestro> maestro
+ *   node maestro/bin/cli.mjs setup      # answer 2 questions — done
  *
- * The cloned kit IS the workspace: config.json + context.md are written at the kit root and
- * the board lives in ./board. Idempotent — on later runs it detects an existing config and
- * does nothing, so `make board` just launches.
+ * The cloned kit holds your config.json / context.md / board; the generated agents land in
+ * ./.claude/ + ./CLAUDE.md at your REPO ROOT (where the coding tool discovers them). No npm
+ * install, no server — the core kit is dependency-free. The cockpit UI is optional.
+ * Idempotent: re-running detects an existing config and does nothing.
  */
 async function setup(args) {
   const configPath = join(KIT_ROOT, "config.json");
+  const kitName = basename(KIT_ROOT);
   if (existsSync(configPath) && !has(args, "force")) {
-    return; // already configured — `make board` proceeds straight to launch
+    console.log(`✓ Already set up. Edit ${kitName}/context.md, then: node ${kitName}/render/sync.mjs --project ${kitName}`);
+    return;
   }
 
-  console.log("\n🎼  Maestro — let's set up your board\n");
+  console.log("\n🎼  Maestro — two questions and you're set up\n");
   const yes = has(args, "yes");
-  // The kit is usually cloned as <project>/maestro, so the parent dir is the project name.
-  const defaultName = basename(dirname(KIT_ROOT));
+  // The kit is usually cloned as <project>/maestro, so the parent dir names the project.
+  const repoRoot = dirname(KIT_ROOT);
+  const defaultName = basename(repoRoot);
   const name = flag(args, "name") || (yes ? defaultName : await ask("Project name", defaultName));
   const areasRaw = flag(args, "areas") || (yes ? "backend, frontend, infra, docs" : await ask("Areas (comma-separated)", "backend, frontend, infra, docs"));
   const areas = areasRaw.split(",").map((s) => s.trim()).filter(Boolean);
@@ -141,38 +145,46 @@ async function setup(args) {
   const config = JSON.parse(readFileSync(join(starter, "config.json"), "utf8"));
   config.project = { name, areas };
   config.kitSource = { mode: "self", path: "." };
+  config.outDir = ".."; // render .claude/ + CLAUDE.md to the repo root, where the tool looks
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
   if (!existsSync(join(KIT_ROOT, "context.md"))) {
     cpSync(join(starter, "context.md"), join(KIT_ROOT, "context.md"));
   }
 
-  // Render agents & skills in place (writes .claude/ + CLAUDE.md at the kit root).
-  console.log("\n→ Rendering agents & skills…");
-  run("render/sync.mjs", ["--project", KIT_ROOT, "--kit", KIT_ROOT]);
+  // Render agents & skills to the repo root (config.outDir="..").
+  console.log("\n→ Setting up your agents & skills…");
+  run("render/sync.mjs", ["--project", KIT_ROOT]);
 
   console.log(`
-✅ Set up "${name}". Opening the board…
+✅ "${name}" is ready — no install, nothing running.
 
-   • Edit context.md to tell agents about your stack, tests, and guardrails.
-   • Re-run 'make sync' after changing config.json or context.md.
+   • Agents & skills:   ./.claude/   (at your repo root — open this repo in Claude Code and
+                        ask the "orchestrator" agent to start)
+   • Your settings:     ${kitName}/context.md  (describe your stack, tests, guardrails)
+                        ${kitName}/board/data.json  (your work board)
+   • Re-render after edits:  node ${kitName}/render/sync.mjs --project ${kitName}
+   • Optional visual board:  cd ${kitName} && npm run board
 `);
 }
 
 function help() {
   console.log(`maestro <command>
 
-  setup       Configure the kit in place (for the clone-into-your-project flow)
-  init        Set up Maestro as a sub-capsule in a separate repo (interactive)
-  sync        Render .claude/ from config.json + context.md
-  validate    Check a board's integrity
+  setup       Set up Maestro in your project — a short questionnaire (start here)
+  sync        Re-render .claude/ from config.json + context.md
+  validate    Check the board's integrity
+  init        Alternative: set up as a small capsule pointing at a kit elsewhere
 
-Most people just run 'make board' (which calls setup, then opens the console).
+The usual flow — clone into your project, then one command:
+
+  cd ~/code/my-app
+  git clone <maestro-url> maestro
+  node maestro/bin/cli.mjs setup
 
 Examples:
-  make board
-  maestro init --dir ~/code/my-app --name my-app --areas backend,frontend --yes
-  maestro sync --project .
-  maestro validate board/data.json
+  node maestro/bin/cli.mjs setup
+  node maestro/render/sync.mjs --project maestro
+  node maestro/scripts/validate-board.mjs maestro/board/data.json
 `);
 }
 
