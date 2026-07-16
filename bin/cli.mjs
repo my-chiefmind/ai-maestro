@@ -111,22 +111,73 @@ async function init(args) {
 `);
 }
 
+/**
+ * setup — configure the kit *in place*, for the "clone into your project" workflow:
+ *
+ *   cd ~/code/my-app
+ *   git clone <maestro> maestro && cd maestro
+ *   make board            # runs this, then opens the console
+ *
+ * The cloned kit IS the workspace: config.json + context.md are written at the kit root and
+ * the board lives in ./board. Idempotent — on later runs it detects an existing config and
+ * does nothing, so `make board` just launches.
+ */
+async function setup(args) {
+  const configPath = join(KIT_ROOT, "config.json");
+  if (existsSync(configPath) && !has(args, "force")) {
+    return; // already configured — `make board` proceeds straight to launch
+  }
+
+  console.log("\n🎼  Maestro — let's set up your board\n");
+  const yes = has(args, "yes");
+  // The kit is usually cloned as <project>/maestro, so the parent dir is the project name.
+  const defaultName = basename(dirname(KIT_ROOT));
+  const name = flag(args, "name") || (yes ? defaultName : await ask("Project name", defaultName));
+  const areasRaw = flag(args, "areas") || (yes ? "backend, frontend, infra, docs" : await ask("Areas (comma-separated)", "backend, frontend, infra, docs"));
+  const areas = areasRaw.split(",").map((s) => s.trim()).filter(Boolean);
+
+  // Seed config.json + context.md from the orchestrated starter, then stamp in the answers.
+  const starter = join(KIT_ROOT, "starters", "orchestrated-project");
+  const config = JSON.parse(readFileSync(join(starter, "config.json"), "utf8"));
+  config.project = { name, areas };
+  config.kitSource = { mode: "self", path: "." };
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  if (!existsSync(join(KIT_ROOT, "context.md"))) {
+    cpSync(join(starter, "context.md"), join(KIT_ROOT, "context.md"));
+  }
+
+  // Render agents & skills in place (writes .claude/ + CLAUDE.md at the kit root).
+  console.log("\n→ Rendering agents & skills…");
+  run("render/sync.mjs", ["--project", KIT_ROOT, "--kit", KIT_ROOT]);
+
+  console.log(`
+✅ Set up "${name}". Opening the board…
+
+   • Edit context.md to tell agents about your stack, tests, and guardrails.
+   • Re-run 'make sync' after changing config.json or context.md.
+`);
+}
+
 function help() {
   console.log(`maestro <command>
 
-  init        Set up Maestro in a repo (interactive)
+  setup       Configure the kit in place (for the clone-into-your-project flow)
+  init        Set up Maestro as a sub-capsule in a separate repo (interactive)
   sync        Render .claude/ from config.json + context.md
   validate    Check a board's integrity
 
+Most people just run 'make board' (which calls setup, then opens the console).
+
 Examples:
-  maestro init
+  make board
   maestro init --dir ~/code/my-app --name my-app --areas backend,frontend --yes
-  maestro sync --project ./maestro
-  maestro validate ./maestro/board/data.json
+  maestro sync --project .
+  maestro validate board/data.json
 `);
 }
 
 switch (cmd) {
+  case "setup": await setup(rest); break;
   case "init": await init(rest); break;
   case "sync": process.exit(run("render/sync.mjs", rest)); break;
   case "validate": process.exit(run("scripts/validate-board.mjs", rest)); break;

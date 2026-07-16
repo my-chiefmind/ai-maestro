@@ -66,10 +66,33 @@ You maintain **three things**: `config.json`, `context.md`, and the **board**. E
 
 ---
 
-## The fast path: `maestro init`
+## The fast path: clone into your project + `make board`
 
-If you'd rather not do it by hand, one command does steps 1–5 below — copies a starter, writes
-`config.json`, renders, and validates:
+The simplest way — clone Maestro into your project and let one command set it up:
+
+```bash
+cd ~/code/my-app                                          # your project
+git clone https://github.com/spourali/maestro.git maestro
+cd maestro
+make board            # first run asks name + areas, renders, and opens the console
+```
+
+Here the cloned `maestro/` folder **is** your workspace: your `config.json`, `context.md`, and
+`board/` live inside it, and `make board` reopens the console any time. This is all most people
+need — jump to [step 6, Run the orchestrator](#6-run-the-orchestrator).
+
+- **No `make`?** Run `node bin/cli.mjs setup` then `npm run dev`.
+- **Keep the kit out of your project's git** (it has its own `.git`): add `maestro/` to your
+  project's `.gitignore`, or `rm -rf maestro/.git` to vendor it as a plain folder.
+- **Update the kit later:** `git -C maestro pull` (or re-clone), then `make sync`.
+
+The rest of this page (manual steps + the separate-repo layout below) is for when you'd rather
+keep the tooling in one place and reuse it across several repos.
+
+### Alternative: keep the kit separate, as a sub-capsule
+
+`maestro init` copies just a small capsule into `<repo>/maestro/` and points it at a kit that
+lives elsewhere — useful when one kit serves many repos:
 
 ```bash
 cd ~/code/my-app                 # ← your repo (new or existing)
@@ -80,10 +103,10 @@ Then jump to [step 6, Run the orchestrator](#6-run-the-orchestrator). The manual
 explain what `init` did, and are the way to go on Windows (where `cp -R` differs) or when you
 want to understand each piece.
 
-### Self-contained: clone the kit *into* your repo
+### Self-contained: clone the kit *into* your repo (kept separate from your board)
 
-Don't want a separate `~/maestro` to keep track of? Clone the kit inside your project and
-ignore it — like `node_modules`, it's local tooling, not part of your tracked project:
+A middle ground — clone the kit inside your project but ignore it (like `node_modules`), while
+`init` writes a small tracked `maestro/` capsule that points back at it:
 
 ```bash
 cd ~/code/my-app

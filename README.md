@@ -45,33 +45,31 @@ same way of working.
 | [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
-| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `init` (interactive setup), `sync`, `validate` |
+| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` / `init` (interactive setup), `sync`, `validate` |
+| [`Makefile`](./Makefile) | `make board` (set up + open the console), `make setup` / `sync` / `validate` |
 | [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
 
 ## Quickstart
 
+Clone Maestro **into your project** and run one command:
+
 ```bash
-# 1. Clone the kit
-git clone https://github.com/spourali/maestro.git ~/maestro
-
-# 2. Set up Maestro in your repo — one interactive command
-cd ~/code/my-app
-node ~/maestro/bin/cli.mjs init
-#   asks project name, areas, and starter, then copies a capsule,
-#   writes config.json, renders the agents/skills, and validates the board.
-
-# 3. Watch/edit the board in the console (optional UI)
-cd ~/maestro
-npm run dev               # installs cockpit deps if needed, then opens http://localhost:5273
+cd ~/code/my-app                                          # your project
+git clone https://github.com/spourali/maestro.git maestro
+cd maestro
+make board            # first run asks a couple of questions, then opens http://localhost:5273
 ```
 
-Then, from a Claude Code (or compatible) session in your repo, invoke the **`orchestrator`**
-agent — it picks up the first unblocked ticket and runs it. Full walkthrough:
+That's it. `make board` sets up your project (name + areas), renders the agents & skills, and
+opens the board console. Run it again any time to reopen the board.
+
+Then, from a Claude Code (or compatible) session, invoke the **`orchestrator`** agent — it picks
+up the first unblocked ticket and runs it. Full walkthrough:
 [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
-> **Prefer to do it by hand** (or on Windows without the CLI)? The manual copy-and-render
-> steps are in [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md), which includes
-> PowerShell equivalents.
+> **No `make`?** The same two steps are `node bin/cli.mjs setup` then `npm run dev`.
+> **Want the kit kept separate from your project** (updated independently, reused across repos)?
+> See the [alternative layout](./docs/GETTING-STARTED.md#self-contained-clone-the-kit-into-your-repo).
 
 ## The core idea in one ticket
 
