@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "board.schema.json",
+  "title": "Maestro Board",
+  "description": "Canonical schema for board/data.json. Epics group work; tickets are the unit of delivery and route themselves to an agent pipeline and a model tier.",
+  "type": "object",
+  "required": ["epics", "tickets"],
+  "properties": {
+    "epics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id":        { "type": "string" },
+          "name":      { "type": "string" },
+          "desc":      { "type": "string" },
+          "collapsed": { "type": "boolean" }
+        }
+      }
+    },
+    "tickets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ticket" }
+    }
+  },
+  "$defs": {
+    "ticket": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id":             { "type": "string", "description": "Unique ticket identifier, e.g. T-014." },
+        "epicId":         { "type": "string", "description": "The epic this ticket belongs to." },
+        "name":           { "type": "string" },
+        "desc":           { "type": "string", "description": "Short source of truth. Longer specs live in board/specs/<id>.md." },
+        "area":           { "type": "string", "description": "Part of the system (backend/frontend/infra/docs...). Sets area defaults like model floor and test command." },
+        "priority":       { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+        "swag":           { "type": "string", "enum": ["XS", "S", "M", "L", "XL"], "description": "Rough size estimate." },
+        "status":         { "type": "string", "enum": ["backlog", "todo", "in-progress", "review", "blocked", "done"] },
+        "depends_on":     { "type": "array", "items": { "type": "string" }, "description": "This ticket is eligible only when all referenced tickets are done." },
+        "agent_plan":     { "type": "array", "items": { "type": "string" }, "description": "Ordered pipeline of agent codes, e.g. [\"pe\",\"backend\",\"qa\",\"merge\"]. Terminal gates (qa, pd, merge) are appended automatically if absent." },
+        "model":          { "type": "string", "enum": ["haiku", "sonnet", "opus"], "description": "Model tier to run this ticket's stages on. See docs/MODEL-ROUTING.md." },
+        "execution_mode": { "type": "string", "enum": ["single-agent", "multi-agent"] },
+        "wave":           { "type": "integer", "description": "Optional ordering hint for batched runs." },
+        "agent":          { "type": "string", "description": "Human-readable display label (e.g. 'PE+QA'). Not used for execution — agent_plan is." },
+        "human_gate":     { "type": "string", "minLength": 1, "description": "When set, the orchestrator never auto-picks this ticket; a human must clear it. Value should come from the project's configured humanGates vocabulary." },
+        "testCmd":        { "type": "string", "minLength": 1, "description": "Optional ticket-specific test command that overrides the area default in the release gate." },
+        "evidence":       { "type": "string", "description": "Verification evidence recorded when the ticket is completed (commit SHA, test output, etc.)." }
+      },
+      "additionalProperties": true
+    }
+  }
+}

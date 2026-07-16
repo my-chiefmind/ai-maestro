@@ -1,0 +1,93 @@
+{
+  "epics": [
+    {
+      "id": "e1",
+      "name": "Core API",
+      "desc": "The public HTTP API and its data layer."
+    },
+    {
+      "id": "e2",
+      "name": "Web app",
+      "desc": "The customer-facing single-page frontend."
+    },
+    {
+      "id": "e3",
+      "name": "Release & deploy",
+      "desc": "All work that ships to production. Gated track — never blocks a dev ticket."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-001",
+      "epicId": "e1",
+      "name": "Health-check endpoint",
+      "desc": "Add GET /healthz returning 200 with build info. AC: returns version + commit; covered by a test.",
+      "area": "backend",
+      "priority": "P2",
+      "swag": "XS",
+      "status": "done",
+      "depends_on": [],
+      "agent_plan": ["backend", "qa", "merge"],
+      "execution_mode": "single-agent",
+      "model": "haiku",
+      "evidence": "landed; healthz test green"
+    },
+    {
+      "id": "T-002",
+      "epicId": "e1",
+      "name": "Rate limit the public API",
+      "desc": "Token-bucket limiter on unauthenticated routes, configurable per-route. AC: 429 with Retry-After when exceeded; limits covered by tests.",
+      "area": "backend",
+      "priority": "P1",
+      "swag": "M",
+      "status": "todo",
+      "depends_on": ["T-001"],
+      "agent_plan": ["pe", "backend", "qa", "merge"],
+      "execution_mode": "multi-agent",
+      "model": "sonnet"
+    },
+    {
+      "id": "T-003",
+      "epicId": "e2",
+      "name": "Dashboard empty state",
+      "desc": "Design and build the first-run empty state for the dashboard. AC: matches the design system; no console errors; responsive.",
+      "area": "frontend",
+      "priority": "P2",
+      "swag": "S",
+      "status": "todo",
+      "depends_on": [],
+      "agent_plan": ["frontend", "qa", "merge"],
+      "execution_mode": "single-agent",
+      "model": "sonnet"
+    },
+    {
+      "id": "T-004",
+      "epicId": "e1",
+      "name": "Migrate sessions table to partitioned schema",
+      "desc": "High-blast-radius data migration. AC: reversible migration; row counts + checksums verified on a throwaway DB before landing; zero data loss.",
+      "area": "backend",
+      "priority": "P1",
+      "swag": "L",
+      "status": "backlog",
+      "depends_on": ["T-002"],
+      "agent_plan": ["pe", "backend", "qa", "pd", "merge"],
+      "execution_mode": "multi-agent",
+      "model": "opus"
+    },
+    {
+      "id": "T-005",
+      "epicId": "e3",
+      "name": "Production cutover",
+      "desc": "Cut the new release over to production. Gated — requires explicit human go-ahead and a maintenance window.",
+      "area": "infra",
+      "priority": "P1",
+      "swag": "M",
+      "status": "backlog",
+      "depends_on": [],
+      "agent_plan": ["pd", "merge"],
+      "execution_mode": "multi-agent",
+      "model": "opus",
+      "human_gate": "prod release approved"
+    }
+  ]
+}

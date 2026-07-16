@@ -1,0 +1,42 @@
+{
+  "project": {
+    "name": "my-app",
+    "areas": ["backend", "frontend", "infra", "docs"]
+  },
+  "roster": [
+    "orchestrator",
+    "principal-engineer",
+    "backend-developer",
+    "frontend-developer",
+    "devops",
+    "qa",
+    "principal-delivery"
+  ],
+  "skills": [
+    "board-validate",
+    "delivery-hygiene",
+    "release-gate",
+    "security-review",
+    "dev-setup",
+    "git-branch",
+    "worktree-cleanup",
+    "land-and-archive",
+    "gc"
+  ],
+  "model": {
+    "default": "sonnet",
+    "floors": {
+      "infra": "opus",
+      "docs": "haiku"
+    }
+  },
+  "humanGates": [
+    "prod release approved",
+    "owner sign-off",
+    "irreversible change approved"
+  ],
+  "kitSource": {
+    "mode": "sibling",
+    "path": "../../maestro"
+  }
+}

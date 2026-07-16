@@ -1,0 +1,28 @@
+{
+  "name": "maestro-kit",
+  "version": "0.1.0",
+  "description": "Conduct a roster of AI coding agents against a work board.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "maestro-sync": "render/sync.mjs",
+    "maestro-validate": "scripts/validate-board.mjs"
+  },
+  "scripts": {
+    "validate": "node scripts/validate-board.mjs board/data.json",
+    "sync": "node render/sync.mjs"
+  },
+  "keywords": [
+    "ai-agents",
+    "orchestration",
+    "board",
+    "kanban",
+    "claude",
+    "agentic",
+    "workflow"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spourali/maestro.git"
+  }
+}

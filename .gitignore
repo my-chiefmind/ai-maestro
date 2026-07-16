@@ -1,0 +1,15 @@
+# Node
+node_modules/
+npm-debug.log*
+.npm/
+
+# Maestro runtime (generated per-project; never committed from the kit)
+.maestro/run/
+.maestro/worktrees/
+*.lock.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
