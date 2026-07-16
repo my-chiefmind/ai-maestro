@@ -51,6 +51,7 @@ the same way of working.
 | [`skills/`](./skills/) | Reusable skills — board hygiene, release gate, security review, and the git/worktree basics |
 | [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
+| [`cockpit/`](./cockpit/) | A React/MUI board console — stat cards, epic sidebar, filterable ticket cards (model + agent plan), edit-in-place with backups |
 | [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
 
 ## Quickstart
@@ -65,7 +66,11 @@ cat board/data.json | less
 # 3. Validate it
 node scripts/validate-board.mjs board/data.json
 
-# 4. Bootstrap the kit into one of your own repos
+# 4. Open the board console (React/MUI UI)
+npm run cockpit:install   # first time only
+npm run board             # data service on :4600, UI on http://localhost:5273
+
+# 5. Bootstrap the kit into one of your own repos
 cp -R starters/orchestrated-project/. ~/path/to/your-repo/maestro/
 cd ~/path/to/your-repo/maestro
 node ../../maestro/render/sync.mjs --project . --kit ../../maestro

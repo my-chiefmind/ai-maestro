@@ -10,7 +10,9 @@
   },
   "scripts": {
     "validate": "node scripts/validate-board.mjs board/data.json",
-    "sync": "node render/sync.mjs"
+    "sync": "node render/sync.mjs",
+    "board": "npm --prefix cockpit run dev",
+    "cockpit:install": "npm --prefix cockpit install"
   },
   "keywords": [
     "ai-agents",
