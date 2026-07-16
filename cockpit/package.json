@@ -1,7 +1,7 @@
 {
   "name": "maestro-cockpit",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Maestro board console — a React/MUI/Vite UI over a single Maestro board (board/data.json).",
   "scripts": {

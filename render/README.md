@@ -29,7 +29,11 @@ node render/sync.mjs --project <dir> [--kit <dir>] [--check]
 - The lock file is **deterministic** (no timestamps) — only the kit version and content
   hashes are baked in, so `--check` is stable.
 - Removing an agent from `roster` or a skill from `skills` and re-rendering deletes the
-  stale generated file.
+  stale generated file. Only files recorded in the previous `.maestro.lock` are pruned, so
+  anything else you keep under `.claude/` is never touched.
+- **Project overlay:** `<project>/agents/*.md` and `<project>/skills/<name>/SKILL.md` are
+  merged in, overriding a kit file of the same name. Custom agents/skills live with the
+  project and survive every render.
 
 ## config.json shape
 

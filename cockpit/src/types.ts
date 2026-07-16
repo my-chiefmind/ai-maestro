@@ -33,4 +33,18 @@ export interface Board {
   tickets: BoardTicket[];
   archived: BoardTicket[];
   archivedEpics: BoardEpic[];
+  version?: string;
 }
+
+// Project config surfaced to drive the UI's pickers (areas, agent_plan steps, models).
+export interface ProjectConfig {
+  name: string | null;
+  areas: string[];
+  planSteps: string[];
+  models: string[];
+  humanGates: string[];
+}
+
+export interface RosterAgent { code: string; name: string; description: string }
+export interface RosterSkill { name: string; description: string }
+export interface Roster { agents: RosterAgent[]; skills: RosterSkill[] }

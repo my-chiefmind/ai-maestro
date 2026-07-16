@@ -4,9 +4,16 @@ A small React/MUI/Vite console over a single Maestro board. It reads and edits
 `board/data.json` in place (with a timestamped backup on every write) and shows the archive
 read-only.
 
-![what it shows] — stat cards (active / P0 / ready / blocked / human-gated / completed), an
-epic sidebar, filterable ticket cards that surface each ticket's **model** and **agent plan**,
-and a detail drawer to edit a ticket.
+It shows stat cards (active / P0 / ready / blocked / human-gated / completed), an epic sidebar,
+filterable ticket cards that surface each ticket's **model** and **agent plan**, a detail
+drawer to edit a ticket, and a **Roster** tab listing the project's agents and skills.
+
+The editors are **driven by the project's `config.json`**: area, model, and agent-plan are
+pickers (not free text), ticket IDs are generated, epics are created/renamed/deleted in a
+dialog, and long-form ticket detail is saved to `board/specs/<id>.md`. Every write is
+**validated server-side** with the same rules as the CLI, and guarded by an optimistic
+**version check** so a stale tab can't overwrite changes an agent made on disk — the console
+reloads instead. It also polls in the background and auto-refreshes when the board changes.
 
 ## Run it
 
@@ -37,9 +44,10 @@ npm start            # the data service also serves dist/ (single origin)
 
 ## What it does / doesn't do
 
-- **Edits** live tickets in `data.json` — status, priority, model, agent plan, deps, epic,
-  human gate, evidence — and adds/deletes tickets. Every write backs up the previous file
-  under `board/.backups/`.
+- **Edits** live tickets and epics in `data.json` — status, priority, model, agent plan, deps,
+  epic, human gate, evidence — and adds/deletes tickets. Every write backs up the previous file
+  under `board/.backups/` (kept to the last 20).
+- **Validates before saving** and **won't clobber** concurrent on-disk changes (409 → reload).
 - **Read-only** for the archive and for `archive.json` (landing/archiving a ticket is the
   `land-and-archive` skill's job, not the console's).
 - Single board by design. It's the operator's view of one project's board, not a portfolio.

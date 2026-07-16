@@ -1,11 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Box, Button, Card, Container, Divider, Drawer, IconButton, MenuItem, TextField, Typography, useTheme,
+  Box, Button, Card, Checkbox, Chip, Container, Dialog, DialogActions, DialogContent,
+  DialogTitle, Divider, Drawer, IconButton, ListItemText, MenuItem, OutlinedInput, Select,
+  TextField, Typography, useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import type { Board, BoardTicket } from './types';
+import type { Board, BoardTicket, ProjectConfig } from './types';
 import { useBoard } from './useBoard';
-import { BOARD_STATUSES, PRIORITIES, MODELS, epicName, isReady, isGated, planLabel } from './boardLib';
+import { useConfig } from './useConfig';
+import { getSpec, putSpec } from './api';
+import {
+  BOARD_STATUSES, PRIORITIES, MODELS, epicName, isReady, isGated, planLabel,
+  planStepsFor, nextTicketId, nextEpicId, allTicketRefs,
+} from './boardLib';
 
 const SAVE_LABEL: Record<string, string> = { saving: 'saving…', saved: 'saved ✓', error: 'save error', idle: '' };
 const PRANK: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
@@ -53,6 +60,7 @@ function EpicItem({ active, onClick, name, count, no }: { active: boolean; onCli
 
 export default function BoardConsole() {
   const { board, status, save, error, reload, update } = useBoard();
+  const config = useConfig();
 
   if (status === 'loading') return <Container sx={{ py: 8 }}><Typography>Loading board…</Typography></Container>;
   if (status === 'error' || !board) {
@@ -68,22 +76,23 @@ export default function BoardConsole() {
       </Container>
     );
   }
-  return <SingleBoard board={board} save={save} error={error} reload={reload} update={update} />;
+  return <SingleBoard board={board} save={save} error={error} reload={reload} update={update} config={config} />;
 }
 
 type Props = {
-  board: Board; save: string; error: string | null;
+  board: Board; save: string; error: string | null; config: ProjectConfig | null;
   reload: () => void; update: (fn: (b: Board) => Board) => void;
 };
 
-function SingleBoard({ board, save, error, reload, update }: Props) {
+function SingleBoard({ board, save, error, reload, update, config }: Props) {
   const { statusColor, priorityColor, modelColor } = useAccents();
   const [f, setF] = useState({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '' });
   const [sel, setSel] = useState<string | null>(null);
+  const [epicsOpen, setEpicsOpen] = useState(false);
 
   const areas = useMemo(() => [...new Set(
-    [...board.tickets, ...board.archived].map((t) => t.area).filter(Boolean),
-  )].sort() as string[], [board]);
+    [...(config?.areas || []), ...board.tickets, ...board.archived].map((t) => typeof t === 'string' ? t : t.area).filter(Boolean),
+  )].sort() as string[], [board, config]);
 
   const stats = useMemo(() => ({
     active: board.tickets.length,
@@ -147,10 +156,15 @@ function SingleBoard({ board, save, error, reload, update }: Props) {
     setSel(null);
   };
   const addTicket = () => {
-    const id = (window.prompt('New ticket id:', 'T-') || '').trim();
-    if (!id) return;
-    if (board.tickets.find((t) => t.id === id)) { window.alert(`Ticket ${id} already exists.`); return; }
-    update((b) => { b.tickets.unshift({ id, name: 'New ticket', desc: '', status: 'backlog', priority: 'P2', depends_on: [], agent_plan: [], model: 'sonnet' }); return b; });
+    const id = nextTicketId(board);
+    update((b) => {
+      b.tickets.unshift({
+        id, name: 'New ticket', desc: '', status: 'backlog', priority: 'P2',
+        epicId: f.epic || board.epics[0]?.id || '', area: config?.areas?.[0] || '',
+        depends_on: [], agent_plan: [], model: config?.models?.[1] || 'sonnet',
+      });
+      return b;
+    });
     setSel(id);
   };
 
@@ -206,7 +220,11 @@ function SingleBoard({ board, save, error, reload, update }: Props) {
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '236px minmax(0, 1fr)' }, gap: 2, alignItems: 'start' }}>
         <Card sx={{ p: 0, overflow: 'hidden', position: { md: 'sticky' }, top: 120 }}>
-          <Typography sx={{ px: 1.6, pt: 1.4, pb: 0.8, fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'text.secondary' }}>Epics</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', px: 1.6, pt: 1.4, pb: 0.8 }}>
+            <Typography sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'text.secondary' }}>Epics</Typography>
+            <Box sx={{ flexGrow: 1 }} />
+            <Button size="small" onClick={() => setEpicsOpen(true)} sx={{ minWidth: 0, fontSize: 11 }}>Manage</Button>
+          </Box>
           <EpicItem active={!f.epic} onClick={() => setF({ ...f, epic: '' })} name={f.epic ? 'Show all epics' : 'All epics'} count={focusTickets.length} />
           {visibleEpics.map((e, i) => (
             <EpicItem key={e.id} active={f.epic === e.id} onClick={() => setF({ ...f, epic: e.id })} no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
@@ -215,7 +233,7 @@ function SingleBoard({ board, save, error, reload, update }: Props) {
 
         <Box sx={{ minWidth: 0 }}>
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
-            <Button size="small" onClick={addTicket} sx={{ minWidth: 0 }}>+ ticket</Button>
+            <Button size="small" variant="outlined" onClick={addTicket} sx={{ minWidth: 0 }}>+ ticket</Button>
           </Box>
           {groups.count === 0 ? (
             <Box sx={{ p: 5, textAlign: 'center', border: '1px dashed', borderColor: 'divider', borderRadius: 2, color: 'text.secondary' }}>No tickets match these filters.</Box>
@@ -275,8 +293,9 @@ function SingleBoard({ board, save, error, reload, update }: Props) {
         </Box>
       </Box>
 
-      <TicketDrawer board={board} ticket={selTicket || null} onClose={() => setSel(null)}
+      <TicketDrawer board={board} config={config} ticket={selTicket || null} onClose={() => setSel(null)}
         onPatch={(patch) => sel && patchTicket(sel, patch)} onDelete={() => sel && deleteTicket(sel)} />
+      <EpicsDialog board={board} open={epicsOpen} onClose={() => setEpicsOpen(false)} update={update} />
     </Container>
   );
 }
@@ -302,15 +321,59 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// Toggle-chip editor for a ticket's agent_plan, in canonical pipeline order.
+function PlanEditor({ value, options, onChange }: { value: string[]; options: string[]; onChange: (v: string[]) => void }) {
+  const set = new Set(value);
+  const toggle = (code: string) => {
+    const next = new Set(set);
+    if (next.has(code)) next.delete(code); else next.add(code);
+    onChange(options.filter((o) => next.has(o))); // keep canonical order
+  };
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary">Agent plan (the pipeline this ticket runs through)</Typography>
+      <Box sx={{ display: 'flex', gap: 0.7, flexWrap: 'wrap', mt: 0.6 }}>
+        {options.map((code) => (
+          <Chip key={code} label={code} size="small" onClick={() => toggle(code)}
+            color={set.has(code) ? 'primary' : 'default'} variant={set.has(code) ? 'filled' : 'outlined'} />
+        ))}
+      </Box>
+      {value.length > 0 && (
+        <Typography variant="caption" sx={{ mt: 0.8, display: 'block', fontFamily: 'monospace', color: 'text.secondary' }}>
+          {value.join(' › ')}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 type DrawerProps = {
-  board: Board; ticket: BoardTicket | null;
+  board: Board; config: ProjectConfig | null; ticket: BoardTicket | null;
   onClose: () => void; onPatch: (patch: Partial<BoardTicket>) => void; onDelete: () => void;
 };
 
-function TicketDrawer({ board, ticket: t, onClose, onPatch, onDelete }: DrawerProps) {
+function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: DrawerProps) {
   const { statusColor, priorityColor } = useAccents();
   const [edit, setEdit] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [spec, setSpec] = useState('');
+  const [specSaved, setSpecSaved] = useState<'idle' | 'saving' | 'saved'>('idle');
   const statusOptions = t ? [...new Set([...BOARD_STATUSES, t.status])] : BOARD_STATUSES;
+  const planSteps = planStepsFor(config);
+  const depOptions = t ? allTicketRefs(board).filter((r) => r.id !== t.id) : [];
+  const useAreaSelect = (config?.areas?.length ?? 0) > 0;
+
+  // Load the ticket's spec whenever the open ticket changes.
+  useEffect(() => {
+    setConfirmDel(false); setSpecSaved('idle');
+    if (t) getSpec(t.id).then(setSpec).catch(() => setSpec('')); else setSpec('');
+  }, [t?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveSpec = () => {
+    if (!t) return;
+    setSpecSaved('saving');
+    putSpec(t.id, spec).then(() => setSpecSaved('saved')).catch(() => setSpecSaved('idle'));
+  };
 
   return (
     <Drawer anchor="right" open={!!t} onClose={onClose}
@@ -346,21 +409,64 @@ function TicketDrawer({ board, ticket: t, onClose, onPatch, onDelete }: DrawerPr
               <TextField label="Name" value={t.name} onChange={(e) => onPatch({ name: e.target.value })} fullWidth />
               <TextField label="Description" value={t.desc || ''} onChange={(e) => onPatch({ desc: e.target.value })} fullWidth multiline minRows={3} />
               <Box sx={{ display: 'flex', gap: 1.5 }}>
-                <TextField label="Area" value={t.area || ''} onChange={(e) => onPatch({ area: e.target.value })} sx={{ flex: 1 }} />
+                {useAreaSelect ? (
+                  <TextField select label="Area" value={t.area || ''} onChange={(e) => onPatch({ area: e.target.value })} sx={{ flex: 1 }}>
+                    <MenuItem value="">—</MenuItem>
+                    {[...new Set([...(config?.areas || []), ...(t.area ? [t.area] : [])])].map((a) => <MenuItem key={a} value={a}>{a}</MenuItem>)}
+                  </TextField>
+                ) : (
+                  <TextField label="Area" value={t.area || ''} onChange={(e) => onPatch({ area: e.target.value })} sx={{ flex: 1 }} />
+                )}
                 <TextField label="Swag" value={t.swag || ''} onChange={(e) => onPatch({ swag: e.target.value })} sx={{ width: 90 }} />
                 <TextField label="Wave" type="number" value={t.wave ?? ''} onChange={(e) => onPatch({ wave: e.target.value === '' ? undefined : Number(e.target.value) })} sx={{ width: 90 }} />
               </Box>
-              <TextField label="Epic id" value={t.epicId || ''} onChange={(e) => onPatch({ epicId: e.target.value })} fullWidth
-                helperText={board.epics.map((ep) => ep.id).join(', ') || 'no epics on this board'} />
-              <TextField label="Agent plan (comma-separated codes)" value={(t.agent_plan || []).join(', ')}
-                onChange={(e) => onPatch({ agent_plan: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} fullWidth
-                helperText="e.g. pe, backend, qa, merge" />
-              <TextField label="Depends on (comma-separated ids)" value={(t.depends_on || []).join(', ')}
-                onChange={(e) => onPatch({ depends_on: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} fullWidth />
-              <TextField label="Human gate" value={t.human_gate || ''} onChange={(e) => onPatch({ human_gate: e.target.value || undefined })} fullWidth
-                helperText="set to require a human before this ticket is auto-picked" />
+              <TextField select label="Epic" value={board.epics.find((e) => e.id === t.epicId) ? t.epicId : ''} onChange={(e) => onPatch({ epicId: e.target.value })} fullWidth
+                helperText={board.epics.length ? undefined : 'no epics yet — add one from the board’s Epics ▸ Manage'}>
+                <MenuItem value="">— none —</MenuItem>
+                {board.epics.map((ep) => <MenuItem key={ep.id} value={ep.id}>{ep.name} ({ep.id})</MenuItem>)}
+              </TextField>
+
+              <PlanEditor value={t.agent_plan || []} options={planSteps} onChange={(v) => onPatch({ agent_plan: v })} />
+
+              <Box>
+                <Typography variant="caption" color="text.secondary">Depends on (blocks this ticket until they’re done)</Typography>
+                <Select multiple fullWidth size="small" value={t.depends_on || []}
+                  onChange={(e) => onPatch({ depends_on: typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value })}
+                  input={<OutlinedInput />} sx={{ mt: 0.6 }}
+                  renderValue={(vals) => (
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                      {(vals as string[]).map((v) => <Chip key={v} label={v} size="small" />)}
+                    </Box>
+                  )}>
+                  {depOptions.map((r) => (
+                    <MenuItem key={r.id} value={r.id}>
+                      <Checkbox checked={(t.depends_on || []).includes(r.id)} size="small" />
+                      <ListItemText primary={r.id} secondary={r.name} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </Box>
+
+              <TextField select label="Human gate" value={t.human_gate || ''} onChange={(e) => onPatch({ human_gate: e.target.value || undefined })} fullWidth
+                helperText="requires a person to clear it before the orchestrator auto-picks it">
+                <MenuItem value="">— none —</MenuItem>
+                {[...new Set([...(config?.humanGates || []), ...(t.human_gate ? [t.human_gate] : [])])].map((g) => <MenuItem key={g} value={g}>{g}</MenuItem>)}
+              </TextField>
+
+              <SpecEditor spec={spec} setSpec={setSpec} onSave={saveSpec} state={specSaved} setState={setSpecSaved} />
               <TextField label="Evidence" value={String(t.evidence || '')} onChange={(e) => onPatch({ evidence: e.target.value })} fullWidth multiline minRows={2} />
-              <Box><Button color="error" size="small" onClick={() => { if (window.confirm(`Delete ${t.id}? This rewrites data.json.`)) onDelete(); }}>Delete ticket</Button></Box>
+
+              <Box>
+                {confirmDel ? (
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Typography variant="body2">Delete {t.id}? This rewrites data.json.</Typography>
+                    <Button color="error" size="small" variant="contained" onClick={onDelete}>Confirm</Button>
+                    <Button size="small" onClick={() => setConfirmDel(false)}>Cancel</Button>
+                  </Box>
+                ) : (
+                  <Button color="error" size="small" onClick={() => setConfirmDel(true)}>Delete ticket</Button>
+                )}
+              </Box>
             </Box>
           ) : (
             <>
@@ -376,11 +482,76 @@ function TicketDrawer({ board, ticket: t, onClose, onPatch, onDelete }: DrawerPr
               <Field label="Agent plan">{planLabel(t) || '—'}</Field>
               <Field label="Depends on">{(t.depends_on || []).join(', ') || '—'}</Field>
               <Field label="Human gate">{t.human_gate}</Field>
+              {spec.trim() && <Field label="Spec"><Box component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', m: 0 }}>{spec}</Box></Field>}
               <Field label="Evidence">{String(t.evidence || '')}</Field>
             </>
           )}
         </>
       )}
     </Drawer>
+  );
+}
+
+function SpecEditor({ spec, setSpec, onSave, state, setState }: {
+  spec: string; setSpec: (s: string) => void; onSave: () => void;
+  state: 'idle' | 'saving' | 'saved'; setState: (s: 'idle' | 'saving' | 'saved') => void;
+}) {
+  return (
+    <Box>
+      <TextField label="Spec (long-form detail — saved to board/specs/&lt;id&gt;.md)" value={spec}
+        onChange={(e) => { setSpec(e.target.value); setState('idle'); }} fullWidth multiline minRows={4}
+        helperText="Optional. Use for acceptance criteria, design notes, anything longer than the description." />
+      <Box sx={{ mt: 0.6 }}>
+        <Button size="small" variant="outlined" onClick={onSave} disabled={state === 'saving'}>
+          {state === 'saving' ? 'saving…' : state === 'saved' ? 'spec saved ✓' : 'Save spec'}
+        </Button>
+      </Box>
+    </Box>
+  );
+}
+
+function EpicsDialog({ board, open, onClose, update }: {
+  board: Board; open: boolean; onClose: () => void; update: (fn: (b: Board) => Board) => void;
+}) {
+  const [newName, setNewName] = useState('');
+  const rename = (id: string, name: string) =>
+    update((b) => { const e = b.epics.find((x) => x.id === id); if (e) e.name = name; return b; });
+  const remove = (id: string) =>
+    update((b) => {
+      b.epics = b.epics.filter((x) => x.id !== id);
+      for (const t of b.tickets) if (t.epicId === id) t.epicId = ''; // orphaned tickets, not deleted
+      return b;
+    });
+  const add = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const id = nextEpicId(board);
+    update((b) => { b.epics.push({ id, name }); return b; });
+    setNewName('');
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Epics</DialogTitle>
+      <DialogContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.2, mt: 0.5 }}>
+          {board.epics.length === 0 && <Typography color="text.secondary" variant="body2">No epics yet. Add one below to group your tickets.</Typography>}
+          {board.epics.map((e) => (
+            <Box key={e.id} sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+              <Typography sx={{ fontFamily: 'monospace', fontSize: 12, color: 'primary.main', width: 34 }}>{e.id}</Typography>
+              <TextField value={e.name} onChange={(ev) => rename(e.id, ev.target.value)} size="small" sx={{ flex: 1 }} />
+              <Button color="error" size="small" onClick={() => remove(e.id)}>Delete</Button>
+            </Box>
+          ))}
+          <Divider sx={{ my: 1 }} />
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField placeholder="New epic name…" value={newName} onChange={(e) => setNewName(e.target.value)}
+              size="small" sx={{ flex: 1 }} onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+            <Button variant="contained" size="small" onClick={add} disabled={!newName.trim()}>Add epic</Button>
+          </Box>
+        </Box>
+      </DialogContent>
+      <DialogActions><Button onClick={onClose}>Close</Button></DialogActions>
+    </Dialog>
   );
 }

@@ -104,6 +104,24 @@ for (const s of skills) {
   generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(src));
 }
 
+// ── Project overlay: the project's own agents/skills win over the kit's ─────────
+// A project can keep custom or customised agents in `<project>/agents/*.md` and skills in
+// `<project>/skills/<name>/SKILL.md`. These are merged in (overriding a kit file of the same
+// name) so a team keeps everything in one place — and, unlike hand-editing `.claude/`, they
+// survive the next render.
+const projAgentsDir = join(PROJECT, "agents");
+if (existsSync(projAgentsDir)) {
+  for (const f of readdirSync(projAgentsDir).filter((f) => f.endsWith(".md"))) {
+    generated.set(join(".claude", "agents", f), substitute(readFileSync(join(projAgentsDir, f), "utf8")));
+  }
+}
+const projSkillsDir = join(PROJECT, "skills");
+if (existsSync(projSkillsDir)) {
+  for (const s of readdirSync(projSkillsDir).filter((d) => existsSync(join(projSkillsDir, d, "SKILL.md")))) {
+    generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(readFileSync(join(projSkillsDir, s, "SKILL.md"), "utf8")));
+  }
+}
+
 // Project CLAUDE.md = a short header + the project context, so every agent reads it.
 const claudeMd = `# ${projectName} — Maestro-managed project
 
@@ -155,19 +173,37 @@ if (checkMode) {
 }
 
 // ── Write mode ─────────────────────────────────────────────────────────────────
-// Clean previously generated agent/skill dirs so removed roster entries disappear.
-for (const sub of [join(".claude", "agents"), join(".claude", "skills")]) {
-  const abs = join(PROJECT, sub);
-  if (existsSync(abs)) rmSync(abs, { recursive: true, force: true });
+// Prune only files THIS tool generated last time (recorded in the prior lock) and no longer
+// generates — so a removed roster entry disappears, but anything else a user placed under
+// .claude/ is never touched. This is the safety fix: sync never deletes files it didn't create.
+const lockPath = join(PROJECT, ".maestro.lock");
+const priorLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : null;
+if (priorLock?.files) {
+  for (const rel of Object.keys(priorLock.files)) {
+    if (generated.has(rel)) continue;
+    const abs = join(PROJECT, rel);
+    if (existsSync(abs)) rmSync(abs, { force: true });
+  }
+  // Drop now-empty .claude/skills/<name> dirs left behind by a pruned skill.
+  const skillsRoot = join(PROJECT, ".claude", "skills");
+  if (existsSync(skillsRoot)) {
+    for (const d of readdirSync(skillsRoot)) {
+      const abs = join(skillsRoot, d);
+      if (statSync(abs).isDirectory() && readdirSync(abs).length === 0) rmSync(abs, { recursive: true, force: true });
+    }
+  }
 }
+
 for (const [rel, content] of generated) {
   const abs = join(PROJECT, rel);
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, content);
 }
-writeFileSync(join(PROJECT, ".maestro.lock"), lockContent);
+writeFileSync(lockPath, lockContent);
 
+const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
+const skillCount = [...generated.keys()].filter((r) => r.endsWith("SKILL.md")).length;
 console.log(
   `✓ Rendered ${projectName} (kit v${kitVersion}): ` +
-    `${agentFiles.length} agents, ${skills.length} skills, CLAUDE.md, .maestro.lock`
+    `${agentCount} agents, ${skillCount} skills, CLAUDE.md, .maestro.lock`
 );
