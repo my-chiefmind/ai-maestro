@@ -72,7 +72,7 @@ Prefer git? Cloning gives the identical layout (plus the cockpit UI):
 
 ```bash
 cd ~/code/my-app
-git clone https://github.com/spourali/ai-maestro.git maestro
+git clone https://github.com/my-chiefmind/ai-maestro.git maestro
 cd maestro && npm run setup
 ```
 

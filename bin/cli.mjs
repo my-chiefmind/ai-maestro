@@ -211,7 +211,7 @@ async function setup(args) {
 
   const boardLine = existsSync(join(kit, "cockpit"))
     ? `   • Optional visual board:  npm run board   (from the ${kitName}/ folder)`
-    : `   • Optional visual board:  clone https://github.com/spourali/ai-maestro and run 'npm run board'`;
+    : `   • Optional visual board:  clone https://github.com/my-chiefmind/ai-maestro and run 'npm run board'`;
   console.log(`
 ✅ "${name}" is ready — no install, nothing running.
 
@@ -239,7 +239,7 @@ The usual flow — one command in your repo:
 
 Or clone the kit yourself (same result, plus the cockpit UI):
 
-  git clone https://github.com/spourali/ai-maestro.git maestro
+  git clone https://github.com/my-chiefmind/ai-maestro.git maestro
   node maestro/bin/cli.mjs setup
 
 Examples:

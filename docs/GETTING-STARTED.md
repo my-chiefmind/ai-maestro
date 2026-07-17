@@ -51,7 +51,7 @@ cockpit UI, and updates via `git pull`), cloning produces the identical layout:
 
 ```bash
 cd ~/code/my-app                                          # your project
-git clone https://github.com/spourali/ai-maestro.git maestro
+git clone https://github.com/my-chiefmind/ai-maestro.git maestro
 cd maestro && npm run setup                               # asks project name + areas
 ```
 
@@ -200,7 +200,7 @@ Clone the kit once, then `init` drops a small **capsule** (just `config.json`, `
 `board/` — not the whole kit) into each repo and points it at the shared kit:
 
 ```bash
-git clone https://github.com/spourali/ai-maestro.git ~/maestro   # once, anywhere
+git clone https://github.com/my-chiefmind/ai-maestro.git ~/maestro   # once, anywhere
 cd ~/code/my-app
 node ~/maestro/bin/cli.mjs init                               # writes maestro/, renders .claude/ to the repo root
 ```
@@ -212,7 +212,7 @@ capsule:
 
 ```bash
 cd ~/code/my-app
-git clone https://github.com/spourali/ai-maestro.git .maestro-kit
+git clone https://github.com/my-chiefmind/ai-maestro.git .maestro-kit
 printf '\n.maestro-kit/\n.maestro/\n' >> .gitignore
 node .maestro-kit/bin/cli.mjs init
 ```
