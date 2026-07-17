@@ -64,6 +64,39 @@ coding tool discovers them, so the orchestrator operates on *your* repo, not the
 subfolder. An existing root `CLAUDE.md` is never overwritten. It's idempotent — re-running does
 nothing once you're set up.
 
+### Let Claude Code do the onboarding
+
+Prefer not to run the questionnaire by hand? Open your project in
+[Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste the
+prompt below. It runs `setup`, fills in your `context.md` from the real codebase, and seeds a
+few starter tickets for you to review — then stops, so nothing runs until you say so:
+
+```text
+Add AI Maestro — the AI-agent orchestration kit — to this project.
+
+1. From the repo root, run: npx @mychiefmind/ai-maestro setup
+   It's interactive: it asks for a project name and the areas of this
+   codebase (e.g. frontend, backend, infra). Infer sensible answers from
+   the repo, but show them to me before you commit to them.
+   This vendors the kit into ./maestro/ and renders agents + skills into
+   ./.claude/ at the repo root. It must NOT touch my application code.
+
+2. Fill in maestro/context.md — the brief every agent reads. Summarize
+   what this project is, its stack, key conventions, and how to run and
+   test it, drawn from the ACTUAL codebase (README, package manifests,
+   configs) — not guesses.
+
+3. Seed maestro/board/data.json with a few real starter tickets based on
+   obvious near-term work you can see (TODOs, missing tests, rough edges).
+   Keep them status: "todo" and let me review before anything runs.
+
+4. Report back: the areas you chose, the agent roster, and whether I
+   should commit maestro/ or gitignore it.
+
+Do NOT start executing tickets. Stop after setup so I can review — then
+I'll invoke the `orchestrator` agent myself.
+```
+
 ## How it sits in your project
 
 AI Maestro is a **sidecar**: the kit (vendored by `npx @mychiefmind/ai-maestro setup` or cloned by you) and

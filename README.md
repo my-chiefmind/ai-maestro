@@ -65,6 +65,39 @@ into `./.claude/` at your repo root — **nothing left running.** Now open the r
 Code and ask the **`orchestrator`** agent to start; it picks up the first unblocked ticket and
 runs it.
 
+### Or let Claude Code onboard it for you
+
+Prefer not to run the questionnaire by hand? Open your project in
+[Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste this
+prompt — it runs `setup`, fills in your `context.md` from the real codebase, and seeds a few
+starter tickets for you to review:
+
+```text
+Add AI Maestro — the AI-agent orchestration kit — to this project.
+
+1. From the repo root, run: npx @mychiefmind/ai-maestro setup
+   It's interactive: it asks for a project name and the areas of this
+   codebase (e.g. frontend, backend, infra). Infer sensible answers from
+   the repo, but show them to me before you commit to them.
+   This vendors the kit into ./maestro/ and renders agents + skills into
+   ./.claude/ at the repo root. It must NOT touch my application code.
+
+2. Fill in maestro/context.md — the brief every agent reads. Summarize
+   what this project is, its stack, key conventions, and how to run and
+   test it, drawn from the ACTUAL codebase (README, package manifests,
+   configs) — not guesses.
+
+3. Seed maestro/board/data.json with a few real starter tickets based on
+   obvious near-term work you can see (TODOs, missing tests, rough edges).
+   Keep them status: "todo" and let me review before anything runs.
+
+4. Report back: the areas you chose, the agent roster, and whether I
+   should commit maestro/ or gitignore it.
+
+Do NOT start executing tickets. Stop after setup so I can review — then
+I'll invoke the `orchestrator` agent myself.
+```
+
 Prefer a permanent install? `npm i -g @mychiefmind/ai-maestro` gives you the CLI as both
 `ai-maestro` and the short **`maestro`** command.
 
