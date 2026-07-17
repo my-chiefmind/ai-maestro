@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  kit:
+    name: Kit (validate + render + init)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Validate the example board
+        run: node scripts/validate-board.mjs board/data.json
+
+      - name: Render a starter and check for drift
+        run: |
+          rm -rf /tmp/proj && mkdir -p /tmp/proj
+          cp -R starters/orchestrated-project/. /tmp/proj/
+          node render/sync.mjs --project /tmp/proj --kit .
+          node render/sync.mjs --project /tmp/proj --kit . --check
+          node scripts/validate-board.mjs /tmp/proj/board/data.json --agents ./agents
+
+      - name: setup smoke test (clone-into-project flow)
+        run: |
+          rm -rf /tmp/app && mkdir -p /tmp/app/src
+          rsync -a --exclude .git --exclude node_modules ./ /tmp/app/maestro/
+          node /tmp/app/maestro/bin/cli.mjs setup --yes --name ci-app --areas backend,web
+          test -d /tmp/app/.claude/agents      # rendered to the repo root, not into maestro/
+          test -f /tmp/app/CLAUDE.md
+          test ! -d /tmp/app/maestro/.claude   # must NOT render inside the kit folder
+
+      - name: init smoke test (separate-capsule flow)
+        run: |
+          rm -rf /tmp/repo && mkdir -p /tmp/repo
+          node bin/cli.mjs init --dir /tmp/repo --name ci-app --areas backend,web --yes
+
+  cockpit:
+    name: Cockpit (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install cockpit deps
+        run: npm --prefix cockpit install --no-audit --no-fund
+      - name: Type-check and build
+        run: npm --prefix cockpit run build

@@ -1,0 +1,20 @@
+{
+  "epics": [],
+  "tickets": [
+    {
+      "id": "T-001",
+      "epicId": "e1",
+      "name": "Health-check endpoint",
+      "desc": "Add GET /healthz returning 200 with build info. AC: returns version + commit; covered by a test.",
+      "area": "backend",
+      "priority": "P2",
+      "swag": "XS",
+      "status": "done",
+      "depends_on": [],
+      "agent_plan": ["backend", "qa", "merge"],
+      "execution_mode": "single-agent",
+      "model": "haiku",
+      "evidence": "landed; healthz test green"
+    }
+  ]
+}

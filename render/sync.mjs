@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+/**
+ * sync.mjs — AI Maestro renderer.
+ *
+ * Generates a project's .claude/ (agents + skills) and a project CLAUDE.md from the kit
+ * plus the project's hand-maintained config.json + context.md, and writes a .maestro.lock
+ * with content hashes for drift detection.
+ *
+ * Usage:
+ *   node render/sync.mjs --project <dir> [--kit <dir>] [--check]
+ *
+ *   --project  the managed project directory (contains config.json + context.md)
+ *   --kit      the AI Maestro kit root (default: resolved from config.kitSource, else this repo)
+ *   --check    verify generated files are current; exit 1 on drift (for CI / pre-commit)
+ *
+ * No third-party dependencies.
+ */
+
+import {
+  readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, statSync,
+} from "fs";
+import { createHash } from "crypto";
+import { resolve, dirname, join, relative } from "path";
+import { fileURLToPath } from "url";
+
+const __dir = dirname(fileURLToPath(import.meta.url));
+const THIS_KIT = resolve(__dir, "..");
+
+const args = process.argv.slice(2);
+const checkMode = args.includes("--check");
+const projectArg = argValue("--project");
+const kitArg = argValue("--kit");
+
+function argValue(flag) {
+  const i = args.indexOf(flag);
+  return i !== -1 ? args[i + 1] : null;
+}
+function sha256(s) {
+  return "sha256:" + createHash("sha256").update(s, "utf8").digest("hex");
+}
+function readJSON(p) {
+  return JSON.parse(readFileSync(p, "utf8"));
+}
+
+if (!projectArg) {
+  console.error("Error: --project <dir> is required.");
+  process.exit(2);
+}
+const PROJECT = resolve(projectArg);
+const configPath = join(PROJECT, "config.json");
+if (!existsSync(configPath)) {
+  console.error(`Error: no config.json in ${PROJECT}`);
+  process.exit(2);
+}
+const config = readJSON(configPath);
+
+// Where generated files (.claude/, CLAUDE.md, .maestro.lock) are written. Defaults to the
+// project dir; setups that keep config in a subfolder point this at the repo root (via --out
+// or config.outDir) so the coding tool discovers .claude/ there.
+const OUT = argValue("--out")
+  ? resolve(argValue("--out"))
+  : config.outDir
+    ? resolve(PROJECT, config.outDir)
+    : PROJECT;
+
+// Resolve the kit root: explicit --kit, else config.kitSource.path, else this repo.
+const KIT = resolve(
+  kitArg ?? (config.kitSource?.path ? join(PROJECT, config.kitSource.path) : THIS_KIT)
+);
+if (!existsSync(join(KIT, "agents"))) {
+  console.error(`Error: kit not found at ${KIT} (no agents/ dir).`);
+  process.exit(2);
+}
+
+const kitVersion = existsSync(join(KIT, "VERSION"))
+  ? readFileSync(join(KIT, "VERSION"), "utf8").trim()
+  : "0.0.0";
+
+const context = existsSync(join(PROJECT, "context.md"))
+  ? readFileSync(join(PROJECT, "context.md"), "utf8")
+  : "";
+
+const projectName = config.project?.name ?? "project";
+
+// ── Which agents / skills to include ──────────────────────────────────────────
+const allAgentFiles = readdirSync(join(KIT, "agents")).filter((f) => f.endsWith(".md"));
+const roster = config.roster; // array of file basenames without .md, or undefined = all
+const agentFiles = roster
+  ? allAgentFiles.filter((f) => roster.includes(f.replace(/\.md$/, "")))
+  : allAgentFiles;
+
+const allSkills = readdirSync(join(KIT, "skills")).filter((d) =>
+  existsSync(join(KIT, "skills", d, "SKILL.md"))
+);
+const skills = config.skills ?? allSkills; // array of skill dir names, or undefined = all
+
+// ── Template substitution ──────────────────────────────────────────────────────
+// Paths the generated agents/skills reference, expressed relative to OUT (where .claude/ and
+// CLAUDE.md live — i.e. where the coding tool runs). This keeps every board/script reference
+// correct regardless of layout: `board` when generated files sit beside the board, or
+// `maestro/board` when they're rendered up to the repo root.
+const posix = (p) => p.split("\\").join("/");
+const boardRel = posix(relative(OUT, join(PROJECT, "board"))) || "board";
+const kitRel = posix(relative(OUT, KIT)) || ".";
+
+function substitute(text) {
+  return text
+    .replaceAll("{{PROJECT_NAME}}", projectName)
+    .replaceAll("{{KIT_VERSION}}", kitVersion)
+    .replaceAll("{{BOARD}}", boardRel)
+    .replaceAll("{{KIT}}", kitRel);
+}
+
+// ── Build the generated file set (path -> content) ──────────────────────────────
+const generated = new Map();
+
+for (const f of agentFiles) {
+  const src = readFileSync(join(KIT, "agents", f), "utf8");
+  generated.set(join(".claude", "agents", f), substitute(src));
+}
+for (const s of skills) {
+  const src = readFileSync(join(KIT, "skills", s, "SKILL.md"), "utf8");
+  generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(src));
+}
+
+// ── Project overlay: the project's own agents/skills win over the kit's ─────────
+// A project can keep custom or customised agents in `<project>/agents/*.md` and skills in
+// `<project>/skills/<name>/SKILL.md`. These are merged in (overriding a kit file of the same
+// name) so a team keeps everything in one place — and, unlike hand-editing `.claude/`, they
+// survive the next render.
+const projAgentsDir = join(PROJECT, "agents");
+if (existsSync(projAgentsDir)) {
+  for (const f of readdirSync(projAgentsDir).filter((f) => f.endsWith(".md"))) {
+    generated.set(join(".claude", "agents", f), substitute(readFileSync(join(projAgentsDir, f), "utf8")));
+  }
+}
+const projSkillsDir = join(PROJECT, "skills");
+if (existsSync(projSkillsDir)) {
+  for (const s of readdirSync(projSkillsDir).filter((d) => existsSync(join(projSkillsDir, d, "SKILL.md")))) {
+    generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(readFileSync(join(projSkillsDir, s, "SKILL.md"), "utf8")));
+  }
+}
+
+// The model policy, baked in so the orchestrator can apply per-area floors without reading config.
+const floors = config.model?.floors ?? {};
+const floorLines = Object.keys(floors).length
+  ? Object.entries(floors).map(([area, m]) => `\`${area}\` → \`${m}\``).join(", ")
+  : "_(none)_";
+
+// Project CLAUDE.md = a short header + model policy + the project context, so every agent reads it.
+const claudeMd = `# ${projectName} — AI Maestro-managed project
+
+> Generated by AI Maestro v${kitVersion}. Do not hand-edit the generated \`.claude/\` files —
+> change \`config.json\` / \`context.md\` and re-run \`sync.mjs\`.
+
+This project is run board-first. Work lives in \`${boardRel}/data.json\`; each ticket declares its
+\`agent_plan\` and \`model\`. See the AI Maestro method and the generated agents/skills under
+\`.claude/\`.
+
+## Model policy
+
+- **Default model:** \`${config.model?.default ?? "sonnet"}\`
+- **Area floors:** ${floorLines}
+
+Run each ticket on the **stronger** of its \`model\` and its area's floor. A ticket's plan always
+ends with the terminal gates \`qa → merge\` (add \`pd\` for \`multi-agent\` or human-gated tickets),
+even if \`agent_plan\` omits them.
+
+## Project context
+
+${context.trim() || "_(fill in context.md)_"}
+`;
+generated.set("CLAUDE.md", claudeMd);
+
+// ── Lock file ────────────────────────────────────────────────────────────────
+const lock = {
+  kitVersion,
+  generatedAt: null, // intentionally not timestamped (keeps the lock deterministic)
+  files: {},
+};
+for (const [rel, content] of [...generated].sort()) {
+  lock.files[rel] = sha256(content);
+}
+const lockContent = JSON.stringify(lock, null, 2) + "\n";
+
+// ── Check mode: compare, don't write ────────────────────────────────────────────
+if (checkMode) {
+  let drift = 0;
+  for (const [rel, content] of generated) {
+    const abs = join(OUT, rel);
+    if (!existsSync(abs) || readFileSync(abs, "utf8") !== content) {
+      console.log(`  ✗ drift: ${rel}`);
+      drift++;
+    }
+  }
+  const lockPath = join(OUT, ".maestro.lock");
+  if (!existsSync(lockPath) || readFileSync(lockPath, "utf8") !== lockContent) {
+    console.log("  ✗ drift: .maestro.lock");
+    drift++;
+  }
+  if (drift) {
+    console.log(`\n✗ ${drift} file(s) out of date. Run sync.mjs to regenerate.`);
+    process.exit(1);
+  }
+  console.log("✓ Generated files are current.");
+  process.exit(0);
+}
+
+// ── Write mode ─────────────────────────────────────────────────────────────────
+// Prune only files THIS tool generated last time (recorded in the prior lock) and no longer
+// generates — so a removed roster entry disappears, but anything else a user placed under
+// .claude/ is never touched. This is the safety fix: sync never deletes files it didn't create.
+const lockPath = join(OUT, ".maestro.lock");
+const priorLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : null;
+if (priorLock?.files) {
+  for (const rel of Object.keys(priorLock.files)) {
+    if (generated.has(rel)) continue;
+    const abs = join(OUT, rel);
+    if (existsSync(abs)) rmSync(abs, { force: true });
+  }
+  // Drop now-empty .claude/skills/<name> dirs left behind by a pruned skill.
+  const skillsRoot = join(OUT, ".claude", "skills");
+  if (existsSync(skillsRoot)) {
+    for (const d of readdirSync(skillsRoot)) {
+      const abs = join(skillsRoot, d);
+      if (statSync(abs).isDirectory() && readdirSync(abs).length === 0) rmSync(abs, { recursive: true, force: true });
+    }
+  }
+}
+
+// Safety: never overwrite a CLAUDE.md we didn't generate (a project may already have its own
+// at the repo root). Skip it, warn, and keep it out of the lock so --check stays honest.
+const skip = new Set();
+for (const rel of generated.keys()) {
+  if (rel === "CLAUDE.md" && existsSync(join(OUT, rel)) && !priorLock?.files?.[rel]) skip.add(rel);
+}
+
+for (const [rel, content] of generated) {
+  if (skip.has(rel)) {
+    console.log(`  ⚠ kept your existing ${rel} at ${OUT} (not overwritten). Add your project context to config/context.md and reference it there if you like.`);
+    continue;
+  }
+  const abs = join(OUT, rel);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content);
+}
+for (const rel of skip) delete lock.files[rel];
+writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
+
+const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
+const skillCount = [...generated.keys()].filter((r) => r.endsWith("SKILL.md")).length;
+console.log(
+  `✓ Rendered ${projectName} (kit v${kitVersion}): ` +
+    `${agentCount} agents, ${skillCount} skills, CLAUDE.md, .maestro.lock`
+);

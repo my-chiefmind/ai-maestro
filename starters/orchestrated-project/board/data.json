@@ -1,0 +1,25 @@
+{
+  "epics": [
+    {
+      "id": "e1",
+      "name": "Foundation",
+      "desc": "Initial setup and the first vertical slice."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-001",
+      "epicId": "e1",
+      "name": "First ticket — replace me",
+      "desc": "Describe one independently shippable outcome. State acceptance criteria the QA stage can check.",
+      "area": "backend",
+      "priority": "P2",
+      "swag": "S",
+      "status": "todo",
+      "depends_on": [],
+      "agent_plan": ["pe", "backend", "qa", "merge"],
+      "execution_mode": "multi-agent",
+      "model": "sonnet"
+    }
+  ]
+}

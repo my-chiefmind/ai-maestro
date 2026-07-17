@@ -1,0 +1,29 @@
+{
+  "project": {
+    "name": "my-lib",
+    "areas": ["default"]
+  },
+  "roster": [
+    "principal-engineer",
+    "backend-developer",
+    "qa"
+  ],
+  "skills": [
+    "dev-setup",
+    "git-branch",
+    "worktree-cleanup",
+    "land-and-archive",
+    "gc",
+    "release-gate",
+    "security-review"
+  ],
+  "model": {
+    "default": "sonnet",
+    "floors": {}
+  },
+  "humanGates": ["owner sign-off"],
+  "kitSource": {
+    "mode": "sibling",
+    "path": "../../maestro"
+  }
+}

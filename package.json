@@ -1,0 +1,50 @@
+{
+  "name": "@mychiefmind/ai-maestro",
+  "version": "0.1.0",
+  "description": "Conduct a roster of AI coding agents against a work board.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "ai-maestro": "bin/cli.mjs",
+    "maestro": "bin/cli.mjs"
+  },
+  "files": [
+    "bin",
+    "render",
+    "scripts",
+    "agents",
+    "skills",
+    "starters",
+    "board",
+    "!board/.backups",
+    "docs",
+    "VERSION"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepublishOnly": "node scripts/validate-board.mjs board/data.json",
+    "setup": "node bin/cli.mjs setup",
+    "init": "node bin/cli.mjs init",
+    "validate": "node scripts/validate-board.mjs board/data.json",
+    "sync": "node render/sync.mjs --project .",
+    "dev": "npm run board",
+    "preboard": "node -e \"require('fs').existsSync('cockpit/node_modules')||require('child_process').execSync('npm --prefix cockpit install --no-audit --no-fund',{stdio:'inherit'})\"",
+    "board": "npm --prefix cockpit run dev",
+    "cockpit:install": "npm --prefix cockpit install"
+  },
+  "keywords": [
+    "ai-agents",
+    "orchestration",
+    "board",
+    "kanban",
+    "claude",
+    "agentic",
+    "workflow"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spourali/ai-maestro.git"
+  }
+}
