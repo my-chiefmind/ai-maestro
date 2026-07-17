@@ -29,17 +29,23 @@ const NODE = process.execPath;
 const IS_PACKAGED = KIT_ROOT.split(sep).includes("node_modules") || KIT_ROOT.includes("_npx");
 
 // What `setup` copies into <repo>/maestro/ when installed from npm. Everything the clone
-// flow relies on, minus repo-only extras (cockpit ships separately; see the README).
-const VENDORED = ["agents", "skills", "render", "scripts", "board", "starters", "docs", "bin", "VERSION", "README.md", "LICENSE"];
+// flow relies on, including the optional cockpit UI so `npm run board` works out of the box.
+const VENDORED = ["agents", "skills", "render", "scripts", "board", "cockpit", "starters", "docs", "bin", "VERSION", "README.md", "LICENSE"];
+
+// Never carry these into the user's repo — they're rebuildable and heavy. The cockpit's deps
+// install on first `npm run board` (see the `preboard` script below).
+const VENDOR_SKIP = new Set(["node_modules", "dist", ".backups", ".git"]);
 
 function vendorKit(dest) {
   mkdirSync(dest, { recursive: true });
+  const filter = (src) => !VENDOR_SKIP.has(basename(src));
   for (const entry of VENDORED) {
     const src = join(KIT_ROOT, entry);
-    if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true });
+    if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter });
   }
-  // Minimal package.json so `npm run sync` / `npm run validate` work from the folder,
-  // matching what the docs tell clone users to run.
+  // Minimal package.json so `npm run sync` / `npm run validate` / `npm run board` work from
+  // the folder, matching what the docs tell clone users to run. `preboard` installs the
+  // cockpit's deps on demand so the first `npm run board` just works.
   const pkg = {
     name: "maestro",
     private: true,
@@ -48,6 +54,8 @@ function vendorKit(dest) {
       setup: "node bin/cli.mjs setup",
       sync: "node render/sync.mjs --project .",
       validate: "node scripts/validate-board.mjs board/data.json",
+      preboard: "node -e \"require('fs').existsSync('cockpit/node_modules')||require('child_process').execSync('npm --prefix cockpit install --no-audit --no-fund',{stdio:'inherit'})\"",
+      board: "npm --prefix cockpit run dev",
     },
   };
   writeFileSync(join(dest, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
@@ -210,7 +218,7 @@ async function setup(args) {
   run("render/sync.mjs", ["--project", kit], kit);
 
   const boardLine = existsSync(join(kit, "cockpit"))
-    ? `   • Optional visual board:  npm run board   (from the ${kitName}/ folder)`
+    ? `   • Optional visual board:  npm run board   (from the ${kitName}/ folder — installs the UI's deps on first run, then → http://localhost:5273)`
     : `   • Optional visual board:  clone https://github.com/my-chiefmind/ai-maestro and run 'npm run board'`;
   console.log(`
 ✅ "${name}" is ready — no install, nothing running.

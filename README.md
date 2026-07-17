@@ -101,7 +101,7 @@ I'll invoke the `orchestrator` agent myself.
 Prefer a permanent install? `npm i -g @mychiefmind/ai-maestro` gives you the CLI as both
 `ai-maestro` and the short **`maestro`** command.
 
-Prefer git? Cloning gives the identical layout (plus the cockpit UI):
+Prefer git? Cloning gives the identical layout:
 
 ```bash
 cd ~/code/my-app
@@ -109,11 +109,11 @@ git clone https://github.com/my-chiefmind/ai-maestro.git maestro
 cd maestro && npm run setup
 ```
 
-**Want the visual board?** It's optional (the only part that runs a server), and it ships with
-the cloned kit — the npm package stays lean and leaves it out:
+**Want the visual board?** It's optional (the only part that runs a server) and ships with both
+paths — `npx setup` vendors it into your `maestro/` folder, and a clone has it too:
 
 ```bash
-npm run board      # from a cloned maestro folder — installs the cockpit's deps, then → http://localhost:5273
+npm run board      # from the maestro/ folder — installs the cockpit's deps on first run, then → http://localhost:5273
 ```
 
 Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).

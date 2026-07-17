@@ -46,8 +46,8 @@ cd ~/code/my-app     # your project
 npx @mychiefmind/ai-maestro setup # asks project name + areas
 ```
 
-That copies the kit into `./maestro/` and sets it up. If you prefer git (you get the optional
-cockpit UI, and updates via `git pull`), cloning produces the identical layout:
+That copies the kit into `./maestro/` and sets it up — cockpit UI included, so `npm run board`
+works right away. If you prefer git (updates via `git pull`), cloning produces the identical layout:
 
 ```bash
 cd ~/code/my-app                                          # your project
