@@ -290,6 +290,19 @@ app.get("/api/docs", (_req, res) => {
   res.json({ sections });
 });
 
+// Rewrite relative <img src> in rendered docs to the image endpoint below. A doc's image
+// links are relative to the doc's own folder (e.g. README's "./cockpit/asset/logo.png"),
+// which the browser can't resolve from the SPA — so map each to /api/docs/asset?path=<rel>.
+// External (http/https/protocol-relative), data:, and already-absolute-api srcs are left alone.
+function rewriteDocImages(html, docRel) {
+  const docDir = dirname(docRel);
+  return html.replace(/(<img\b[^>]*?\bsrc=")([^"]+)(")/gi, (m, pre, src, post) => {
+    if (/^(https?:)?\/\//i.test(src) || src.startsWith("data:") || src.startsWith("/api/")) return m;
+    const rel = join(docDir, src).replace(/^(\.\/)+/, ""); // resolve ../ and ./ against the doc
+    return `${pre}/api/docs/asset?path=${encodeURIComponent(rel)}${post}`;
+  });
+}
+
 app.get("/api/docs/render", (req, res) => {
   const rel = String(req.query.path || "");
   const abs = resolve(join(KIT_ROOT, rel));
@@ -298,10 +311,20 @@ app.get("/api/docs/render", (req, res) => {
     return res.status(404).json({ error: "not found" });
   }
   try {
-    res.json({ path: rel, html: marked.parse(readFileSync(abs, "utf8")) });
+    res.json({ path: rel, html: rewriteDocImages(marked.parse(readFileSync(abs, "utf8")), rel) });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
+});
+
+// Serve images referenced by the docs — path-allowlisted to the kit, image extensions only.
+app.get("/api/docs/asset", (req, res) => {
+  const rel = String(req.query.path || "");
+  const abs = resolve(join(KIT_ROOT, rel));
+  if (!abs.startsWith(KIT_ROOT + "/") || !/\.(png|jpe?g|gif|svg|webp|ico|avif)$/i.test(abs) || !existsSync(abs)) {
+    return res.status(404).end();
+  }
+  res.sendFile(abs);
 });
 
 // Serve the built UI in production (dist/), if present.
