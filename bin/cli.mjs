@@ -74,13 +74,50 @@ function run(scriptRel, args, root = KIT_ROOT) {
   return r.status ?? 1;
 }
 
+// Prompt on a TTY, resolving to the raw answer. Resolves "" if stdin hits EOF (e.g. piped
+// input) so an awaiting caller never hangs.
+function prompt(rl, question) {
+  return new Promise((res) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; res(v); } };
+    rl.question(question, (a) => finish(a));
+    rl.on("close", () => finish(""));
+  });
+}
+
 async function ask(question, fallback) {
   if (!process.stdin.isTTY) return fallback;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const suffix = fallback ? ` (${fallback})` : "";
-  const answer = await new Promise((res) => rl.question(`${question}${suffix}: `, res));
+  const answer = await prompt(rl, `${question}${suffix}: `);
   rl.close();
   return answer.trim() || fallback;
+}
+
+// Yes/no prompt. Non-interactive (no TTY) falls back to `def` so scripted runs don't hang.
+async function askYesNo(question, def = true) {
+  if (!process.stdin.isTTY) return def;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await prompt(rl, `${question} (${def ? "Y/n" : "y/N"}): `);
+  rl.close();
+  const a = answer.trim().toLowerCase();
+  if (!a) return def;
+  return a === "y" || a === "yes";
+}
+
+// Start the visual board (installs the cockpit's deps on first run via the `preboard` hook).
+// Blocks until the dev server is stopped — this is intentionally the last thing setup does.
+function launchBoard(kitDir, kitName) {
+  console.log("\n→ Starting the visual board (installs the UI's deps on first run)…");
+  console.log("   → http://localhost:5273    (press Ctrl+C to stop)\n");
+  const r = spawnSync("npm", ["run", "board"], {
+    cwd: kitDir,
+    stdio: "inherit",
+    shell: process.platform === "win32", // npm is npm.cmd on Windows
+  });
+  if (r.status !== 0) {
+    console.error(`\n✗ Couldn't start the board. Start it yourself:  cd ${kitName} && npm run board`);
+  }
 }
 
 async function init(args) {
@@ -217,25 +254,40 @@ async function setup(args) {
   console.log("\n→ Setting up your agents & skills…");
   run("render/sync.mjs", ["--project", kit], kit);
 
-  const boardLine = existsSync(join(kit, "cockpit"))
-    ? `   • Optional visual board:  npm run board   (from the ${kitName}/ folder — installs the UI's deps on first run, then → http://localhost:5273)`
-    : `   • Optional visual board:  clone https://github.com/my-chiefmind/ai-maestro and run 'npm run board'`;
+  const hasCockpit = existsSync(join(kit, "cockpit"));
   console.log(`
-✅ "${name}" is ready — no install, nothing running.
+✅ "${name}" is ready.
 
    • Agents & skills:   ./.claude/   (at your repo root — open this repo in Claude Code and
                         ask the "orchestrator" agent to start)
    • Your settings:     ${kitName}/context.md  (describe your stack, tests, guardrails)
                         ${kitName}/board/data.json  (your work board)
    • Re-render after edits:  npm run sync    (from the ${kitName}/ folder)
-${boardLine}
 `);
+
+  // Offer to open the visual board. `--yes` launches without asking; `--no-board` skips it.
+  if (hasCockpit) {
+    // Launch only on an explicit yes: `--yes`, or an interactive "Y" at the prompt. A
+    // non-interactive run (no TTY) without `--yes` never auto-starts the blocking server.
+    const wantsBoard = has(args, "no-board") ? false
+      : yes ? true
+      : process.stdin.isTTY ? await askYesNo("Open the visual board now?", true)
+      : false;
+    if (wantsBoard) {
+      launchBoard(kit, kitName);
+    } else {
+      console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → http://localhost:5273\n`);
+    }
+  } else {
+    console.log(`   • Visual board:  clone https://github.com/my-chiefmind/ai-maestro and run 'npm run board'\n`);
+  }
 }
 
 function help() {
   console.log(`ai-maestro <command>
 
   setup       Set up AI Maestro in your project — a short questionnaire (start here)
+              Offers to open the visual board at the end (--no-board to skip, --yes to auto-open)
   sync        Re-render .claude/ from config.json + context.md
   validate    Check the board's integrity
   init        Alternative: set up as a small capsule pointing at a kit elsewhere
@@ -257,11 +309,44 @@ Examples:
 `);
 }
 
+// The commands the interactive picker offers, in menu order.
+const COMMANDS = [
+  { key: "setup", label: "Set up AI Maestro in your project (start here)" },
+  { key: "sync", label: "Re-render .claude/ from config.json + context.md" },
+  { key: "validate", label: "Check the board's integrity" },
+  { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
+];
+
+async function dispatch(command, args) {
+  switch (command) {
+    case "setup": await setup(args); break;
+    case "init": await init(args); break;
+    case "sync": process.exit(run("render/sync.mjs", args)); break;
+    case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
+    default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
+  }
+}
+
+// No command given: show help, then (in an interactive terminal) let the user pick one.
+async function menu() {
+  help();
+  if (!process.stdin.isTTY) return;
+  console.log("Pick a command:\n");
+  COMMANDS.forEach((c, i) => console.log(`  ${i + 1})  ${c.key.padEnd(9)} ${c.label}`));
+  console.log("  q)  quit\n");
+  const answer = (await ask("Select 1-" + COMMANDS.length, "1")).toLowerCase();
+  if (answer === "q" || answer === "quit") return;
+  const chosen = COMMANDS[Number(answer) - 1] || COMMANDS.find((c) => c.key === answer);
+  if (!chosen) {
+    console.error(`\n✗ "${answer}" isn't one of 1-${COMMANDS.length}. Run 'ai-maestro <command>' directly.`);
+    process.exit(2);
+  }
+  console.log(`\n→ Running '${chosen.key}'…`);
+  await dispatch(chosen.key, []);
+}
+
 switch (cmd) {
-  case "setup": await setup(rest); break;
-  case "init": await init(rest); break;
-  case "sync": process.exit(run("render/sync.mjs", rest)); break;
-  case "validate": process.exit(run("scripts/validate-board.mjs", rest)); break;
-  case "-h": case "--help": case undefined: help(); break;
-  default: console.error(`Unknown command: ${cmd}\n`); help(); process.exit(2);
+  case "-h": case "--help": help(); break;
+  case undefined: await menu(); break;
+  default: await dispatch(cmd, rest);
 }

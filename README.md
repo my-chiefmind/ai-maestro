@@ -61,9 +61,9 @@ npx @mychiefmind/ai-maestro setup # asks project name + areas
 ```
 
 `setup` copies the kit into `./maestro/`, writes your config, and renders the agents & skills
-into `./.claude/` at your repo root — **nothing left running.** Now open the repo in Claude
-Code and ask the **`orchestrator`** agent to start; it picks up the first unblocked ticket and
-runs it.
+into `./.claude/` at your repo root, then **asks if you'd like to open the visual board** (say
+no and nothing is left running). Now open the repo in Claude Code and ask the **`orchestrator`**
+agent to start; it picks up the first unblocked ticket and runs it.
 
 ### Or let Claude Code onboard it for you
 
@@ -110,7 +110,8 @@ cd maestro && npm run setup
 ```
 
 **Want the visual board?** It's optional (the only part that runs a server) and ships with both
-paths — `npx setup` vendors it into your `maestro/` folder, and a clone has it too:
+paths — `npx setup` vendors it into your `maestro/` folder, and a clone has it too. `setup`
+offers to open it for you at the end; you can also start it any time:
 
 ```bash
 npm run board      # from the maestro/ folder — installs the cockpit's deps on first run, then → http://localhost:5273

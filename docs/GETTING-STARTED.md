@@ -64,6 +64,16 @@ coding tool discovers them, so the orchestrator operates on *your* repo, not the
 subfolder. An existing root `CLAUDE.md` is never overwritten. It's idempotent — re-running does
 nothing once you're set up.
 
+At the end, `setup` asks **"Open the visual board now?"** — answer `Y` and it installs the
+cockpit's deps (first run only) and starts it at `http://localhost:5273`; answer `n` and nothing
+is left running. Pass `--yes` to open it without asking, or `--no-board` to skip the prompt (both
+handy for scripted/CI runs, which never auto-start the server). You can always launch it later
+with `npm run board` from the `maestro/` folder.
+
+Running `ai-maestro` (or `maestro`) with **no command** prints the help and then, in an
+interactive terminal, shows a numbered picker so you can choose `setup` / `sync` / `validate` /
+`init` instead of retyping it.
+
 ### Let Claude Code do the onboarding
 
 Prefer not to run the questionnaire by hand? Open your project in
