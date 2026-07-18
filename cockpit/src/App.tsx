@@ -4,9 +4,11 @@ import { buildTheme, type ThemeMode } from './theme';
 import BoardConsole from './BoardConsole';
 import RosterPage from './RosterPage';
 import DocsPage from './DocsPage';
+import HelpPage from './HelpPage';
+import WelcomeModal from './WelcomeModal';
 import logoUrl from '../asset/logo.png';
 
-type Tab = 'board' | 'roster' | 'docs';
+type Tab = 'board' | 'roster' | 'docs' | 'help';
 
 export default function App() {
   const [mode, setMode] = useState<ThemeMode>('dark');
@@ -27,12 +29,14 @@ export default function App() {
             <NavButton active={tab === 'board'} onClick={() => setTab('board')}>Board</NavButton>
             <NavButton active={tab === 'roster'} onClick={() => setTab('roster')}>Roster</NavButton>
             <NavButton active={tab === 'docs'} onClick={() => setTab('docs')}>Docs</NavButton>
+            <NavButton active={tab === 'help'} onClick={() => setTab('help')}>Help</NavButton>
           </Box>
           <Box sx={{ flexGrow: 1 }} />
           <IconButton size="small" onClick={() => setMode(mode === 'dark' ? 'light' : 'dark')}
             aria-label="toggle theme">{mode === 'dark' ? '☀️' : '🌙'}</IconButton>
         </Box>
-        {tab === 'board' ? <BoardConsole /> : tab === 'roster' ? <RosterPage /> : <DocsPage />}
+        {tab === 'board' ? <BoardConsole /> : tab === 'roster' ? <RosterPage /> : tab === 'docs' ? <DocsPage /> : <HelpPage />}
+        <WelcomeModal />
       </Box>
     </ThemeProvider>
   );

@@ -23,6 +23,16 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
 const NODE = process.execPath;
 
+// Minimal ANSI colorizer — respects NO_COLOR and non-TTY output (colors are stripped when
+// the output isn't an interactive terminal, so piped/CI logs stay clean).
+const COLOR = process.stdout.isTTY && !process.env.NO_COLOR;
+const sgr = (code) => (s) => (COLOR ? `\x1b[${code}m${s}\x1b[0m` : String(s));
+const C = {
+  b: sgr("1"), dim: sgr("2"),
+  indigo: sgr("38;5;99"), pink: sgr("38;5;211"), green: sgr("38;5;42"),
+  cyan: sgr("38;5;44"), yellow: sgr("38;5;220"),
+};
+
 // True when the CLI runs from an npm/npx install rather than a clone of the kit repo. The
 // package copy is then ephemeral (npx cache) or shared (global install) — never write into
 // it; vendor the kit into the user's repo instead, mirroring the clone layout.
@@ -256,14 +266,22 @@ async function setup(args) {
 
   const hasCockpit = existsSync(join(kit, "cockpit"));
   console.log(`
-✅ "${name}" is ready.
+${C.green(C.b(`✅  "${name}" is ready.`))}
 
-   • Agents & skills:   ./.claude/   (at your repo root — open this repo in Claude Code and
-                        ask the "orchestrator" agent to start)
-   • Your settings:     ${kitName}/context.md  (describe your stack, tests, guardrails)
-                        ${kitName}/board/data.json  (your work board)
-   • Re-render after edits:  npm run sync    (from the ${kitName}/ folder)
-`);
+${C.dim("  What was created")}
+   ${C.indigo("./.claude/")}              agents & skills, at your repo root
+   ${C.indigo(`${kitName}/context.md`)}       your brief — stack, tests, guardrails
+   ${C.indigo(`${kitName}/board/data.json`)}  your work board
+
+${C.pink(C.b("  ▶  Next — onboard your project in Claude Code:"))}
+   ${C.cyan("1.")}  Open this repo in Claude Code:   ${C.yellow("claude")}
+   ${C.cyan("2.")}  Paste this to teach the agents your codebase:
+       ${C.dim(`"Onboard AI Maestro: fill ${kitName}/context.md from the real`)}
+       ${C.dim(" codebase, seed a few starter tickets, then run npm run sync.\"")}
+   ${C.cyan("3.")}  Then ask the ${C.b("orchestrator")} agent to start.
+
+${C.dim("  Re-render after edits:")}   ${C.yellow("npm run sync")}   ${C.dim(`(from the ${kitName}/ folder)`)}
+${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or the README`);
 
   // Offer to open the visual board. `--yes` launches without asking; `--no-board` skips it.
   if (hasCockpit) {
