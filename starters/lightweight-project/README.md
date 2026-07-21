@@ -11,5 +11,5 @@ node /path/to/maestro/render/sync.mjs --project . --kit /path/to/maestro
 ```
 
 You get `.claude/agents/` (a minimal roster) and `.claude/skills/` (dev-setup, git-branch,
-worktree-cleanup, land-and-archive, gc, release-gate, security-review). Add more later by
+worktree-cleanup, land-and-archive, gc, release-gate, security-review, test-coverage). Add more later by
 editing `config.json` and re-rendering.

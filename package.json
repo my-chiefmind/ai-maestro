@@ -1,11 +1,11 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
   "author": "MyChiefMind <info@mychiefmind.com> (https://mychiefmind.com)",
-  "homepage": "https://github.com/my-chiefmind/ai-maestro#readme",
+  "homepage": "https://mychiefmind.com/ai-maestro",
   "bin": {
     "ai-maestro": "bin/cli.mjs",
     "maestro": "bin/cli.mjs"

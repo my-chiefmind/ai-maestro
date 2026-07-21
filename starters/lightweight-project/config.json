@@ -15,7 +15,8 @@
     "land-and-archive",
     "gc",
     "release-gate",
-    "security-review"
+    "security-review",
+    "test-coverage"
   ],
   "model": {
     "default": "sonnet",

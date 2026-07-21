@@ -17,6 +17,7 @@
     "delivery-hygiene",
     "release-gate",
     "security-review",
+    "test-coverage",
     "dev-setup",
     "git-branch",
     "worktree-cleanup",
