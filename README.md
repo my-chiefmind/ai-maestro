@@ -8,6 +8,13 @@
 
 <p align="center">Conduct a roster of AI coding agents against a work board.</p>
 
+**AI Maestro turns AI-assisted coding from improvised chat sessions into a managed delivery
+process.** Instead of one developer prompting one AI, a portfolio of specialized AI agents
+works a visible board of tasks — each task routed to the right agent and the right
+(cost-appropriate) model, executed in isolation, and quality-gated before it lands. The
+result: AI development that is trackable, parallelizable, and safe to hand off — the
+difference between hiring a freelancer and running a team.
+
 AI Maestro runs software delivery as an *orchestra* of AI agents instead of a single chat
 session. The idea in three sentences:
 
@@ -21,7 +28,7 @@ same way of working.
 
 ### How it flows
 
-![AI Maestro flow: the orchestrator reads board/data.json, picks the next unblocked ticket, and runs it through a plan → build → qa → merge pipeline inside an isolated git worktree, then lands and archives the ticket before moving to the next one](./cockpit/asset/flow-diagram.jpg)
+![AI Maestro flow: the orchestrator reads board/data.json, picks the next unblocked ticket, and runs it through a plan → build → qa → delivery gate → merge pipeline inside an isolated git worktree, with every stage on the ticket's effective model; it then lands and archives the ticket — one ticket per run, you review before starting the next](./cockpit/asset/flow-diagram.png)
 
 ## Why work this way
 
@@ -53,6 +60,14 @@ same way of working.
 
 ## Quickstart
 
+Three ways in — pick one:
+
+- **[Path 1 — Instant Setup with npx](#path-1--instant-setup-with-npx)**: run the questionnaire yourself, then do the [first steps](#first-steps-after-setup).
+- **[Path 2 — Hands-Free Onboarding with Claude Code](#path-2--hands-free-onboarding-with-claude-code)**: paste one prompt; Claude runs setup and fills things in for you.
+- **[Path 3 — Global Install or Git Clone](#path-3--global-install-or-git-clone)**: a permanent global install, or a git clone.
+
+### Path 1 — Instant Setup with npx
+
 One command in your project — no clone, no install:
 
 ```bash
@@ -65,7 +80,7 @@ into `./.claude/` at your repo root, then **asks if you'd like to open the visua
 no and nothing is left running). Now open the repo in Claude Code and ask the **`orchestrator`**
 agent to start; it picks up the first unblocked ticket and runs it.
 
-### Or let Claude Code onboard it for you
+### Path 2 — Hands-Free Onboarding with Claude Code
 
 Prefer not to run the questionnaire by hand? Open your project in
 [Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste this
@@ -98,8 +113,14 @@ Do NOT start executing tickets. Stop after setup so I can review — then
 I'll invoke the `orchestrator` agent myself.
 ```
 
+### Path 3 — Global Install or Git Clone
+
+#### Global install
+
 Prefer a permanent install? `npm i -g @mychiefmind/ai-maestro` gives you the CLI as both
 `ai-maestro` and the short **`maestro`** command.
+
+#### Git clone
 
 Prefer git? Cloning gives the identical layout:
 
@@ -109,6 +130,35 @@ git clone https://github.com/my-chiefmind/ai-maestro.git maestro
 cd maestro && npm run setup
 ```
 
+### First steps after setup
+
+Open your project in Claude Code and run these once, in order:
+
+1. **`/init`** — regenerates `CLAUDE.md` so Claude maps your actual codebase (stack,
+   conventions, how to run and test it).
+2. Once you've had a look at the board, prompt:
+
+   ```text
+   fill in maestro/context.md with the real project details
+   ```
+
+   `context.md` is the brief every agent reads — this replaces the placeholder with facts
+   drawn from your codebase.
+3. Then prompt:
+
+   ```text
+   clear the example tickets from the board
+   ```
+
+   The board ships with example tickets so you can see the format; this removes them so
+   you start from a clean board.
+
+### Going further
+
+Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+
+## The visual board (optional)
+
 **Want the visual board?** It's optional (the only part that runs a server) and ships with both
 paths — `npx setup` vendors it into your `maestro/` folder, and a clone has it too. `setup`
 offers to open it for you at the end; you can also start it any time:
@@ -116,8 +166,6 @@ offers to open it for you at the end; you can also start it any time:
 ```bash
 npm run board      # from the maestro/ folder — installs the cockpit's deps on first run, then → http://localhost:5273
 ```
-
-Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
 ## The core idea in one ticket
 

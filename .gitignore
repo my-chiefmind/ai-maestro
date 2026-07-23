@@ -16,3 +16,6 @@ npm-debug.log*
 .idea/
 .vscode/
 *.swp
+
+# Claude Code local runtime state (session locks, agent memory) — never committed from the kit
+.claude/
