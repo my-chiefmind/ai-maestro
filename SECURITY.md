@@ -87,10 +87,23 @@ design depends on it).
 | `bin/cli.mjs`, `render/`, `scripts/` | Nothing. No HTTP client, no `fetch`, no sockets. | — |
 | Cockpit data service (`cockpit/server/index.mjs`) | Binds `127.0.0.1:4600`. Listens only; never dials out. | While the board runs |
 | Cockpit UI (`cockpit/src/`) | Same-origin relative paths only (`/api/board`, `/api/config`, `/api/roster`, `/api/docs`, `/api/spec/*`). No absolute URLs. | While the board is open |
+| Your browser, rendering a doc | Whatever external image hosts that doc references. No shipped doc currently references any. | Only while the Docs tab shows such a doc |
 | Vite dev server | Serves `localhost:5273`, proxies `/api` → `localhost:4600`. | Dev only |
 | `npm ci` for the cockpit | Your configured npm registry. | First `npm run board` only |
 
 There is **no telemetry, no analytics, and no crash reporting**, and no plan to add any.
+
+One caveat, so that "no outbound calls" is not quietly an overstatement: rendered docs keep
+their external `<img>` URLs. `rewriteDocImages` rewrites only *relative* image sources to
+`/api/docs/asset` and deliberately leaves `http(s)://` ones untouched. Viewing a doc that
+references a remote image therefore makes your browser fetch it, revealing your IP and
+viewing time to that host.
+
+As of this version no doc in the kit references a remote image, so the Docs tab contacts
+nothing. But README badges are the obvious way that changes — adding a shields.io badge
+means anyone opening the Docs tab pings shields.io. If you add remote images to a doc, that
+is a deliberate choice to make, not an accident, and this section should be updated to name
+the hosts. Nothing in the kit sends data anywhere either way.
 
 The only host contacted in normal operation is your own npm registry, once, during the
 explicit first-run cockpit install. Any model-provider traffic comes from your AI coding

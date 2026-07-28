@@ -18,6 +18,12 @@ jobs:
       - name: Validate the example board
         run: node scripts/validate-board.mjs board/data.json
 
+      # The suite pins the install path's guarantees (no lifecycle hooks, npm ci not
+      # npm install, checksum-free vendoring) and the cockpit's exposure controls. It was
+      # not running in CI at all, so those guarantees were only ever checked by hand.
+      - name: Unit tests
+        run: npm test
+
       - name: Render a starter and check for drift
         run: |
           rm -rf /tmp/proj && mkdir -p /tmp/proj
@@ -48,7 +54,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      # Dogfoods the real installer rather than a second, looser copy of it: `npm install
+      # --no-audit` here would re-resolve ranges and quietly diverge from the lockfile the
+      # product installs from.
       - name: Install cockpit deps
-        run: npm --prefix cockpit install --no-audit --no-fund
-      - name: Type-check and build
-        run: npm --prefix cockpit run build
+        run: npm run cockpit:install
+      - name: Type-check (UI + server) and build
+        run: |
+          npm --prefix cockpit run typecheck
+          npm --prefix cockpit run build
+
+      # The server tests need cockpit deps present, so run them here rather than in the
+      # kit job, where they would silently skip.
+      - name: Cockpit server tests
+        run: npm test
