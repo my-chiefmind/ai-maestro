@@ -46,10 +46,13 @@ design depends on it).
 
 ### Two flags we deliberately do not pass
 
-- **`--ignore-scripts`** — the cockpit's toolchain (vite → esbuild) links a
-  platform-specific binary in a postinstall script. The UI cannot build without lifecycle
-  scripts, so disabling them would trade a working feature for no real gain: the lockfile
-  already pins exactly which packages get to run those scripts.
+- **`--ignore-scripts`** — not passed *yet*, and the reason is weaker than it looks. Exactly
+  one package in the pinned tree runs an install script: `fsevents`, which is dev-only,
+  optional, macOS-only, and degrades to polling-based file watching if it isn't built.
+  (esbuild ships platform binaries as optional dependencies, not via a postinstall.) So the
+  cost of `--ignore-scripts` is slower file watching on macOS, not a broken build. It is a
+  live candidate, tracked with the dependency-tree cleanup rather than asserted as
+  unnecessary here.
 - **`--no-audit`** — previously passed, now removed. `npm audit` is an advisory report; it
   never gated an install and suppressing it prevented nothing. It only hid information from
   the user, so it is gone. Expect audit output on first board start.
