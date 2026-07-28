@@ -169,6 +169,62 @@ test("spec ids cannot contain a path separator", { skip: SKIP }, async () => {
   }
 });
 
+// ── Raw-HTML neutering ──────────────────────────────────────────────────────────
+// The curated docs include agent-authored files (agents/*.md, skills/*/SKILL.md), so raw
+// HTML in a rendered doc is attacker-supplied content, not just prose. sanitize.mjs keeps
+// a token only when it matches a small anchored grammar exactly, and escapes it wholesale
+// otherwise. Unit-tested directly (the module is dependency-free, so no SKIP), then the
+// endpoint behaviour is pinned through a real render below.
+import { neuterRawHtml } from "../cockpit/server/sanitize.mjs";
+
+test("hostile raw HTML is escaped wholesale", () => {
+  const hostile = [
+    "<script>alert(1)</script>",
+    '<img src="x" onerror="alert(2)">',
+    '<a href="javascript:alert(3)">x</a>',
+    '<a href="jav&#x09;ascript:alert(4)">x</a>', // entity-smuggled scheme → & is rejected in URLs
+    '<a href="java\nscript:alert(5)">x</a>',     // whitespace-smuggled scheme
+    '<a href="data:text/html,<script>">x</a>',
+    '<a href="//attacker.example">x</a>',        // protocol-relative
+    "<details open>x</details>",                  // valueless attribute → outside the grammar
+    "<b>ok</b> then <img src=x onerror=alert(6)", // unclosed tag would swallow later markup
+    "<style>*{display:none}</style>",
+    "<!-- <script>alert(7)</script> -->",
+    "<iframe src=\"https://x\"></iframe>",
+  ];
+  for (const t of hostile) {
+    const out = neuterRawHtml(t);
+    assert.ok(!/<[a-zA-Z!/]/.test(out), `must not survive as markup: ${t} → ${out}`);
+  }
+});
+
+test("the raw HTML the shipped docs use is kept verbatim", () => {
+  const legit = [
+    '<p align="center">\n  <img src="./cockpit/asset/logo.png" alt="AI Maestro logo" width="160" />\n</p>',
+    '<h1 align="center">AI Maestro</h1>',
+    '<a href="#quickstart">Quickstart</a>',
+    '<a href="./LICENSE"><code>MIT</code></a>',
+    '<a href="https://example.com">docs</a>',
+    "<details>\n<summary><b>More views</b> — light theme &amp; the roster</summary>",
+    "<br/>",
+    "</details>",
+  ];
+  for (const t of legit) {
+    assert.equal(neuterRawHtml(t), t, `inert doc HTML must render, not escape: ${t}`);
+  }
+});
+
+test("a rendered doc keeps its inert HTML and nothing executable", { skip: SKIP }, async () => {
+  // README.md is the one shipped doc that uses raw HTML — its header must survive the
+  // neutering (regression guard: the allowlist must not silently gut the flagship doc).
+  const r = await get("/api/docs/render?path=README.md");
+  assert.equal(r.status, 200);
+  const { html } = await r.json();
+  assert.match(html, /<h1 align="center">AI Maestro<\/h1>/, "README header must still render");
+  assert.match(html, /<details>/, "the details gallery must still render");
+  assert.ok(!/<script\b/i.test(html), "no script may reach the response");
+});
+
 test("serves doc images, but strips their ability to run script", { skip: SKIP }, async () => {
   // SVG is XML that can carry <script>, and it executes when opened directly rather than
   // via <img>. The endpoint stays open to SVG, so the response must deny it privileges.

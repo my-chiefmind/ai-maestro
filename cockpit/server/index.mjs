@@ -34,6 +34,12 @@ import { resolve, dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { marked } from "marked";
 import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
+import { neuterRawHtml } from "./sanitize.mjs";
+
+// Raw HTML in a doc must not pass through to the UI's dangerouslySetInnerHTML untouched:
+// the rendered set includes agent-authored files (agents/*.md, skills/*/SKILL.md), so it
+// is script-injection surface, not just prose. See sanitize.mjs for the model.
+marked.use({ renderer: { html: ({ text }) => neuterRawHtml(text) } });
 
 /**
  * Board and config shapes are described loosely on purpose. `board/board.schema.json` and
@@ -437,8 +443,10 @@ function rewriteDocImages(html, docRel) {
 //
 // Now it serves only the curated set /api/docs already lists (the UI never asks for
 // anything else — it renders paths straight out of that response). Specs are not in it.
-// This does not make the renderer safe against hostile markdown; it stops the endpoint
-// from reaching the content most easily made hostile.
+// And since the curated set still includes agent-authored files (agents/, skills/), raw
+// HTML in any rendered doc is neutered before it reaches the response: kept verbatim only
+// when it matches sanitize.mjs's allowlist exactly, escaped wholesale otherwise (wired
+// into marked at the top of this file).
 app.get("/api/docs/render", (req, res) => {
   const rel = String(req.query.path || "");
   if (!listedDocPaths().has(rel)) return res.status(404).json({ error: "not found" });
