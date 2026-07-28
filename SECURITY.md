@@ -85,7 +85,7 @@ design depends on it).
 | Component | Contacts | When |
 | --- | --- | --- |
 | `bin/cli.mjs`, `render/`, `scripts/` | Nothing. No HTTP client, no `fetch`, no sockets. | — |
-| Cockpit data service (`cockpit/server/index.mjs`) | Binds `localhost:4600`. Listens only; never dials out. | While the board runs |
+| Cockpit data service (`cockpit/server/index.mjs`) | Binds `127.0.0.1:4600`. Listens only; never dials out. | While the board runs |
 | Cockpit UI (`cockpit/src/`) | Same-origin relative paths only (`/api/board`, `/api/config`, `/api/roster`, `/api/docs`, `/api/spec/*`). No absolute URLs. | While the board is open |
 | Vite dev server | Serves `localhost:5273`, proxies `/api` → `localhost:4600`. | Dev only |
 | `npm ci` for the cockpit | Your configured npm registry. | First `npm run board` only |
@@ -96,6 +96,35 @@ The only host contacted in normal operation is your own npm registry, once, duri
 explicit first-run cockpit install. Any model-provider traffic comes from your AI coding
 tool (Claude Code and similar) under your own credentials and configuration — this kit
 neither proxies nor observes it.
+
+### The cockpit service has no authentication
+
+That is deliberate — it is a single-developer tool on a single machine — but it means
+anything able to reach it can read the board, rewrite it, and read any doc in the kit. Three
+controls keep "able to reach it" honest:
+
+- **Loopback bind.** `127.0.0.1` only. It previously bound `0.0.0.0`, putting the API on
+  every interface; on a shared network that was reachable by anyone. `MAESTRO_HOST`
+  overrides this for container port-forwarding and logs a warning when it is not loopback.
+- **Host-header allowlist.** Requests must be addressed to `localhost`, `127.0.0.1`, or
+  `::1`; anything else gets a 403. Binding loopback alone does not stop **DNS rebinding** —
+  a hostile page can point a name it controls at `127.0.0.1` and then talk to the service
+  as same-origin, which bypasses CORS entirely. Matching is on hostname, ignoring port, so
+  Vite's dev proxy (which forwards the browser's `localhost:5273`) still works.
+- **Docs renderer allowlist.** `/api/docs/render` serves only the curated set `/api/docs`
+  advertises. It previously accepted any `.md` under the kit root, which included
+  `board/specs/*.md` — files the same service writes on request via `PUT /api/spec/:id`.
+  Since `marked` does not sanitise and the UI injects the result with
+  `dangerouslySetInnerHTML`, "write a spec, then ask for it to be rendered" ran script in
+  the cockpit's origin, and from there could rewrite the board that agents act on.
+
+**Residual risk, stated plainly:** the renderer is still unsanitised. The allowlist stops it
+reaching the content most easily made hostile, but the docs it does render — `agents/*.md`,
+`skills/*/SKILL.md` — are authored by AI agents in normal use. A prompt-injected agent that
+writes a `<script>` tag into an agent or skill file still gets script execution in the
+cockpit origin. Closing that properly needs HTML sanitisation, which means a new runtime
+dependency, and is tracked with the dependency-tree work rather than done quietly here.
+Doc images are served with `default-src 'none'; sandbox` so an SVG cannot carry script.
 
 ### On the "URL strings" scanner alert
 

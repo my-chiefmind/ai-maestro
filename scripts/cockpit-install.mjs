@@ -48,8 +48,17 @@ const ARGS = ["ci", "--no-fund"];
 
 function main() {
   if (!existsSync(COCKPIT)) {
-    // A kit vendored without the optional UI. Nothing to install; `board` will explain.
-    return 0;
+    // Returning 0 here would let `board` run and die inside npm with an error that names
+    // a missing prefix directory and explains nothing. Fail here, where we know why.
+    console.error(
+      "✗ There's no cockpit/ folder in this kit, so the visual board can't start.\n" +
+      "  `maestro setup` does not restore missing kit folders on a re-run — it stops at\n" +
+      "  \"already set up\". To get the UI back, copy cockpit/ from the package:\n" +
+      "      npm pack @mychiefmind/ai-maestro && tar -xzf mychiefmind-ai-maestro-*.tgz\n" +
+      "      cp -R package/cockpit ./cockpit\n" +
+      "  Everything else — agents, skills, the board, the CLI — works without it."
+    );
+    return 1;
   }
   // `--force` is how the explicit `npm run cockpit:install` re-syncs an existing tree; the
   // implicit `preboard` path never passes it, so starting the board can't silently reinstall.
