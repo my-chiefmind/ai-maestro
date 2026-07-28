@@ -159,6 +159,24 @@ test("only an explicit --force reinstalls over an existing tree", () => {
     "preboard must not force a reinstall; starting the board is not a request to re-resolve deps");
 });
 
+test("the committed lockfile satisfies `npm ci` with this machine's npm", () => {
+  // Catches gross drift between package.json and the lockfile, which is the common case.
+  //
+  // It does NOT prove the lockfile is good everywhere, and shouldn't be read that way.
+  // `npm install --package-lock-only` once wrote a truncated entry for
+  // @napi-rs/wasm-runtime — two of its three dependencies missing — that npm 11 accepted
+  // and npm 10.8.2 rejected with "Missing: @emnapi/core from lock file". Same platform,
+  // same lockfile, different answer. Forcing --os/--cpu does not reproduce it either;
+  // the variable is the npm version, so no local run can stand in for CI here.
+  //
+  // CI is the authoritative check. Keep its Node version pinned so which npm it uses is
+  // a decision rather than an accident.
+  const r = spawnSync("npm", ["ci", "--dry-run", "--no-fund"], {
+    cwd: join(KIT, "cockpit"), encoding: "utf8",
+  });
+  assert.equal(r.status, 0, `npm ci rejects the committed lockfile:\n${r.stderr || r.stdout}`);
+});
+
 test("the cockpit lockfile is committed and ships in the published tarball", () => {
   // `npm ci` on a user's machine is only reproducible if the lockfile actually reaches them.
   // npm strips a ROOT package-lock.json from tarballs but keeps nested ones; that behaviour

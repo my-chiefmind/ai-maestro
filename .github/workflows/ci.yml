@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22   # concurrently@10 requires >=22; also pins which npm validates the lockfile
 
       - name: Validate the example board
         run: node scripts/validate-board.mjs board/data.json
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22   # concurrently@10 requires >=22; also pins which npm validates the lockfile
       # Dogfoods the real installer rather than a second, looser copy of it: `npm install
       # --no-audit` here would re-resolve ranges and quietly diverge from the lockfile the
       # product installs from.
