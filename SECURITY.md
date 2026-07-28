@@ -15,7 +15,7 @@ when this package executes code, what it trusts, and what it talks to over the n
 | Outbound network calls? | ✅ **None at runtime** — no telemetry, analytics, or crash reporting. Your npm registry, once, on the first `npm run board` | [§2](#2-runtime-network-surface) |
 | Anything that shells out? | ⚠️ **One path** — the optional cockpit's `npm ci`, on explicit `npm run board` | [§1](#the-one-thing-that-does-shell-out) |
 | Is the cockpit service authenticated? | ⚠️ **No, deliberately** — loopback bind + host allowlist instead | [§2](#the-cockpit-service-has-no-authentication) |
-| Known residual risk? | ⚠️ **The docs renderer is unsanitised** — stated plainly, tracked | [§2](#the-cockpit-service-has-no-authentication) |
+| Known residual risk? | ⚠️ **The docs renderer's raw-HTML allowlist is minimal, not a full sanitiser** — unlisted HTML shows as text | [§2](#the-cockpit-service-has-no-authentication) |
 
 ### Contents
 
@@ -137,14 +137,14 @@ controls keep "able to reach it" honest:
 | **Loopback bind** | `127.0.0.1` only. `MAESTRO_HOST` overrides this for container port-forwarding and logs a warning when it is not loopback. | It previously bound `0.0.0.0`, putting the API on every interface; on a shared network that was reachable by anyone. |
 | **Host-header allowlist** | Requests must be addressed to `localhost`, `127.0.0.1`, or `::1`; anything else gets a 403. Matching is on hostname, ignoring port, so Vite's dev proxy (which forwards the browser's `localhost:5273`) still works. | Binding loopback alone does not stop **DNS rebinding** — a hostile page can point a name it controls at `127.0.0.1` and then talk to the service as same-origin, which bypasses CORS entirely. |
 | **Docs renderer allowlist** | `/api/docs/render` serves only the curated set `/api/docs` advertises. | It previously accepted any `.md` under the kit root, which included `board/specs/*.md` — files the same service writes on request via `PUT /api/spec/:id`. Since `marked` does not sanitise and the UI injects the result with `dangerouslySetInnerHTML`, "write a spec, then ask for it to be rendered" ran script in the cockpit's origin, and from there could rewrite the board that agents act on. |
+| **Raw-HTML neutering** | Raw HTML inside a rendered doc is kept only when it exactly matches a small tag/attribute allowlist (`cockpit/server/sanitize.mjs`); anything else — script, event handlers, unknown tags, URL schemes beyond http(s), malformed nesting — is escaped wholesale and shows as text. | The curated set includes `agents/*.md` and `skills/*/SKILL.md`, which AI agents author in normal use. A prompt-injected agent that wrote a `<script>` tag into one of them got script execution in the cockpit origin the next time the Docs tab rendered it. |
 
-> **Residual risk, stated plainly:** the renderer is still unsanitised. The allowlist stops it
-> reaching the content most easily made hostile, but the docs it does render — `agents/*.md`,
-> `skills/*/SKILL.md` — are authored by AI agents in normal use. A prompt-injected agent that
-> writes a `<script>` tag into an agent or skill file still gets script execution in the
-> cockpit origin. Closing that properly needs HTML sanitisation, which means a new runtime
-> dependency, and is tracked with the dependency-tree work rather than done quietly here.
-> Doc images are served with `default-src 'none'; sandbox` so an SVG cannot carry script.
+> **Residual risk, stated plainly:** the neutering is allow-exactly-or-escape, not a full
+> HTML sanitiser — it is sound because anything that fails its anchored grammar is escaped
+> wholesale, at the cost that legitimate-but-unlisted HTML in a doc shows as literal text
+> rather than rendering. The allowlist is deliberately the raw HTML the shipped docs
+> actually use. Doc images are served with `default-src 'none'; sandbox` so an SVG cannot
+> carry script.
 
 ### On the "URL strings" scanner alert
 
