@@ -36,7 +36,9 @@ jobs:
         run: |
           rm -rf /tmp/app && mkdir -p /tmp/app/src
           rsync -a --exclude .git --exclude node_modules ./ /tmp/app/maestro/
-          node /tmp/app/maestro/bin/cli.mjs setup --yes --name ci-app --areas backend,web
+          # --no-board: `setup --yes` would otherwise start the blocking board dev server
+          # (this hung the job for 6h once; the CLI also refuses to launch it without a TTY).
+          node /tmp/app/maestro/bin/cli.mjs setup --yes --no-board --name ci-app --areas backend,web
           test -d /tmp/app/.claude/agents      # rendered to the repo root, not into maestro/
           test -f /tmp/app/CLAUDE.md
           test ! -d /tmp/app/maestro/.claude   # must NOT render inside the kit folder
