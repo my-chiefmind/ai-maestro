@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 /**
  * AI Maestro cockpit data service.
  *
@@ -29,29 +30,67 @@ import express from "express";
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, statSync, readdirSync, rmSync,
 } from "fs";
-import { resolve, dirname, join } from "path";
+import { resolve, dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { marked } from "marked";
 import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
 
+/**
+ * Board and config shapes are described loosely on purpose. `board/board.schema.json` and
+ * `scripts/board-core.mjs` own that contract — restating it here would give us a second
+ * definition free to drift from the one the validator actually enforces. These typedefs
+ * cover only what this file reaches into.
+ *
+ * @typedef {Record<string, string>} Frontmatter  Parsed YAML frontmatter (flat string map).
+ * @typedef {{ epics?: object[], tickets?: object[] }} BoardFile  data.json / archive.json.
+ * @typedef {{
+ *   project?: { name?: string, areas?: string[] },
+ *   roster?: string[],
+ *   humanGates?: unknown[],
+ * }} MaestroConfig  The project's config.json, as far as the cockpit reads it.
+ *
+ * @typedef {{ key: string, label: string, files?: string[], dir?: string }} DocSectionDef
+ * @typedef {{ path: string, title: string }} DocFile  A doc the UI may list and render.
+ * @typedef {{ key: string, label: string, files: DocFile[] }} DocSection
+ */
+
 const __dir = dirname(fileURLToPath(import.meta.url));
 const COCKPIT = resolve(__dir, "..");
 const KIT_ROOT = resolve(COCKPIT, ".."); // the cockpit lives inside the kit
-const PORT = process.env.PORT || 4600;
+// Number(), not the raw env string: app.listen accepts both, but leaving it as a union
+// meant every use had to re-narrow it, and a non-numeric PORT silently became a pipe name.
+const PORT = Number(process.env.PORT) || 4600;
 const MAX_BACKUPS = 20;
 
+/** Narrow an unknown catch binding to something printable. */
+const errMessage = (/** @type {unknown} */ e) =>
+  e instanceof Error ? e.message : String(e);
+
+// Containment check for any path built from request input. Uses `sep` rather than a
+// hardcoded "/" because on Windows resolve() returns backslashes, so the "/" form never
+// matched and every docs request 404'd there — failing closed, but failing.
+const isInsideKit = (/** @type {string} */ abs) =>
+  abs === KIT_ROOT || abs.startsWith(KIT_ROOT + sep);
+
+/**
+ * Value of a `--flag <value>` argv pair.
+ * @param {string} flag
+ * @returns {string | null}
+ */
 function argValue(flag) {
   const i = process.argv.indexOf(flag);
-  return i !== -1 ? process.argv[i + 1] : null;
+  return i !== -1 ? process.argv[i + 1] ?? null : null;
 }
 
+/** @returns {string} absolute path to the board directory */
 function resolveBoardDir() {
+  /** @type {string[]} */
   const candidates = [
     argValue("--board"),
     process.env.MAESTRO_BOARD_DIR,
     resolve(COCKPIT, "..", "board"),
     resolve(process.cwd(), "board"),
-  ].filter(Boolean);
+  ].flatMap((c) => (typeof c === "string" && c.length > 0 ? [c] : []));
   for (const c of candidates) {
     if (existsSync(join(resolve(c), "data.json"))) return resolve(c);
   }
@@ -66,6 +105,13 @@ const BACKUPS = join(BOARD_DIR, ".backups");
 const SPECS = join(BOARD_DIR, "specs");
 const CONFIG = join(PROJECT_DIR, "config.json");
 
+/**
+ * Read and parse a JSON file, falling back on any error (missing, unreadable, malformed).
+ * @template T
+ * @param {string} p
+ * @param {T} fallback
+ * @returns {T}
+ */
 function readJSON(p, fallback) {
   try { return JSON.parse(readFileSync(p, "utf8")); }
   catch { return fallback; }
@@ -84,9 +130,14 @@ function stamp() {
 
 // The agent codes this project knows about, derived from config.roster (used for validation
 // and for the UI's agent_plan picker). Null when there's no config → skip the agent-code check.
+/** @returns {MaestroConfig | null} */
 function loadConfig() {
-  return existsSync(CONFIG) ? readJSON(CONFIG, null) : null;
+  return existsSync(CONFIG) ? readJSON(CONFIG, /** @type {MaestroConfig | null} */ (null)) : null;
 }
+/**
+ * @param {MaestroConfig | null} config
+ * @returns {string[] | null} agent codes the project's plans may use, or null if unknown
+ */
 function planStepsFromConfig(config) {
   if (!config?.roster) return null;
   const codes = config.roster.map(agentFileToCode).filter((c) => c !== "orchestrator");
@@ -102,19 +153,68 @@ function pruneBackups() {
   }
 }
 
-// Parse `name` and `description` out of a Markdown file's YAML frontmatter.
+/**
+ * Parse `name` and `description` out of a Markdown file's YAML frontmatter.
+ * @param {string} text
+ * @returns {Frontmatter} empty when the file has no frontmatter block
+ */
 function frontmatter(text) {
   const m = /^---\s*\n([\s\S]*?)\n---/.exec(text);
-  if (!m) return {};
+  const block = m?.[1];
+  if (!block) return {};
+  /** @type {Frontmatter} */
   const out = {};
-  for (const line of m[1].split("\n")) {
+  for (const line of block.split("\n")) {
     const kv = /^(\w+):\s*(.*)$/.exec(line.trim());
-    if (kv) out[kv[1]] = kv[2].replace(/^["']|["']$/g, "").trim();
+    // Both groups are non-optional in the pattern, so a match always has them; the guard
+    // is what tells the checker that, and costs nothing at runtime.
+    if (kv?.[1] !== undefined && kv[2] !== undefined) {
+      out[kv[1]] = kv[2].replace(/^["']|["']$/g, "").trim();
+    }
   }
   return out;
 }
 
 const app = express();
+
+// ── Localhost-only guard ────────────────────────────────────────────────────────
+// This service has no authentication: anything that can reach it can read the board,
+// rewrite it, and read any doc in the kit. That is acceptable for a tool bound to the
+// developer's own machine and not otherwise, so two things keep it there:
+//
+//   1. we listen on loopback (see app.listen at the bottom), so it is not exposed to
+//      the local network; and
+//   2. we check the Host header here, because binding loopback alone does NOT stop DNS
+//      rebinding — a hostile page can point a name it controls at 127.0.0.1 and then
+//      talk to us as same-origin, which sails past the browser's CORS check.
+//
+// Vite's dev proxy forwards the browser's Host (localhost:5273) unchanged, so matching
+// on hostname and ignoring the port covers both the proxied and direct cases.
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Hostname from a Host header, port and IPv6 brackets stripped.
+ * @param {string} hostHeader
+ * @returns {string | null} null when the header is absent or unparseable
+ */
+function hostnameOf(hostHeader) {
+  try {
+    return new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return null;
+  }
+}
+
+app.use((req, res, next) => {
+  const host = hostnameOf(req.headers.host ?? "");
+  // No Host header, or one naming anything but loopback: refuse. Deliberately terse —
+  // there is no legitimate caller here to help debug.
+  if (!host || !LOCAL_HOSTS.has(host)) {
+    return res.status(403).json({ error: "This service only accepts requests addressed to localhost." });
+  }
+  next();
+});
+
 app.use(express.json({ limit: "8mb" }));
 
 // ── Board ──────────────────────────────────────────────────────────────────────
@@ -181,7 +281,7 @@ app.put("/api/board", (req, res) => {
     writeFileSync(DATA, JSON.stringify({ epics, tickets }, null, 2) + "\n");
     res.json({ ok: true, version: boardVersion() });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(500).json({ error: errMessage(e) });
   }
 });
 
@@ -238,7 +338,7 @@ app.put("/api/spec/:id", (req, res) => {
     writeFileSync(join(SPECS, `${id}.md`), content);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(500).json({ error: errMessage(e) });
   }
 });
 
@@ -252,22 +352,33 @@ const DOC_SECTIONS = [
   { key: "skills", label: "Skills", dir: "skills" },
 ];
 
-// Title = first Markdown heading, else the frontmatter name, else the filename.
+/**
+ * Title = first Markdown heading, else the frontmatter name, else the filename.
+ * @param {string} abs absolute path to read
+ * @param {string} rel kit-relative path, used for the filename fallback
+ * @returns {string}
+ */
 function docTitle(abs, rel) {
   try {
     const text = readFileSync(abs, "utf8");
-    const h = /^#\s+(.+)$/m.exec(text);
-    if (h) return h[1].trim();
-    const html = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(text);
-    if (html) return html[1].replace(/<[^>]+>/g, "").trim();
-    const fm = /^---\s*\n[\s\S]*?\bname:\s*["']?([^"'\n]+)["']?/m.exec(text);
-    if (fm) return fm[1].trim();
+    const h = /^#\s+(.+)$/m.exec(text)?.[1];
+    if (h) return h.trim();
+    const html = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(text)?.[1];
+    if (html) return html.replace(/<[^>]+>/g, "").trim();
+    const fm = /^---\s*\n[\s\S]*?\bname:\s*["']?([^"'\n]+)["']?/m.exec(text)?.[1];
+    if (fm) return fm.trim();
   } catch { /* fall through */ }
-  return rel.split("/").pop();
+  // split() on a non-empty string always yields at least one element, but pop() is typed
+  // as possibly-undefined; `rel` is the sensible fallback and matches the intent.
+  return rel.split("/").pop() ?? rel;
 }
 
+/**
+ * @param {DocSectionDef} section
+ * @returns {DocFile[]} only files that exist, titled
+ */
 function sectionFiles(section) {
-  let rels = section.files ?? [];
+  let rels = [...(section.files ?? [])];
   if (section.dir) {
     const base = join(KIT_ROOT, section.dir);
     if (existsSync(base)) {
@@ -283,17 +394,29 @@ function sectionFiles(section) {
     .map((rel) => ({ path: rel, title: docTitle(join(KIT_ROOT, rel), rel) }));
 }
 
-app.get("/api/docs", (_req, res) => {
-  const sections = DOC_SECTIONS
+/** @returns {DocSection[]} the curated listing, empty sections dropped */
+function docSections() {
+  return DOC_SECTIONS
     .map((s) => ({ key: s.key, label: s.label, files: sectionFiles(s) }))
     .filter((s) => s.files.length);
-  res.json({ sections });
-});
+}
+
+// The exact set /api/docs advertises — and therefore the only set /api/docs/render will
+// render. Recomputed per request because the agents/ and skills/ sections are read from
+// disk and change as the project is re-rendered.
+const listedDocPaths = () => new Set(docSections().flatMap((s) => s.files.map((f) => f.path)));
+
+app.get("/api/docs", (_req, res) => res.json({ sections: docSections() }));
 
 // Rewrite relative <img src> in rendered docs to the image endpoint below. A doc's image
 // links are relative to the doc's own folder (e.g. README's "./cockpit/asset/logo.png"),
 // which the browser can't resolve from the SPA — so map each to /api/docs/asset?path=<rel>.
 // External (http/https/protocol-relative), data:, and already-absolute-api srcs are left alone.
+/**
+ * @param {string} html rendered doc HTML
+ * @param {string} docRel kit-relative path of the doc, so relative srcs resolve correctly
+ * @returns {string}
+ */
 function rewriteDocImages(html, docRel) {
   const docDir = dirname(docRel);
   return html.replace(/(<img\b[^>]*?\bsrc=")([^"]+)(")/gi, (m, pre, src, post) => {
@@ -303,17 +426,35 @@ function rewriteDocImages(html, docRel) {
   });
 }
 
+// Renders to HTML that the UI injects with dangerouslySetInnerHTML, and `marked` does no
+// sanitising (it dropped its sanitizer years ago), so whatever markdown this reads becomes
+// script in the cockpit's origin. Which files it will read therefore matters a lot.
+//
+// It used to accept ANY .md under the kit root. That included board/specs/*.md — files
+// this same service writes on request via PUT /api/spec/:id, and that agents author. So
+// "write a spec, then ask for it to be rendered" was a way to run script here, and from
+// there rewrite the board that agents act on.
+//
+// Now it serves only the curated set /api/docs already lists (the UI never asks for
+// anything else — it renders paths straight out of that response). Specs are not in it.
+// This does not make the renderer safe against hostile markdown; it stops the endpoint
+// from reaching the content most easily made hostile.
 app.get("/api/docs/render", (req, res) => {
   const rel = String(req.query.path || "");
+  if (!listedDocPaths().has(rel)) return res.status(404).json({ error: "not found" });
   const abs = resolve(join(KIT_ROOT, rel));
-  // Path-allowlist: must resolve inside the kit and be a Markdown file that exists.
-  if (!abs.startsWith(KIT_ROOT + "/") || !abs.endsWith(".md") || !existsSync(abs)) {
+  // Belt and braces: the listing is built from the kit root, so this should never fail —
+  // but the check is cheap and keeps the guarantee local to the handler that reads the file.
+  if (!isInsideKit(abs) || !abs.endsWith(".md") || !existsSync(abs)) {
     return res.status(404).json({ error: "not found" });
   }
   try {
-    res.json({ path: rel, html: rewriteDocImages(marked.parse(readFileSync(abs, "utf8")), rel) });
+    // `async: false` pins the synchronous overload — marked's return type is
+    // string | Promise<string>, and the response builds the HTML inline.
+    const html = marked.parse(readFileSync(abs, "utf8"), { async: false });
+    res.json({ path: rel, html: rewriteDocImages(html, rel) });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(500).json({ error: errMessage(e) });
   }
 });
 
@@ -321,9 +462,13 @@ app.get("/api/docs/render", (req, res) => {
 app.get("/api/docs/asset", (req, res) => {
   const rel = String(req.query.path || "");
   const abs = resolve(join(KIT_ROOT, rel));
-  if (!abs.startsWith(KIT_ROOT + "/") || !/\.(png|jpe?g|gif|svg|webp|ico|avif)$/i.test(abs) || !existsSync(abs)) {
+  if (!isInsideKit(abs) || !/\.(png|jpe?g|gif|svg|webp|ico|avif)$/i.test(abs) || !existsSync(abs)) {
     return res.status(404).end();
   }
+  // SVG is XML that may carry <script>, and it executes if the file is opened directly
+  // rather than via <img>. This endpoint stays open to SVG because docs legitimately use
+  // it, so deny the asset any privileges of its own instead.
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
   res.sendFile(abs);
 });
 
@@ -334,8 +479,17 @@ if (existsSync(DIST)) {
   app.get(/.*/, (_req, res) => res.sendFile(join(DIST, "index.html")));
 }
 
-app.listen(PORT, () => {
+// Loopback only. `app.listen(PORT)` binds 0.0.0.0, which put an unauthenticated read/write
+// API on every interface — reachable by anyone sharing the network. Override only if you
+// know why you need it (container port-forwarding is the usual reason).
+const HOST = process.env.MAESTRO_HOST || "127.0.0.1";
+
+app.listen(PORT, HOST, () => {
   console.log(`AI Maestro cockpit data service on http://localhost:${PORT}`);
+  if (!LOCAL_HOSTS.has(HOST)) {
+    console.log(`  ⚠ MAESTRO_HOST=${HOST} — this API has no authentication and is now`);
+    console.log(`    reachable beyond this machine. Requests must still be addressed to localhost.`);
+  }
   console.log(`Board: ${BOARD_DIR}`);
   if (!existsSync(DATA)) console.log(`  ⚠ no data.json found there yet.`);
 });

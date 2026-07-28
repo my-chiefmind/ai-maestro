@@ -1,0 +1,34 @@
+{
+  // Type-checks the data service, which is plain ESM JavaScript and always will be — the
+  // kit is dependency-free and vendored into users' repos to run directly under `node`,
+  // so nothing here may require a build step. JSDoc annotations + checkJs give us the
+  // checking without changing what ships.
+  //
+  // Separate from tsconfig.json because that one compiles the React UI (include: ["src"])
+  // and emits; this one only checks and emits nothing.
+  //
+  // Run: npm run typecheck  (from cockpit/)
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+
+    "allowJs": true,
+    // Deliberately false, with `// @ts-check` opting individual files in instead. The
+    // service imports ../scripts/board-core.mjs, which belongs to the dependency-free kit
+    // and is shared with the CLI; a blanket checkJs pulls it into this program and reports
+    // 28 errors in a file that has nothing to do with the cockpit. Per-file opt-in keeps
+    // the boundary where it belongs — board-core is still read for inference, just not
+    // error-checked here.
+    "checkJs": false,
+    "noEmit": true,
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true
+  },
+  "include": ["server/**/*.mjs"]
+}

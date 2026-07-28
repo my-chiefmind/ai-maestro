@@ -8,19 +8,39 @@
 
 <p align="center">Conduct a roster of AI coding agents against a work board.</p>
 
-**AI Maestro turns AI-assisted coding from improvised chat sessions into a managed delivery
-process.** Instead of one developer prompting one AI, a portfolio of specialized AI agents
-works a visible board of tasks — each task routed to the right agent and the right
-(cost-appropriate) model, executed in isolation, and quality-gated before it lands. The
-result: AI development that is trackable, parallelizable, and safe to hand off — the
-difference between hiring a freelancer and running a team.
+<p align="center">
+  <code>npm&nbsp;@mychiefmind/ai-maestro</code> ·
+  <code>Node&nbsp;18+</code> ·
+  <code>0&nbsp;runtime&nbsp;deps</code> ·
+  <a href="./LICENSE"><code>MIT</code></a> ·
+  <a href="./SECURITY.md"><code>Security</code></a>
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#whats-in-the-box">What's in the box</a> ·
+  <a href="#the-visual-board-optional">Visual board</a> ·
+  <a href="#how-it-sits-in-your-project">Project layout</a> ·
+  <a href="./docs/GETTING-STARTED.md">Docs</a>
+</p>
+
+---
+
+> **AI Maestro turns AI-assisted coding from improvised chat sessions into a managed
+> delivery process.** Instead of one developer prompting one AI, a portfolio of specialized
+> AI agents works a visible board of tasks — each task routed to the right agent and the
+> right (cost-appropriate) model, executed in isolation, and quality-gated before it lands.
+> The result: AI development that is trackable, parallelizable, and safe to hand off — the
+> difference between hiring a freelancer and running a team.
 
 AI Maestro runs software delivery as an *orchestra* of AI agents instead of a single chat
 session. The idea in three sentences:
 
-1. You keep a **board** of epics and tickets.
-2. Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on.
-3. An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it — **one ticket per run**, so you stay in the loop between tickets.
+| # | The idea |
+| :--: | --- |
+| **1** | You keep a **board** of epics and tickets. |
+| **2** | Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on. |
+| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it — **one ticket per run**, so you stay in the loop between tickets. |
 
 It's the distilled, product-neutral version of a system I've been running across a
 multi-repo portfolio for months. This repo shares the structure so you can adopt the
@@ -32,17 +52,13 @@ same way of working.
 
 ## Why work this way
 
-- **The board is the source of truth, not the chat.** Work survives context resets,
-  handoffs, and parallel sessions because it lives in `board/data.json`, not in a
-  conversation you'll lose.
-- **The right agent and model per task.** A one-line CSS fix and a database migration
-  should not run on the same model or the same prompt. Tickets route themselves.
-- **Pipelines, not heroics.** Every ticket flows plan → build → review → merge. Review
-  and delivery gates are structural, not something you remember to do.
-- **Isolated by construction.** Each ticket runs in its own git worktree, so parallel
-  work never collides and a bad branch never dirties `main`.
-- **Reusable skills.** Git branch conventions, worktree cleanup, landing a change,
-  catching up a stale checkout, validating the board — packaged once, used everywhere.
+| Principle | What it buys you |
+| --- | --- |
+| **The board is the source of truth, not the chat.** | Work survives context resets, handoffs, and parallel sessions because it lives in `board/data.json`, not in a conversation you'll lose. |
+| **The right agent and model per task.** | A one-line CSS fix and a database migration should not run on the same model or the same prompt. Tickets route themselves. |
+| **Pipelines, not heroics.** | Every ticket flows plan → build → review → merge. Review and delivery gates are structural, not something you remember to do. |
+| **Isolated by construction.** | Each ticket runs in its own git worktree, so parallel work never collides and a bad branch never dirties `main`. |
+| **Reusable skills.** | Git branch conventions, worktree cleanup, landing a change, catching up a stale checkout, validating the board — packaged once, used everywhere. |
 
 ## What's in the box
 
@@ -57,14 +73,15 @@ same way of working.
 | [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` (questionnaire onboarding), `sync`, `validate`, `init` |
 | [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
 
-
 ## Quickstart
 
 Three ways in — pick one:
 
-- **[Path 1 — Instant Setup with npx](#path-1--instant-setup-with-npx)**: run the questionnaire yourself, then do the [first steps](#first-steps-after-setup).
-- **[Path 2 — Hands-Free Onboarding with Claude Code](#path-2--hands-free-onboarding-with-claude-code)**: paste one prompt; Claude runs setup and fills things in for you.
-- **[Path 3 — Global Install or Git Clone](#path-3--global-install-or-git-clone)**: a permanent global install, or a git clone.
+| Path | What it is | Command |
+| --- | --- | --- |
+| **[1 — Instant Setup with npx](#path-1--instant-setup-with-npx)** | Run the questionnaire yourself, then do the [first steps](#first-steps-after-setup). | `npx @mychiefmind/ai-maestro setup` |
+| **[2 — Hands-Free Onboarding with Claude Code](#path-2--hands-free-onboarding-with-claude-code)** | Paste one prompt; Claude runs setup and fills things in for you. | *(the prompt is below)* |
+| **[3 — Global Install or Git Clone](#path-3--global-install-or-git-clone)** | A permanent global install, or a git clone. | `npm i -g @mychiefmind/ai-maestro` |
 
 ### Path 1 — Instant Setup with npx
 
@@ -120,6 +137,10 @@ I'll invoke the `orchestrator` agent myself.
 Prefer a permanent install? `npm i -g @mychiefmind/ai-maestro` gives you the CLI as both
 `ai-maestro` and the short **`maestro`** command.
 
+```bash
+npm i -g @mychiefmind/ai-maestro
+```
+
 #### Git clone
 
 Prefer git? Cloning gives the identical layout:
@@ -134,28 +155,15 @@ cd maestro && npm run setup
 
 Open your project in Claude Code and run these once, in order:
 
-1. **`/init`** — regenerates `CLAUDE.md` so Claude maps your actual codebase (stack,
-   conventions, how to run and test it).
-2. Once you've had a look at the board, prompt:
-
-   ```text
-   fill in maestro/context.md with the real project details
-   ```
-
-   `context.md` is the brief every agent reads — this replaces the placeholder with facts
-   drawn from your codebase.
-3. Then prompt:
-
-   ```text
-   clear the example tickets from the board
-   ```
-
-   The board ships with example tickets so you can see the format; this removes them so
-   you start from a clean board.
+| Step | Do this | Why |
+| :--: | --- | --- |
+| **1** | **`/init`** | Regenerates `CLAUDE.md` so Claude maps your actual codebase (stack, conventions, how to run and test it). |
+| **2** | Once you've had a look at the board, prompt:<br/>`fill in maestro/context.md with the real project details` | `context.md` is the brief every agent reads — this replaces the placeholder with facts drawn from your codebase. |
+| **3** | Then prompt:<br/>`clear the example tickets from the board` | The board ships with example tickets so you can see the format; this removes them so you start from a clean board. |
 
 ### Going further
 
-Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+> Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
 ## The visual board (optional)
 
@@ -207,8 +215,15 @@ my-app/
 └── CLAUDE.md                  ← GENERATED — project brief
 ```
 
-**You'll need:** git, Node.js 18+, and an agentic coding tool that can run subagents
-([Claude Code](https://claude.com/claude-code) or compatible). Setup is the single command from
+**You'll need:**
+
+| Requirement | Notes |
+| --- | --- |
+| git | — |
+| Node.js 18+ | — |
+| An agentic coding tool that can run subagents | [Claude Code](https://claude.com/claude-code) or compatible |
+
+Setup is the single command from
 the [Quickstart](#quickstart) — `cd maestro && npm run setup` — then invoke the
 **`orchestrator`** agent from your coding tool at the repo root.
 
@@ -237,7 +252,9 @@ board while you're looking at it, the console reloads instead of overwriting the
 ![The AI Maestro cockpit — board view](./cockpit/asset/board-dark.png)
 
 <details>
-<summary>More views — light theme &amp; the roster</summary>
+<summary><b>More views</b> — light theme &amp; the roster</summary>
+
+<br/>
 
 | Board (light) | Roster (agents &amp; skills) |
 | --- | --- |
@@ -251,8 +268,8 @@ cd maestro && npm run board   # installs the cockpit's deps if needed, then → 
 
 ## Status
 
-Early and evolving — the structure is battle-tested; the packaging is new. Issues and
-ideas welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+> Early and evolving — the structure is battle-tested; the packaging is new. Issues and
+> ideas welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## License
 

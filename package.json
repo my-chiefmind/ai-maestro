@@ -1,6 +1,6 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.1.10",
+  "version": "0.1.13",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
@@ -24,6 +24,7 @@
     "!cockpit/dist",
     "!cockpit/.backups",
     "docs",
+    "SECURITY.md",
     "VERSION"
   ],
   "engines": {
@@ -32,14 +33,15 @@
   "scripts": {
     "prepublishOnly": "node scripts/validate-board.mjs board/data.json",
     "test": "node --test test/*.test.mjs",
+    "typecheck": "npm --prefix cockpit run typecheck",
     "setup": "node bin/cli.mjs setup",
     "init": "node bin/cli.mjs init",
     "validate": "node scripts/validate-board.mjs board/data.json",
     "sync": "node render/sync.mjs --project .",
     "dev": "npm run board",
-    "preboard": "node -e \"require('fs').existsSync('cockpit/node_modules')||require('child_process').execSync('npm --prefix cockpit install --no-audit --no-fund',{stdio:'inherit'})\"",
+    "preboard": "node scripts/cockpit-install.mjs",
     "board": "npm --prefix cockpit run dev",
-    "cockpit:install": "npm --prefix cockpit install"
+    "cockpit:install": "node scripts/cockpit-install.mjs --force"
   },
   "keywords": [
     "ai-agents",

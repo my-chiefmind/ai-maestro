@@ -22,7 +22,7 @@ Or run it directly from here:
 
 ```bash
 cd cockpit
-npm install
+npm ci          # installs exactly what package-lock.json pins
 
 # dev (two processes: data service on :4600, Vite UI on :5273)
 npm run dev

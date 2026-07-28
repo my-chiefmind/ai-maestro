@@ -10,13 +10,19 @@ jobs:
     name: Kit (validate + render + init)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22   # concurrently@10 requires >=22; also pins which npm validates the lockfile
 
       - name: Validate the example board
         run: node scripts/validate-board.mjs board/data.json
+
+      # The suite pins the install path's guarantees (no lifecycle hooks, npm ci not
+      # npm install, checksum-free vendoring) and the cockpit's exposure controls. It was
+      # not running in CI at all, so those guarantees were only ever checked by hand.
+      - name: Unit tests
+        run: npm test
 
       - name: Render a starter and check for drift
         run: |
@@ -30,7 +36,9 @@ jobs:
         run: |
           rm -rf /tmp/app && mkdir -p /tmp/app/src
           rsync -a --exclude .git --exclude node_modules ./ /tmp/app/maestro/
-          node /tmp/app/maestro/bin/cli.mjs setup --yes --name ci-app --areas backend,web
+          # --no-board: `setup --yes` would otherwise start the blocking board dev server
+          # (this hung the job for 6h once; the CLI also refuses to launch it without a TTY).
+          node /tmp/app/maestro/bin/cli.mjs setup --yes --no-board --name ci-app --areas backend,web
           test -d /tmp/app/.claude/agents      # rendered to the repo root, not into maestro/
           test -f /tmp/app/CLAUDE.md
           test ! -d /tmp/app/maestro/.claude   # must NOT render inside the kit folder
@@ -44,11 +52,21 @@ jobs:
     name: Cockpit (typecheck + build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22   # concurrently@10 requires >=22; also pins which npm validates the lockfile
+      # Dogfoods the real installer rather than a second, looser copy of it: `npm install
+      # --no-audit` here would re-resolve ranges and quietly diverge from the lockfile the
+      # product installs from.
       - name: Install cockpit deps
-        run: npm --prefix cockpit install --no-audit --no-fund
-      - name: Type-check and build
-        run: npm --prefix cockpit run build
+        run: npm run cockpit:install
+      - name: Type-check (UI + server) and build
+        run: |
+          npm --prefix cockpit run typecheck
+          npm --prefix cockpit run build
+
+      # The server tests need cockpit deps present, so run them here rather than in the
+      # kit job, where they would silently skip.
+      - name: Cockpit server tests
+        run: npm test

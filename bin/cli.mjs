@@ -64,7 +64,7 @@ function vendorKit(dest) {
       setup: "node bin/cli.mjs setup",
       sync: "node render/sync.mjs --project .",
       validate: "node scripts/validate-board.mjs board/data.json",
-      preboard: "node -e \"require('fs').existsSync('cockpit/node_modules')||require('child_process').execSync('npm --prefix cockpit install --no-audit --no-fund',{stdio:'inherit'})\"",
+      preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
     },
   };
@@ -285,12 +285,12 @@ ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or t
 
   // Offer to open the visual board. `--yes` launches without asking; `--no-board` skips it.
   if (hasCockpit) {
-    // Launch only on an explicit yes: `--yes`, or an interactive "Y" at the prompt. A
-    // non-interactive run (no TTY) without `--yes` never auto-starts the blocking server.
-    const wantsBoard = has(args, "no-board") ? false
+    // Launch only in a terminal: the server blocks until Ctrl+C, so a run without a TTY
+    // (CI, scripts) must never start it — even with `--yes`, which otherwise means
+    // "launch without asking".
+    const wantsBoard = has(args, "no-board") || !process.stdin.isTTY ? false
       : yes ? true
-      : process.stdin.isTTY ? await askYesNo("Open the visual board now?", true)
-      : false;
+      : await askYesNo("Open the visual board now?", true);
     if (wantsBoard) {
       launchBoard(kit, kitName);
     } else {
