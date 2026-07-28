@@ -64,7 +64,7 @@ function vendorKit(dest) {
       setup: "node bin/cli.mjs setup",
       sync: "node render/sync.mjs --project .",
       validate: "node scripts/validate-board.mjs board/data.json",
-      preboard: "node -e \"require('fs').existsSync('cockpit/node_modules')||require('child_process').execSync('npm --prefix cockpit install --no-audit --no-fund',{stdio:'inherit'})\"",
+      preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
     },
   };
