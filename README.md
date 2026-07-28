@@ -52,13 +52,13 @@ same way of working.
 
 ## Why work this way
 
-| | Principle | What it buys you |
-| :--: | --- | --- |
-| 📋 | **The board is the source of truth, not the chat.** | Work survives context resets, handoffs, and parallel sessions because it lives in `board/data.json`, not in a conversation you'll lose. |
-| 🎯 | **The right agent and model per task.** | A one-line CSS fix and a database migration should not run on the same model or the same prompt. Tickets route themselves. |
-| 🔁 | **Pipelines, not heroics.** | Every ticket flows plan → build → review → merge. Review and delivery gates are structural, not something you remember to do. |
-| 📦 | **Isolated by construction.** | Each ticket runs in its own git worktree, so parallel work never collides and a bad branch never dirties `main`. |
-| 🧰 | **Reusable skills.** | Git branch conventions, worktree cleanup, landing a change, catching up a stale checkout, validating the board — packaged once, used everywhere. |
+| Principle | What it buys you |
+| --- | --- |
+| **The board is the source of truth, not the chat.** | Work survives context resets, handoffs, and parallel sessions because it lives in `board/data.json`, not in a conversation you'll lose. |
+| **The right agent and model per task.** | A one-line CSS fix and a database migration should not run on the same model or the same prompt. Tickets route themselves. |
+| **Pipelines, not heroics.** | Every ticket flows plan → build → review → merge. Review and delivery gates are structural, not something you remember to do. |
+| **Isolated by construction.** | Each ticket runs in its own git worktree, so parallel work never collides and a bad branch never dirties `main`. |
+| **Reusable skills.** | Git branch conventions, worktree cleanup, landing a change, catching up a stale checkout, validating the board — packaged once, used everywhere. |
 
 ## What's in the box
 
@@ -163,7 +163,7 @@ Open your project in Claude Code and run these once, in order:
 
 ### Going further
 
-> 📚 Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+> Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
 ## The visual board (optional)
 

@@ -5,12 +5,12 @@
 
 ## Good contributions
 
-| | Area | What lands well |
-| :--: | --- | --- |
-| 🧰 | **New reusable skills** | That are genuinely product-neutral (git/CI/release/hygiene). |
-| 🎭 | **Agent-roster improvements** | Clearer role boundaries, better handoff contracts. |
-| 🔧 | **Renderer / schema fixes** | And validation coverage. |
-| 📚 | **Docs** | Clearer explanations of the method, more worked examples. |
+| Area | What lands well |
+| --- | --- |
+| **New reusable skills** | That are genuinely product-neutral (git/CI/release/hygiene). |
+| **Agent-roster improvements** | Clearer role boundaries, better handoff contracts. |
+| **Renderer / schema fixes** | And validation coverage. |
+| **Docs** | Clearer explanations of the method, more worked examples. |
 
 ## Ground rules
 
