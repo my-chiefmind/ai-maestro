@@ -19,7 +19,8 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
    (one ticket per run). Do not run parallel orchestrators against the same board without
    external coordination; two runs can claim the same ticket. If you already see a ticket
    `in-progress`, assume another run owns it and skip it.
-4. **Isolate**: create a git worktree + branch for the ticket (see the `git-branch` skill).
+4. **Isolate**: create a git worktree + branch for the ticket and bring its dependencies with
+   it (see the `git-branch` and `worktree-cleanup` skills).
 5. **Resolve, then run the plan.** Two things are computed from policy, not taken literally:
    - **Effective model** = the **stronger** of the ticket's `model` and its area's floor (see
      the *Model policy* in `CLAUDE.md`). Run every stage on the effective model.

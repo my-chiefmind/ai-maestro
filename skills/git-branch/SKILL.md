@@ -26,10 +26,13 @@ docs/T-030-getting-started
 
 1. **Never work on `main` directly.** If you find yourself on `main` with changes, branch
    first (see below), then continue.
-2. Branch from an **up-to-date** `main`:
+2. Branch from an **up-to-date** default branch. Resolve it — don't hardcode `origin/main`;
+   plenty of repos default to `master` (or something else) and a hardcoded ref fails on them:
    ```bash
    git fetch origin
-   git switch -c feat/T-014-rate-limit-api origin/main
+   git remote set-head origin -a   # in case the clone skipped setting origin/HEAD
+   default_branch=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's@^origin/@@')
+   git switch -c feat/T-014-rate-limit-api "origin/$default_branch"
    ```
    (Under the orchestrator this happens inside a fresh worktree — see the `worktree-cleanup`
    skill.)
@@ -46,5 +49,6 @@ docs/T-030-getting-started
 
 ## Before pushing
 
-- Rebase onto the latest `main` if it moved (`git fetch && git rebase origin/main`), resolve
-  conflicts locally, and re-run the release gate before you push the resolution.
+- Rebase onto the latest default branch if it moved (`git fetch && git rebase origin/$default_branch`,
+  resolved the same way as above — don't hardcode `origin/main`), resolve conflicts locally,
+  and re-run the release gate before you push the resolution.
