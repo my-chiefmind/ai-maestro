@@ -22,6 +22,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,7 +111,16 @@ function runService({ env = {}, args = [], settle = 2500 } = {}) {
 // PORT moves the search's starting point, which is all these need.
 const SVC = BASE + 10;
 
-test("PORT is where the search starts, not where it must land", async () => {
+// index.mjs imports express/marked from cockpit/node_modules, which the Kit CI job never
+// installs (the Cockpit job does). Skip rather than fail — but loudly, so a green run on a
+// machine without them can't be mistaken for coverage. Matches cockpit-server.test.mjs.
+// The ports.mjs tests above need none of this: it is dependency-free, so they always run.
+const SKIP = existsSync(join(COCKPIT, "node_modules"))
+  ? false
+  : "cockpit deps not installed — run `npm run cockpit:install` to exercise these";
+if (SKIP) console.error(`\n⚠ cockpit-ports service tests SKIPPED: ${SKIP}\n`);
+
+test("PORT is where the search starts, not where it must land", { skip: SKIP }, async () => {
   const { out } = await holding(SVC, "127.0.0.1", () =>
     runService({ env: { PORT: String(SVC) } })
   );
@@ -118,7 +128,7 @@ test("PORT is where the search starts, not where it must land", async () => {
   assert.match(out, new RegExp(`${SVC} was busy`));
 });
 
-test("--port pins exactly, and fails rather than drifting off Vite's proxy target", async () => {
+test("--port pins exactly, and fails rather than drifting off Vite's proxy target", { skip: SKIP }, async () => {
   const { out, code } = await holding(SVC, "127.0.0.1", () =>
     runService({ args: ["--port", String(SVC)] })
   );
@@ -127,7 +137,7 @@ test("--port pins exactly, and fails rather than drifting off Vite's proxy targe
   assert.equal(code, 1, "must exit non-zero, or concurrently -k reads it as a clean stop");
 });
 
-test("a non-numeric port is rejected, not turned into a named pipe", async () => {
+test("a non-numeric port is rejected, not turned into a named pipe", { skip: SKIP }, async () => {
   const viaEnv = await runService({ env: { PORT: "abc" } });
   assert.match(viaEnv.out, /PORT="abc" is not a port number/);
   assert.equal(viaEnv.code, 1);
