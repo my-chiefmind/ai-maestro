@@ -38,10 +38,32 @@ jobs:
           rsync -a --exclude .git --exclude node_modules ./ /tmp/app/maestro/
           # --no-board: `setup --yes` would otherwise start the blocking board dev server
           # (this hung the job for 6h once; the CLI also refuses to launch it without a TTY).
-          node /tmp/app/maestro/bin/cli.mjs setup --yes --no-board --name ci-app --areas backend,web
+          node /tmp/app/maestro/bin/cli.mjs setup --yes --no-board --name ci-app --areas backend,web \
+            --outcome "An internal reporting API." --users "Ops analysts." \
+            --stack "Node + Postgres" --constraints "No prod access from dev." \
+            --run "npm run dev" --test "npm test"
           test -d /tmp/app/.claude/agents      # rendered to the repo root, not into maestro/
           test -f /tmp/app/CLAUDE.md
           test ! -d /tmp/app/maestro/.claude   # must NOT render inside the kit folder
+          test -d /tmp/app/.git                # setup initializes a repo (tickets run in worktrees)
+          # The brief is written from the answers, and an exact command is rendered as one.
+          grep -q "An internal reporting API." /tmp/app/maestro/context.md
+          grep -q '| backend | `npm test` |' /tmp/app/maestro/context.md
+          ! grep -q "Open questions" /tmp/app/maestro/context.md  # nothing left unanswered
+
+      - name: setup smoke test (unanswered brief becomes open questions)
+        run: |
+          rm -rf /tmp/app2 && mkdir -p /tmp/app2
+          rsync -a --exclude .git --exclude node_modules ./ /tmp/app2/maestro/
+          node /tmp/app2/maestro/bin/cli.mjs setup --yes --no-board --name ci-app2 --areas backend
+          # Every skipped answer is recorded as an open question rather than a silent blank.
+          grep -q "## Open questions" /tmp/app2/maestro/context.md
+          grep -q "\*\*Product outcome\*\*" /tmp/app2/maestro/context.md
+          # The /project-plan and /orchestrator entry points must land at the repo root, where
+          # the coding tool picks them up as slash commands.
+          test -f /tmp/app2/.claude/skills/project-plan/SKILL.md
+          test -f /tmp/app2/.claude/skills/orchestrator/SKILL.md
+          test -f /tmp/app2/.claude/agents/orchestrator.md   # the agent that holds the loop
 
       - name: init smoke test (separate-capsule flow)
         run: |

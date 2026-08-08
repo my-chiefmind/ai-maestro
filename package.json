@@ -1,6 +1,6 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.1.14",
+  "version": "0.1.17",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "prepublishOnly": "node scripts/validate-board.mjs board/data.json",
+    "prepublishOnly": "node scripts/validate-board.mjs board/data.json && node scripts/sync-version.mjs --check",
+    "version": "node scripts/sync-version.mjs && git add VERSION",
     "test": "node --test test/*.test.mjs",
     "typecheck": "npm --prefix cockpit run typecheck",
     "setup": "node bin/cli.mjs setup",

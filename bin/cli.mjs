@@ -84,35 +84,179 @@ function run(scriptRel, args, root = KIT_ROOT) {
   return r.status ?? 1;
 }
 
-// Prompt on a TTY, resolving to the raw answer. Resolves "" if stdin hits EOF (e.g. piped
-// input) so an awaiting caller never hangs.
-function prompt(rl, question) {
+// One readline interface for the whole questionnaire, opened on first use. Opening and closing
+// one per question drops input that readline had already buffered, which a multi-question run
+// hits immediately when answers are piped in — so share it and close it when the questions end
+// (an open interface keeps the process alive).
+let RL = null;
+let inputEnded = false;   // stdin hit EOF — every later question takes its default
+let closingOnPurpose = false;
+
+function promptsOpen() {
+  if (!RL) {
+    RL = createInterface({ input: process.stdin, output: process.stdout });
+    RL.once("close", () => {
+      RL = null;
+      if (!closingOnPurpose) inputEnded = true;
+      closingOnPurpose = false;
+    });
+  }
+  return RL;
+}
+function closePrompts() {
+  if (!RL) return;
+  closingOnPurpose = true;
+  RL.close();
+}
+
+// Prompt, resolving to the raw answer. Resolves "" once stdin hits EOF (e.g. piped input runs
+// out) so an awaiting caller never hangs and never reads a closed interface.
+function prompt(question) {
+  if (inputEnded) return Promise.resolve("");
   return new Promise((res) => {
+    const iface = promptsOpen();
     let done = false;
-    const finish = (v) => { if (!done) { done = true; res(v); } };
-    rl.question(question, (a) => finish(a));
-    rl.on("close", () => finish(""));
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      iface.off("close", onClose);
+      res(v);
+    };
+    const onClose = () => finish("");
+    iface.once("close", onClose);
+    try {
+      iface.question(question, finish);
+    } catch {
+      finish(""); // interface closed underneath us — fall back to the default
+    }
   });
 }
 
 async function ask(question, fallback) {
   if (!process.stdin.isTTY) return fallback;
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
   const suffix = fallback ? ` (${fallback})` : "";
-  const answer = await prompt(rl, `${question}${suffix}: `);
-  rl.close();
+  const answer = await prompt(`${question}${suffix}: `);
   return answer.trim() || fallback;
 }
 
 // Yes/no prompt. Non-interactive (no TTY) falls back to `def` so scripted runs don't hang.
 async function askYesNo(question, def = true) {
   if (!process.stdin.isTTY) return def;
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await prompt(rl, `${question} (${def ? "Y/n" : "y/N"}): `);
-  rl.close();
+  const answer = await prompt(`${question} (${def ? "Y/n" : "y/N"}): `);
   const a = answer.trim().toLowerCase();
   if (!a) return def;
   return a === "y" || a === "yes";
+}
+
+// ── The project brief ──────────────────────────────────────────────────────────
+// `setup` asks these once and writes context.md from the answers, so nobody has to hand-edit
+// the brief or paste a wall of instructions into their coding tool. Every field defaults to
+// "propose one": an unanswered field becomes an explicit open question the agents must resolve
+// from the real repo, which is honest, whereas a silent blank reads as "no constraints".
+const PROPOSE = "propose one";
+const BRIEF_FIELDS = [
+  { key: "outcome", flag: "outcome", q: "Product outcome — what the finished product should do" },
+  { key: "users", flag: "users", q: "Primary users — who it is for" },
+  { key: "stack", flag: "stack", q: "Stack — languages, frameworks, database, hosting" },
+  { key: "constraints", flag: "constraints", q: "Constraints — non-negotiable technical or product rules" },
+  { key: "runCmd", flag: "run", q: "How it should run locally" },
+  { key: "testCmd", flag: "test", q: "How it should be tested" },
+];
+
+async function askBrief(args, yes) {
+  const brief = {};
+  for (const f of BRIEF_FIELDS) {
+    brief[f.key] = flag(args, f.flag) || (yes ? PROPOSE : await ask(f.q, PROPOSE));
+  }
+  return brief;
+}
+
+// An answer the user left to the agents ("propose one", or empty) vs. a real one.
+const isOpen = (v) => !v || v.trim().toLowerCase() === PROPOSE;
+const answered = (v) => (isOpen(v) ? null : v.trim());
+const OPEN_LINE = `_Not specified — propose one, then replace this line._`;
+const orOpen = (v) => answered(v) ?? OPEN_LINE;
+
+// A run/test answer can be an exact command ("npm test") or a sentence describing an approach
+// ("Node's test runner plus a manual browser smoke test"). Only the first is safe to render as
+// code: formatting prose as a command invents one that doesn't exist, and a release gate that
+// tries to execute it fails for the wrong reason.
+const looksLikeCommand = (s) =>
+  !!s && s.length <= 60 && !s.includes("\n") && !/[.;,]$/.test(s) &&
+  s.split(/\s+/).length <= 6 && !/,|\band\b/i.test(s);
+const fmtCmd = (v) => {
+  const a = answered(v);
+  if (!a) return "_propose one_";
+  return looksLikeCommand(a) ? `\`${a}\`` : a;
+};
+
+// Render context.md — the one file every agent reads — from the answers. Kept in the same
+// shape as the starter's brief so the sections agents look for are always present.
+function renderContext(name, areas, brief) {
+  // One exact command can serve every area; a prose answer can't, so each area keeps an open
+  // slot rather than inheriting a sentence that won't run.
+  const testCmd = answered(brief.testCmd);
+  const perArea = looksLikeCommand(testCmd) ? `\`${testCmd}\`` : "_propose one_";
+
+  const openItems = BRIEF_FIELDS.filter((f) => isOpen(brief[f.key])).map(
+    (f) => `- **${f.q.split(" — ")[0]}** — not specified. Propose one (from this codebase where possible), record it above, and remove this line.`
+  );
+  if (perArea === "_propose one_" && testCmd) {
+    openItems.push(`- **Test command per area** — the brief describes the testing approach ("${testCmd}") but not the exact command each area runs. Record one per area above.`);
+  }
+  const openSection = openItems.length
+    ? `\n## Open questions — resolve these before relying on them\n\n${openItems.join("\n")}\n`
+    : "";
+
+  return `# ${name} — project context
+
+_Every agent reads this. Written by \`maestro setup\` from your answers — keep it accurate and
+short, and correct anything that's wrong._
+
+## What this is
+
+${orOpen(brief.outcome)}
+
+**Primary users:** ${orOpen(brief.users)}
+
+## Stack & conventions
+
+${orOpen(brief.stack)}
+
+- Match existing code style; don't introduce new patterns without a ticket.
+
+## Running & testing locally
+
+- **Run:** ${fmtCmd(brief.runCmd)}
+- **Test:** ${fmtCmd(brief.testCmd)}
+
+## Test commands by area
+
+| Area | Command |
+| --- | --- |
+${areas.map((a) => `| ${a} | ${perArea} |`).join("\n")}
+
+## Constraints
+
+${orOpen(brief.constraints)}
+
+## Guardrails
+
+- \`main\` is protected — branch + PR, don't push directly.
+- Prod deploys are a **separate, human-gated track** — never block a dev ticket on them, and
+  never reach prod hosts/DB/secrets without explicit go-ahead.
+- Secrets come from a documented local source, never committed.
+${openSection}`;
+}
+
+// AI Maestro runs each ticket in a git worktree, so the project must be a repository. Create
+// one when the folder isn't a repo yet; never touch an existing repo's state.
+function ensureGitRepo(repoRoot) {
+  const inside = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: repoRoot, stdio: "ignore" });
+  if (inside.error) return "no-git"; // git isn't installed — worktrees will fail later, so say so
+  if (inside.status === 0) return "existing";
+  const r = spawnSync("git", ["init"], { cwd: repoRoot, stdio: ["ignore", "ignore", "pipe"] });
+  return r.status === 0 ? "created" : "failed";
 }
 
 // Start the visual board (installs the cockpit's deps on first run via the `preboard` hook).
@@ -141,6 +285,10 @@ async function init(args) {
   const starter = (flag(args, "starter") || (yes ? "orchestrated" : await ask("Starter — orchestrated or lightweight", "orchestrated"))).toLowerCase();
   const areasRaw = flag(args, "areas") || (yes ? "backend, frontend, infra, docs" : await ask("Areas (comma-separated)", "backend, frontend, infra, docs"));
   const areas = areasRaw.split(",").map((s) => s.trim()).filter(Boolean);
+  // Same brief as `setup` — the capsule flow is still an install, so it shouldn't leave the
+  // user to hand-write context.md.
+  const brief = await askBrief(args, yes);
+  closePrompts();
 
   const starterDir = join(KIT_ROOT, "starters", starter === "lightweight" ? "lightweight-project" : "orchestrated-project");
   if (!existsSync(starterDir)) {
@@ -170,6 +318,14 @@ async function init(args) {
   config.outDir = ".."; // render .claude/ + CLAUDE.md to the repo root (parent of the capsule)
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 
+  // 2b. Replace the starter's placeholder brief with one written from the answers.
+  writeFileSync(join(projectDir, "context.md"), renderContext(name, areas, brief));
+
+  // 2c. Tickets run in git worktrees, so the repo must exist.
+  const git = ensureGitRepo(repoDir);
+  if (git === "created") console.log(`\n✓ Initialized a git repository in ${relative(process.cwd(), repoDir) || "."}/`);
+  else if (git === "failed" || git === "no-git") console.error("\n  ⚠ no git repository here — create one before starting the orchestrator (tickets run in worktrees).");
+
   console.log(`\n✓ Created ${relative(process.cwd(), projectDir) || projectDir}/  (from the ${starter} starter)\n`);
 
   // 3. Render the agents & skills.
@@ -188,9 +344,11 @@ async function init(args) {
 
   // 5. Tell them exactly what to do next.
   const rel = relative(process.cwd(), projectDir) || ".";
-  const boardStep = IS_PACKAGED
-    ? `   2. Add work on the board (${rel}/board/data.json).`
-    : `   2. Add work on the board (${rel}/board/data.json), or open the visual board:
+  const boardStep = !existsSync(boardData)
+    ? `   2. This starter has no board — drive the agents directly from ${rel}/context.md.`
+    : IS_PACKAGED
+      ? `   2. Review the work on the board (${rel}/board/data.json).`
+      : `   2. Review the work on the board (${rel}/board/data.json), or open the visual board:
         cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (http://localhost:5273)`;
   const syncCmd = IS_PACKAGED
     ? `npx @mychiefmind/ai-maestro sync --project ${rel}`
@@ -198,17 +356,29 @@ async function init(args) {
   console.log(`
 ✅ Done. Next steps:
 
-   1. Edit ${rel}/context.md   — tell agents about your stack, tests, and guardrails.
+${existsSync(boardData)
+  ? `   1. Open this repo in Claude Code and run '/project-plan' — your brief in
+      ${rel}/context.md becomes epics and dependency-ordered tickets, then it stops for review.`
+  : `   1. Open this repo in Claude Code — your brief is in ${rel}/context.md; correct anything
+      the agents should know before they start.`}
 ${boardStep}
-   3. Agents & skills are in ./.claude/ at your repo root — open this repo in Claude Code and
-      ask the "orchestrator" agent to start.
+${existsSync(boardData)
+  ? `   3. Approve the plan, then run '/orchestrator' to build a ticket. Agents & skills are in
+      ./.claude/ at your repo root.`
+  : `   3. Agents & skills are in ./.claude/ at your repo root — ask one of them for the work
+      you need.`}
 
    Re-run '${syncCmd}' after changing config.json or context.md.
 `);
 }
 
 /**
- * setup — the whole onboarding, in one questionnaire. Two equivalent entry points:
+ * setup — the whole onboarding, in one questionnaire: it asks for the project brief (outcome,
+ * users, stack, constraints, run/test commands), writes config.json + context.md from the
+ * answers, initializes a git repo if the folder isn't one, renders the agents/skills, and
+ * validates the board — so the only thing left is to ask Claude Code to plan the work.
+ *
+ * Two equivalent entry points:
  *
  *   cd ~/code/my-app
  *   npx @mychiefmind/ai-maestro setup                # vendors the kit into ./maestro/, then sets it up
@@ -240,46 +410,73 @@ async function setup(args) {
     return;
   }
 
-  console.log("\n🎼  AI Maestro — two questions and you're set up\n");
+  console.log("\n🎼  AI Maestro — tell me about the project and you're set up\n");
+  console.log(C.dim("  Press Enter to accept the default. \"propose one\" lets the agents work it\n  out from your codebase and show you what they chose.\n"));
   const yes = has(args, "yes");
   // The kit lives at <project>/maestro, so the parent dir names the project.
   const repoRoot = dirname(kit);
   const defaultName = basename(repoRoot);
   const name = flag(args, "name") || (yes ? defaultName : await ask("Project name", defaultName));
-  const areasRaw = flag(args, "areas") || (yes ? "backend, frontend, infra, docs" : await ask("Areas (comma-separated)", "backend, frontend, infra, docs"));
+  const brief = await askBrief(args, yes);
+  const areasRaw = flag(args, "areas") || (yes ? "backend, frontend, infra, docs" : await ask("Areas of work (comma-separated)", "backend, frontend, infra, docs"));
   const areas = areasRaw.split(",").map((s) => s.trim()).filter(Boolean);
+  closePrompts(); // the questions are done — don't hold stdin open through the work below
 
-  // Seed config.json + context.md from the orchestrated starter, then stamp in the answers.
+  // Seed config.json from the orchestrated starter, then stamp in the answers.
   const starter = join(kit, "starters", "orchestrated-project");
   const config = JSON.parse(readFileSync(join(starter, "config.json"), "utf8"));
   config.project = { name, areas };
   config.kitSource = { mode: "self", path: "." };
   config.outDir = ".."; // render .claude/ + CLAUDE.md to the repo root, where the tool looks
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-  if (!existsSync(join(kit, "context.md"))) {
-    cpSync(join(starter, "context.md"), join(kit, "context.md"));
+
+  // Write the brief from the answers. An existing context.md is the user's own work (only a
+  // `--force` re-run gets here with one) — keep it rather than overwrite their edits.
+  const contextPath = join(kit, "context.md");
+  const keptContext = existsSync(contextPath);
+  if (keptContext) {
+    console.log(`\n  ⚠ kept your existing ${kitName}/context.md — your answers weren't written to it.`);
+  } else {
+    writeFileSync(contextPath, renderContext(name, areas, brief));
   }
+
+  // A git repo is a hard requirement (tickets run in worktrees) — create one if needed.
+  const git = ensureGitRepo(repoRoot);
+  if (git === "created") console.log(`\n✓ Initialized a git repository in ${relative(process.cwd(), repoRoot) || "."}/`);
+  else if (git === "failed") console.error("\n  ⚠ 'git init' failed — run it yourself before starting the orchestrator (tickets run in worktrees).");
+  else if (git === "no-git") console.error("\n  ⚠ git isn't installed — install it before starting the orchestrator (tickets run in worktrees).");
 
   // Render agents & skills to the repo root (config.outDir="..").
   console.log("\n→ Setting up your agents & skills…");
   run("render/sync.mjs", ["--project", kit], kit);
 
+  // Validate the seeded board so a broken starting point surfaces now, not mid-run.
+  const boardData = join(kit, "board", "data.json");
+  if (existsSync(boardData)) {
+    console.log("\n→ Checking the board…");
+    run("scripts/validate-board.mjs", [boardData, "--agents", join(kit, "agents")], kit);
+  }
+
   const hasCockpit = existsSync(join(kit, "cockpit"));
+  const openCount = keptContext ? 0 : BRIEF_FIELDS.filter((f) => isOpen(brief[f.key])).length;
+  const openNote = openCount
+    ? `\n${C.dim(`  ${openCount} question${openCount > 1 ? "s" : ""} left to the agents — planning proposes an answer for each and shows you.`)}`
+    : "";
   console.log(`
 ${C.green(C.b(`✅  "${name}" is ready.`))}
 
 ${C.dim("  What was created")}
    ${C.indigo("./.claude/")}              agents & skills, at your repo root
-   ${C.indigo(`${kitName}/context.md`)}       your brief — stack, tests, guardrails
+   ${C.indigo(`${kitName}/context.md`)}       your brief, written from your answers
    ${C.indigo(`${kitName}/board/data.json`)}  your work board
 
-${C.pink(C.b("  ▶  Next — onboard your project in Claude Code:"))}
-   ${C.cyan("1.")}  Open this repo in Claude Code:   ${C.yellow("claude")}
-   ${C.cyan("2.")}  Paste this to teach the agents your codebase:
-       ${C.dim(`"Onboard AI Maestro: fill ${kitName}/context.md from the real`)}
-       ${C.dim(" codebase, seed a few starter tickets, then run npm run sync.\"")}
-   ${C.cyan("3.")}  Then ask the ${C.b("orchestrator")} agent to start.
-
+${C.pink(C.b("  ▶  Next — in Claude Code:"))}
+   ${C.cyan("1.")}  Open this repo:   ${C.yellow("claude")}
+   ${C.cyan("2.")}  Plan the work:    ${C.yellow("/project-plan")}
+       ${C.dim("turns your brief into epics and dependency-ordered tickets,")}
+       ${C.dim("then stops for your review.")}
+   ${C.cyan("3.")}  Approve it, then build:   ${C.yellow("/orchestrator")}   ${C.dim("— one ticket per run")}
+${openNote}
 ${C.dim("  Re-render after edits:")}   ${C.yellow("npm run sync")}   ${C.dim(`(from the ${kitName}/ folder)`)}
 ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or the README`);
 
@@ -291,6 +488,7 @@ ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or t
     const wantsBoard = has(args, "no-board") || !process.stdin.isTTY ? false
       : yes ? true
       : await askYesNo("Open the visual board now?", true);
+    closePrompts(); // the board server takes over stdin from here
     if (wantsBoard) {
       launchBoard(kit, kitName);
     } else {
@@ -305,7 +503,11 @@ function help() {
   console.log(`ai-maestro <command>
 
   setup       Set up AI Maestro in your project — a short questionnaire (start here)
+              Asks for your project brief, writes config.json + context.md from the answers,
+              runs 'git init' if needed, renders .claude/, and checks the board.
               Offers to open the visual board at the end (--no-board to skip, --yes to auto-open)
+              Answer non-interactively with: --name, --areas, --outcome, --users, --stack,
+              --constraints, --run, --test  (anything omitted defaults to "propose one")
   sync        Re-render .claude/ from config.json + context.md
   validate    Check the board's integrity
   init        Alternative: set up as a small capsule pointing at a kit elsewhere
@@ -353,14 +555,17 @@ async function menu() {
   COMMANDS.forEach((c, i) => console.log(`  ${i + 1})  ${c.key.padEnd(9)} ${c.label}`));
   console.log("  q)  quit\n");
   const answer = (await ask("Select 1-" + COMMANDS.length, "1")).toLowerCase();
-  if (answer === "q" || answer === "quit") return;
+  if (answer === "q" || answer === "quit") { closePrompts(); return; }
   const chosen = COMMANDS[Number(answer) - 1] || COMMANDS.find((c) => c.key === answer);
   if (!chosen) {
     console.error(`\n✗ "${answer}" isn't one of 1-${COMMANDS.length}. Run 'ai-maestro <command>' directly.`);
     process.exit(2);
   }
   console.log(`\n→ Running '${chosen.key}'…`);
+  // Left open on purpose: the chosen command's own questions reuse this interface, and each
+  // command closes it once its questionnaire is done.
   await dispatch(chosen.key, []);
+  closePrompts();
 }
 
 switch (cmd) {

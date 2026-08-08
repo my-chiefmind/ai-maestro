@@ -56,7 +56,7 @@ same way of working.
 | --- | --- |
 | **The board is the source of truth, not the chat.** | Work survives context resets, handoffs, and parallel sessions because it lives in `board/data.json`, not in a conversation you'll lose. |
 | **The right agent and model per task.** | A one-line CSS fix and a database migration should not run on the same model or the same prompt. Tickets route themselves. |
-| **Pipelines, not heroics.** | Every ticket flows plan → build → review → merge. Review and delivery gates are structural, not something you remember to do. |
+| **Pipelines, not heroics.** | Every ticket flows through its configured agent pipeline, followed by the required review and delivery gates. Those gates are structural, not something you remember to do. |
 | **Isolated by construction.** | Each ticket runs in its own git worktree, so parallel work never collides and a bad branch never dirties `main`. |
 | **Reusable skills.** | Git branch conventions, worktree cleanup, landing a change, catching up a stale checkout, validating the board — packaged once, used everywhere. |
 
@@ -66,7 +66,7 @@ same way of working.
 | --- | --- |
 | [`board/`](./board/) | The board format (`board.schema.json`) + a runnable example board |
 | [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, qa, principal-delivery |
-| [`skills/`](./skills/) | Reusable skills — board hygiene, release gate, security review, and the git/worktree basics |
+| [`skills/`](./skills/) | Reusable skills — the `/project-plan` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
 | [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
@@ -83,51 +83,67 @@ Three ways in — pick one:
 | **[2 — Hands-Free Onboarding with Claude Code](#path-2--hands-free-onboarding-with-claude-code)** | Paste one prompt; Claude runs setup and fills things in for you. | *(the prompt is below)* |
 | **[3 — Global Install or Git Clone](#path-3--global-install-or-git-clone)** | A permanent global install, or a git clone. | `npm i -g @mychiefmind/ai-maestro` |
 
+Starting from an empty folder, or showing someone else how this works? The
+**[new-project demo](./demo/demo.html)** walks the whole path in plain language — install,
+answer a few questions about your project, review the generated epics and dependency-ordered
+tickets, then run the orchestrator. Open `demo/demo.html` in a browser (it's written for a
+complete beginner), or hand out **[demo.pdf](./demo/demo.pdf)**.
+
 ### Path 1 — Instant Setup with npx
 
 One command in your project — no clone, no install:
 
 ```bash
 cd ~/code/my-app     # your project
-npx @mychiefmind/ai-maestro setup # asks project name + areas
+npx @mychiefmind/ai-maestro setup # asks about your project; Enter accepts every default
 ```
 
-`setup` copies the kit into `./maestro/`, writes your config, and renders the agents & skills
-into `./.claude/` at your repo root, then **asks if you'd like to open the visual board** (say
-no and nothing is left running). Now open the repo in Claude Code and ask the **`orchestrator`**
-agent to start; it picks up the first unblocked ticket and runs it.
+`setup` asks for your project brief — outcome, users, stack, constraints, and how to run and
+test it — then copies the kit into `./maestro/`, writes your `config.json` + `context.md` from
+those answers, runs `git init` if the folder isn't a repo yet, renders the agents & skills into
+`./.claude/` at your repo root, checks the board, and **asks if you'd like to open the visual
+board** (say no and nothing is left running). The six project-brief questions default to
+`propose one`, which hands those decisions to the agents and has them show you what they chose;
+the project name and work areas have concrete defaults.
+
+Now open the repo in Claude Code and run **`/project-plan`** — you get epics and
+dependency-ordered tickets to review. Approve them, then run **`/orchestrator`**; it picks up the
+first unblocked ticket and runs it. (Plain language works too: "plan the project", "run the
+board".)
 
 ### Path 2 — Hands-Free Onboarding with Claude Code
 
-Prefer not to run the questionnaire by hand? Open your project in
+Prefer not to answer the questionnaire yourself? Open your project in
 [Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste this
-prompt — it runs `setup`, fills in your `context.md` from the real codebase, and seeds a few
-starter tickets for you to review:
+prompt — it runs `setup` with answers drawn from your real codebase, then plans a board for you
+to review:
 
 ```text
 Add AI Maestro — the AI-agent orchestration kit — to this project.
 
-1. From the repo root, run: npx @mychiefmind/ai-maestro setup
-   It's interactive: it asks for a project name and the areas of this
-   codebase (e.g. frontend, backend, infra). Infer sensible answers from
-   the repo, but show them to me before you commit to them.
+1. From the repo root, run setup non-interactively, filling each answer
+   from the ACTUAL codebase (README, package manifests, configs) — not
+   guesses. Show me the answers before you run it:
+
+   npx @mychiefmind/ai-maestro setup --yes --no-board \
+     --name "<project name>" --areas "<areas, e.g. frontend,backend,infra>" \
+     --outcome "<what this project does>" --users "<who it's for>" \
+     --stack "<languages, frameworks, database, hosting>" \
+     --constraints "<real conventions and guardrails>" \
+     --run "<real dev command>" --test "<real test command>"
+
    This vendors the kit into ./maestro/ and renders agents + skills into
    ./.claude/ at the repo root. It must NOT touch my application code.
 
-2. Fill in maestro/context.md — the brief every agent reads. Summarize
-   what this project is, its stack, key conventions, and how to run and
-   test it, drawn from the ACTUAL codebase (README, package manifests,
-   configs) — not guesses.
+2. Then plan the work: propose a few real starter tickets based on
+   near-term work you can see (TODOs, missing tests, rough edges), keep
+   every ticket status "todo", and validate the board.
 
-3. Seed maestro/board/data.json with a few real starter tickets based on
-   obvious near-term work you can see (TODOs, missing tests, rough edges).
-   Keep them status: "todo" and let me review before anything runs.
+3. Report back: the answers you used, the agent roster, the proposed
+   tickets, and whether I should commit maestro/ or gitignore it.
 
-4. Report back: the areas you chose, the agent roster, and whether I
-   should commit maestro/ or gitignore it.
-
-Do NOT start executing tickets. Stop after setup so I can review — then
-I'll invoke the `orchestrator` agent myself.
+Do NOT start executing tickets. Stop after planning so I can review —
+then I'll invoke the `orchestrator` agent myself.
 ```
 
 ### Path 3 — Global Install or Git Clone
@@ -157,9 +173,9 @@ Open your project in Claude Code and run these once, in order:
 
 | Step | Do this | Why |
 | :--: | --- | --- |
-| **1** | **`/init`** | Regenerates `CLAUDE.md` so Claude maps your actual codebase (stack, conventions, how to run and test it). |
-| **2** | Once you've had a look at the board, prompt:<br/>`fill in maestro/context.md with the real project details` | `context.md` is the brief every agent reads — this replaces the placeholder with facts drawn from your codebase. |
-| **3** | Then prompt:<br/>`clear the example tickets from the board` | The board ships with example tickets so you can see the format; this removes them so you start from a clean board. |
+| **1** | Run:<br/>**`/project-plan`** | Turns the brief you gave `setup` into 3-6 epics and 5-15 dependency-ordered tickets, replacing the example ones, and proposes an answer for anything you left as `propose one`. It stops for your review — nothing is implemented. |
+| **2** | Review the epics, tickets, and proposed assumptions; ask for revisions in plain language | The plan is the contract every later agent works from. Fix it before code exists, not after. |
+| **3** | Commit the approved starting point, then run:<br/>**`/orchestrator`** | The first commit gives worktrees a stable base; the orchestrator then builds one ticket per run. |
 
 ### Going further
 
@@ -224,8 +240,8 @@ my-app/
 | An agentic coding tool that can run subagents | [Claude Code](https://claude.com/claude-code) or compatible |
 
 Setup is the single command from
-the [Quickstart](#quickstart) — `cd maestro && npm run setup` — then invoke the
-**`orchestrator`** agent from your coding tool at the repo root.
+the [Quickstart](#quickstart) — `cd maestro && npm run setup` — then run
+**`/orchestrator`** from your coding tool at the repo root.
 
 > **Keep your own agents/skills in one place.** Drop custom agents in `maestro/agents/` and
 > skills in `maestro/skills/<name>/SKILL.md`. `sync` merges them into `.claude/` (overriding a
