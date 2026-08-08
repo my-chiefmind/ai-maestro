@@ -6,6 +6,43 @@ on:
   pull_request:
 
 jobs:
+  # A version identifies a release, not a change. Bumping per commit produced six versions in
+  # two hours, three never published, with the file, the tag, and the registry all disagreeing.
+  # The convention alone did not hold — CLAUDE.md used to ask for a per-change bump — so it is
+  # enforced here. Release bumps happen on main via `npm version` (see CONTRIBUTING).
+  version-guard:
+    name: Version untouched (release bumps happen on main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fail if this PR changes the version
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --depth=1 origin "$BASE"
+          base_pkg=$(git show FETCH_HEAD:package.json | jq -r .version)
+          base_file=$(git show FETCH_HEAD:VERSION | tr -d '[:space:]')
+          head_pkg=$(jq -r .version package.json)
+          head_file=$(tr -d '[:space:]' < VERSION)
+
+          rc=0
+          if [ "$base_pkg" != "$head_pkg" ]; then
+            echo "::error file=package.json::version changed in a PR ($base_pkg -> $head_pkg). Revert it; release from $BASE with 'npm version patch'."
+            rc=1
+          fi
+          if [ "$base_file" != "$head_file" ]; then
+            echo "::error file=VERSION::VERSION changed in a PR ($base_file -> $head_file). Revert it; 'npm version' writes this file for you."
+            rc=1
+          fi
+          # Parity is enforced at publish time too, but catch a half-edit here with a clearer message.
+          if [ "$head_pkg" != "$head_file" ]; then
+            echo "::error::package.json ($head_pkg) and VERSION ($head_file) disagree. Run 'node scripts/sync-version.mjs'."
+            rc=1
+          fi
+          [ $rc -eq 0 ] && echo "version untouched at $head_pkg"
+          exit $rc
+
   kit:
     name: Kit (validate + render + init)
     runs-on: ubuntu-latest
