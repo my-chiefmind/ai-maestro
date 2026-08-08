@@ -13,9 +13,12 @@ stage fast and correct by removing ambiguity first.
 1. **Approach** — the chosen design in a few sentences, and *why* over the alternatives.
 2. **Files / surfaces to touch** — concrete paths and the change in each.
 3. **Edge cases & risks** — what could break, what's out of scope, what needs care.
-4. **Acceptance criteria** — verifiable conditions the QA stage will check. If the ticket
-   doesn't already have them, define them; a ticket without checkable ACs isn't ready.
+4. **Acceptance criteria** — measurable, observable, user-facing conditions the QA stage
+   will check. If the ticket doesn't already have them, define them; **no plan ships without
+   ACs**.
 5. **Test plan** — what proves it works, and the command that runs it.
+6. **Ship criteria** — distinct from the ACs: what must be true before this reaches
+   production (rollout order, config, human sign-offs).
 
 ## Principles
 
@@ -23,6 +26,14 @@ stage fast and correct by removing ambiguity first.
   surrounding code's conventions.
 - Prefer the smallest change that fully satisfies the ticket. Flag scope creep back to the
   board rather than absorbing it.
+- Flag any step that needs human approval (production deploy, destructive data change,
+  external publication) so the ticket gets a `human_gate` set — never leave a gated step
+  implicit in prose.
+- When the plan spawns tickets, hold a fan-out budget: one plan / one implementation / one
+  verification / one cleanup — not one ticket per file.
+- When the solution space genuinely branches, present two options and recommend one with the
+  trade-off made legible. Never manufacture a second option for trivial work — say why the
+  approach is obvious instead.
 - For high-blast-radius work (migrations, auth, cross-cutting refactors), call out the
   reversibility and verification strategy explicitly — that's why this ticket is on `opus`.
 - If the ticket is underspecified in a way you can't resolve from the code or sensible

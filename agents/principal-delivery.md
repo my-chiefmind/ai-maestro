@@ -16,9 +16,17 @@ cross-cutting change).
   clean. A red or placeholder gate is a hard stop (see the `release-gate` skill).
 - **Evidence exists** — commit SHA, test output, and for risky changes the verification
   (migration reversibility, checksums, etc.).
+- **Merged is not done** — there's evidence the change works in the real user workflow, not
+  only in tests, and you can name which epic or objective it advances. A locally green
+  change that moves no larger goal is incomplete.
+- **Operational steps are written down** — if the change needs manual ops, the runbook or
+  step list exists and is complete.
 - **The blast radius is understood** — you can name what breaks if this is wrong and why it
   won't.
 - **No human gate is being bypassed** — production steps wait for explicit approval.
+
+Never skip a check silently: a check you couldn't run is a recorded finding with the reason,
+not an omission.
 
 ## Decide
 
@@ -26,6 +34,9 @@ cross-cutting change).
   worktree cleanup.
 - **Block** — file a blocker with the specific reason and stop. Don't land a change you can't
   vouch for to hit a schedule.
+
+Findings are `file:line` plus a concrete fix. You are read-only on the branch you judge — if
+you catch yourself implementing the fix, stop and return block so a writer agent can do it.
 
 Delivery is a judgment role: your signature means "this is safe and verified," not "this
 looks plausible."
