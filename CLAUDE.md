@@ -22,4 +22,4 @@
 | **Frontmatter** | Agents and skills carry `name` + `description` frontmatter. Keep roles non-overlapping. |
 | **Validate the example board** | After touching it: `node scripts/validate-board.mjs board/data.json`. |
 | **Deterministic renderer** | Keep it deterministic — the lock file must not depend on timestamps. |
-| **Version** | Bump `VERSION` on user-visible changes to agents/skills/renderer. |
+| **Version** | **Never bump it in a PR** — CI rejects that. The version belongs to a *release*, not a change: on `main`, `npm version patch` bumps `package.json`, syncs `VERSION`, commits, and tags in one step. See [Releasing](./CONTRIBUTING.md#releasing). |
