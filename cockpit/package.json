@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Maestro board console — a React/MUI/Vite UI over a single Maestro board (board/data.json).",
   "scripts": {
-    "dev": "concurrently -k -n api,web -c magenta,cyan \"node server/index.mjs\" \"vite\"",
+    "dev": "node server/dev.mjs",
     "build": "tsc && vite build",
     "server": "node server/index.mjs",
     "start": "node server/index.mjs",

@@ -35,6 +35,7 @@ import { fileURLToPath } from "url";
 import { marked } from "marked";
 import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
 import { neuterRawHtml } from "./sanitize.mjs";
+import { findFreePort } from "./ports.mjs";
 
 // Raw HTML in a doc must not pass through to the UI's dangerouslySetInnerHTML untouched:
 // the rendered set includes agent-authored files (agents/*.md, skills/*/SKILL.md), so it
@@ -63,9 +64,10 @@ marked.use({ renderer: { html: ({ text }) => neuterRawHtml(text) } });
 const __dir = dirname(fileURLToPath(import.meta.url));
 const COCKPIT = resolve(__dir, "..");
 const KIT_ROOT = resolve(COCKPIT, ".."); // the cockpit lives inside the kit
-// Number(), not the raw env string: app.listen accepts both, but leaving it as a union
-// meant every use had to re-narrow it, and a non-numeric PORT silently became a pipe name.
-const PORT = Number(process.env.PORT) || 4600;
+// The port every kit defaults to — and therefore the one two projects collide on. Whether
+// we're allowed to move off it depends on who asked for it; see PINNED_PORT below.
+const DEFAULT_PORT = 4600;
+const PORT_SCAN_LIMIT = 20;
 const MAX_BACKUPS = 20;
 
 /** Narrow an unknown catch binding to something printable. */
@@ -492,12 +494,63 @@ if (existsSync(DIST)) {
 // know why you need it (container port-forwarding is the usual reason).
 const HOST = process.env.MAESTRO_HOST || "127.0.0.1";
 
-app.listen(PORT, HOST, () => {
+// A port someone asked for by name is a promise we have to keep: `server/dev.mjs` probes a
+// free port, points Vite's proxy at exactly that number, and then pins it here. Drifting to
+// the next one would leave the UI proxying to nothing — worse than not starting. So an
+// explicit PORT / --port binds or fails, and only the bare default is free to move.
+// Two knobs, deliberately different:
+//   PORT     — where to START looking. Still moves if that one is taken.
+//   --port   — bind exactly this or fail.
+// `--port` exists for the one caller that genuinely can't tolerate drift: server/dev.mjs
+// probes a free port, tells Vite to proxy to that exact number, and only then starts the
+// service. A service that quietly moved would leave the UI proxying into nothing. Everyone
+// else wants PORT, which is a preference rather than a demand.
+const PINNED_PORT = argValue("--port");
+// Number(), not the raw string: listen() accepts both, and a non-numeric value silently
+// became a named pipe instead of a port. Reject it here where we can say why.
+for (const [label, value] of [["--port", PINNED_PORT], ["PORT", process.env.PORT]]) {
+  if (value && !/^\d+$/.test(value.trim())) {
+    console.error(`✗ ${label}="${value}" is not a port number. Use e.g. PORT=4700 npm run board`);
+    process.exit(1);
+  }
+}
+const PORT_BASE = Number(process.env.PORT) || DEFAULT_PORT;
+const PORT = PINNED_PORT
+  ? Number(PINNED_PORT)
+  : await findFreePort(PORT_BASE, [HOST], PORT_SCAN_LIMIT);
+
+const server = app.listen(PORT, HOST, () => {
   console.log(`AI Maestro cockpit data service on http://localhost:${PORT}`);
+  if (!PINNED_PORT && PORT !== PORT_BASE) {
+    console.log(`  (${PORT_BASE} was busy — another project's board, most likely.)`);
+  }
   if (!LOCAL_HOSTS.has(HOST)) {
     console.log(`  ⚠ MAESTRO_HOST=${HOST} — this API has no authentication and is now`);
     console.log(`    reachable beyond this machine. Requests must still be addressed to localhost.`);
   }
   console.log(`Board: ${BOARD_DIR}`);
   if (!existsSync(DATA)) console.log(`  ⚠ no data.json found there yet.`);
+});
+
+// Express calls the listen callback before the bind result is known, so a port clash still
+// prints the banner above — then the socket dies, the event loop drains, and the process
+// exits 0. `concurrently -k` reads that as a clean exit and takes vite down with it, so the
+// board vanishes with no error at all. Turn the bind failure back into a real error.
+//
+// Reaching here with an unpinned port means we lost a race: findFreePort saw the port free,
+// then something else grabbed it in the moment before we bound. Rare, and not worth a retry
+// loop — saying so plainly beats a silent exit.
+server.on("error", (/** @type {NodeJS.ErrnoException} */ err) => {
+  if (err.code === "EADDRINUSE" && PINNED_PORT) {
+    console.error(`✗ Port ${PORT} is already in use, so the board can't start.`);
+    console.error(`  --port pins a port exactly, so it won't fall back to a free one.`);
+    console.error(`  Find what's holding it with:  lsof -nP -iTCP:${PORT} -sTCP:LISTEN`);
+    console.error(`  Or drop --port and let the board pick its own port.`);
+  } else if (err.code === "EADDRINUSE") {
+    console.error(`✗ Port ${PORT} was taken by another process a moment after we checked it.`);
+    console.error(`  Just start the board again.`);
+  } else {
+    console.error(`✗ The cockpit data service could not start: ${errMessage(err)}`);
+  }
+  process.exit(1);
 });

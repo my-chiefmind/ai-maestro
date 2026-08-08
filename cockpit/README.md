@@ -26,8 +26,17 @@ npm ci          # installs exactly what package-lock.json pins
 
 # dev (two processes: data service on :4600, Vite UI on :5273)
 npm run dev
-# → open http://localhost:5273
+# → open the URL it prints (5273 unless that's taken)
 ```
+
+Both ports are starting points, not fixed: `server/dev.mjs` picks the first free port at or
+after each one before either process starts, so several projects can keep boards open at
+once. It has to happen there rather than in each process — Vite needs the data service's
+port for its `/api` proxy, and would otherwise bake in a target before the service chose.
+`PORT=…` / `MAESTRO_UI_PORT=…` move where that search starts; they are preferences, so a busy
+one still advances. `node server/index.mjs --port N` is the strict form — bind N or fail —
+and is what `dev.mjs` hands the service, since Vite's proxy target is already fixed to N by
+the time it starts.
 
 The dev server proxies `/api` to the data service. By default the service serves the board at
 `../board` (the kit's example board). Point it elsewhere:

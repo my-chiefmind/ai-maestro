@@ -263,7 +263,9 @@ function ensureGitRepo(repoRoot) {
 // Blocks until the dev server is stopped — this is intentionally the last thing setup does.
 function launchBoard(kitDir, kitName) {
   console.log("\n→ Starting the visual board (installs the UI's deps on first run)…");
-  console.log("   → http://localhost:5273    (press Ctrl+C to stop)\n");
+  // Not a fixed URL: the board takes the next free port when 5273 is busy — which it is
+  // whenever another project's board is open — and prints the one it settled on below.
+  console.log("   → it will print its URL in a moment    (press Ctrl+C to stop)\n");
   const r = spawnSync("npm", ["run", "board"], {
     cwd: kitDir,
     stdio: "inherit",
@@ -349,7 +351,7 @@ async function init(args) {
     : IS_PACKAGED
       ? `   2. Review the work on the board (${rel}/board/data.json).`
       : `   2. Review the work on the board (${rel}/board/data.json), or open the visual board:
-        cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (http://localhost:5273)`;
+        cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (prints its URL; usually http://localhost:5273)`;
   const syncCmd = IS_PACKAGED
     ? `npx @mychiefmind/ai-maestro sync --project ${rel}`
     : `node ${rel}/render/sync.mjs --project ${rel}`;
@@ -492,7 +494,7 @@ ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or t
     if (wantsBoard) {
       launchBoard(kit, kitName);
     } else {
-      console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → http://localhost:5273\n`);
+      console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → prints its URL (usually http://localhost:5273)\n`);
     }
   } else {
     console.log(`   • Visual board:  clone https://github.com/my-chiefmind/ai-maestro and run 'npm run board'\n`);

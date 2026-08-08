@@ -172,6 +172,9 @@ The [cockpit](../README.md#the-cockpit) is the one part that runs a server, and 
 cd maestro && npm run board   # installs the cockpit's deps if needed, then → http://localhost:5273
 ```
 
+If you keep boards open for more than one project, the ports move rather than collide: 5273
+and 4600 are only the starting points, and the board prints the URL it settled on.
+
 ## Keeping it clean
 
 - After a ticket lands, the `worktree-cleanup` skill removes its worktree/branch.
