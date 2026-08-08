@@ -77,13 +77,12 @@ same way of working.
 
 ## Quickstart
 
-Three ways in — pick one:
+Two ways in — pick one:
 
 | Path | What it is | Command |
 | --- | --- | --- |
 | **[1 — Instant Setup with npx](#path-1--instant-setup-with-npx)** | Run the questionnaire yourself, then do the [first steps](#first-steps-after-setup). | `npx @mychiefmind/ai-maestro setup` |
 | **[2 — Hands-Free Onboarding with Claude Code](#path-2--hands-free-onboarding-with-claude-code)** | Paste one prompt; Claude runs setup and fills things in for you. | *(the prompt is below)* |
-| **[3 — Global Install or Git Clone](#path-3--global-install-or-git-clone)** | A permanent global install, or a git clone. | `npm i -g @mychiefmind/ai-maestro` |
 
 Starting from an empty folder, or showing someone else how this works? The
 **[new-project demo](https://mychiefmind.com/ai-maestro/demo)** walks the whole path in plain
@@ -145,27 +144,6 @@ Add AI Maestro — the AI-agent orchestration kit — to this project.
 
 Do NOT start executing tickets. Stop after planning so I can review —
 then I'll run /orchestrator myself.
-```
-
-### Path 3 — Global Install or Git Clone
-
-#### Global install
-
-Prefer a permanent install? `npm i -g @mychiefmind/ai-maestro` gives you the CLI as both
-`ai-maestro` and the short **`maestro`** command.
-
-```bash
-npm i -g @mychiefmind/ai-maestro
-```
-
-#### Git clone
-
-Prefer git? Cloning gives the identical layout:
-
-```bash
-cd ~/code/my-app
-git clone https://github.com/my-chiefmind/ai-maestro.git maestro
-cd maestro && npm run setup
 ```
 
 ### First steps after setup

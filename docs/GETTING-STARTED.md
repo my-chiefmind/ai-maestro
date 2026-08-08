@@ -45,8 +45,9 @@ pass any of `--name`, `--areas`, `--outcome`, `--users`, `--stack`, `--constrain
 `--test`, plus `--yes`. Anything you omit falls back to `propose one`, which becomes an open
 question in your brief rather than a silent blank.
 
-**From a clone** ([Path 3](../README.md#path-3--global-install-or-git-clone)) — `npm run setup`
-runs from inside the `maestro/` folder. If you'd rather stay at your project root,
+**From a clone** — cloning the kit instead of using npx gives the identical layout
+(`git clone https://github.com/my-chiefmind/ai-maestro.git maestro`); `npm run setup`
+then runs from inside the `maestro/` folder. If you'd rather stay at your project root,
 `node maestro/bin/cli.mjs setup` is exactly equivalent.
 
 **What it won't clobber** — an existing root `CLAUDE.md` is never overwritten, and an existing
@@ -203,7 +204,6 @@ The same command covers the other install shapes:
 | You installed via… | Update with |
 | --- | --- |
 | `npx` (the default) | `npx @mychiefmind/ai-maestro@latest update` |
-| Global install | `npm i -g @mychiefmind/ai-maestro@latest`, then `ai-maestro update` |
 | Local dependency | `npm update @mychiefmind/ai-maestro`, then `npx ai-maestro update` |
 | Git clone | `node <kit>/bin/cli.mjs update` — pulls the clone, then re-renders |
 
