@@ -184,8 +184,9 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
   return (
     <Container maxWidth="xl" sx={{ py: 3 }}>
       <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, mb: 2, flexWrap: 'wrap' }}>
-        <Typography variant="h6" sx={{ fontWeight: 800 }}>Board</Typography>
-        <Typography variant="caption" sx={{ color: 'text.secondary', fontFamily: 'monospace' }}>{board.boardDir}</Typography>
+        {/* The absolute board path is diagnostic, not decoration — it dominated the header and
+            told you nothing the project name in the app bar doesn't. Kept as a tooltip. */}
+        <Typography variant="h6" sx={{ fontWeight: 800 }} title={board.boardDir}>Board</Typography>
         <Box sx={{ flexGrow: 1 }} />
         {save !== 'idle' && <Badge label={SAVE_LABEL[save]} color={save === 'error' ? '#f43f5e' : save === 'saving' ? '#9aa0bd' : '#10b981'} />}
         <Button size="small" variant="outlined" onClick={reload} sx={{ ml: 1 }}>Refresh</Button>
