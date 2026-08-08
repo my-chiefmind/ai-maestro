@@ -33,6 +33,8 @@
 > The result: AI development that is trackable, parallelizable, and safe to hand off — the
 > difference between hiring a freelancer and running a team.
 
+[![The AI Maestro new-project demo: an arcade-style walkthrough titled "You're the Maestro" — install, answer a few questions, review the plan, then build one ticket at a time](./cockpit/asset/ai-maestro-hero-poster.jpg)](https://mychiefmind.com/ai-maestro/demo)
+
 AI Maestro runs software delivery as an *orchestra* of AI agents instead of a single chat
 session. The idea in three sentences:
 
@@ -87,10 +89,6 @@ Starting from an empty folder, or showing someone else how this works? The
 **[new-project demo](https://mychiefmind.com/ai-maestro/demo)** walks the whole path in plain
 language, written for a complete beginner — install, answer a few questions about your project,
 review the generated epics and dependency-ordered tickets, then run the orchestrator.
-
-[![The AI Maestro new-project demo: an arcade-style walkthrough titled "You're the Maestro", with the install command, the setup questions, and the plan-then-build loop](./cockpit/asset/ai-maestro-hero-poster.jpg)](./cockpit/asset/ai-maestro-hero.mp4)
-
-<p align="center"><i>▶ <a href="./cockpit/asset/ai-maestro-hero.mp4">Play the 8-second tour</a> · or <a href="https://mychiefmind.com/ai-maestro/demo">open the live demo</a></i></p>
 
 ### Path 1 — Instant Setup with npx
 
@@ -269,6 +267,9 @@ board while you're looking at it, the console reloads instead of overwriting the
 ```bash
 cd maestro && npm run board   # installs the cockpit's deps if needed, then → http://localhost:5273
 ```
+
+Boards for several projects can run side by side — if 5273 is taken, the next free port is
+used and printed on startup, so open the URL the board actually prints.
 
 ## Status
 
