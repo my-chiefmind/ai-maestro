@@ -182,6 +182,10 @@ Open your project in Claude Code and run these once, in order:
 
 > Adopting this into an existing codebase, tuning models and areas, alternative layouts, and
 > troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+>
+> Already set up and a new version is out? `npx @mychiefmind/ai-maestro@latest update`
+> refreshes the kit in `maestro/` and re-renders — your config, brief, and board are kept
+> ([details](./docs/GETTING-STARTED.md#updating-the-kit)).
 
 ## The core idea in one ticket
 

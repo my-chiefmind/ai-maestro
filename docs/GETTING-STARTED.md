@@ -181,6 +181,36 @@ and 4600 are only the starting points, and the board prints the URL it settled o
 - Use the `gc` skill to catch a stale checkout up to `main`.
 - Use the `delivery-hygiene` skill when the board starts to feel noisy.
 
+## Updating the kit
+
+A new kit release doesn't reach your project by itself: the kit you run is the copy `setup`
+put in `maestro/`, not the npm package — so `npm update` alone changes nothing you use.
+One command refreshes it:
+
+```bash
+npx @mychiefmind/ai-maestro@latest update    # from your repo root
+npm run update                               # …or from the maestro/ folder — same thing
+```
+
+`update` replaces the kit's own files in `maestro/` with the new version's (upstream deletions
+propagate too), keeps everything that's yours — `config.json`, `context.md`, and the board's
+`data.json` / `archive.json` — then re-renders `.claude/` and re-checks the board. It's safe to
+run any time: if you're already current it says so and stops, and it refuses to downgrade
+unless you pass `--force`. Review the diff before committing, like any other change.
+
+The same command covers the other install shapes:
+
+| You installed via… | Update with |
+| --- | --- |
+| `npx` (the default) | `npx @mychiefmind/ai-maestro@latest update` |
+| Global install | `npm i -g @mychiefmind/ai-maestro@latest`, then `ai-maestro update` |
+| Local dependency | `npm update @mychiefmind/ai-maestro`, then `npx ai-maestro update` |
+| Git clone | `node <kit>/bin/cli.mjs update` — pulls the clone, then re-renders |
+
+For a **shared clone** used by several repos, `update` pulls once and prints the re-render
+command to run per project. The cockpit UI's dependencies are removed with the old kit files
+and reinstall on the next `npm run board`.
+
 ---
 
 ## Alternative layouts
@@ -212,7 +242,8 @@ node .maestro-kit/bin/cli.mjs init
 ```
 
 Commit `maestro/`, `.claude/`, and `CLAUDE.md`; the kit stays untracked. Update with
-`git -C .maestro-kit pull`, then `node .maestro-kit/render/sync.mjs --project maestro`.
+`node .maestro-kit/bin/cli.mjs update` (pulls the clone, then re-render with
+`node .maestro-kit/render/sync.mjs --project maestro`).
 
 ### By hand (or on Windows)
 
