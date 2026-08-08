@@ -1,22 +1,19 @@
 # Getting started
 
-New to AI Maestro? Start here — zero to a running board in your repo, in plain language, no prior
-knowledge of the kit assumed.
+The handbook for running AI Maestro in a real repo: what you maintain, how to tune it, the
+alternative layouts, and what to do when something breaks.
 
-## What AI Maestro actually is (30-second version)
+Two shorter reads come first, and this guide assumes them rather than repeating them:
 
-AI Maestro is a way to run software work as a **team of AI agents** instead of one long chat.
+| If you want… | Go to |
+| --- | --- |
+| The pitch and the shortest path in | the [README](../README.md) |
+| A step-by-step first run on a brand-new project, in plain language | the [new-project demo](https://mychiefmind.com/ai-maestro/demo) |
 
-- You keep a **board** — a list of epics and tickets, like a to-do list for the repo.
-- Each **ticket** says which agents should work it (e.g. `plan → build → qa → merge`) and
-  which AI model to run them on.
-- An **orchestrator** agent reads the board, picks the next ready ticket, does the work in an
-  isolated copy of your repo, checks it, merges it, and moves on.
+This guide is for the next part: adopting the kit into an **existing** codebase, and living with
+it afterwards.
 
-The board — not a chat window — is the source of truth, so work survives context resets, new
-sessions, and handoffs.
-
-**Jargon, once:**
+## Jargon, once
 
 - **Agent** — an AI role with a focused job (a planner, a backend dev, a reviewer).
 - **Model** — which AI runs an agent (e.g. `opus`, `sonnet`, `haiku`); bigger = smarter/slower/pricier.
@@ -39,112 +36,44 @@ nothing running.
 
 ## Set up — one command, a few questions
 
-Run one command in your project:
+The command and the questionnaire are covered in the
+[README quickstart](../README.md#path-1--instant-setup-with-npx). The rest of this section is
+what that summary leaves out.
 
-```bash
-cd ~/code/my-app     # your project
-npx @mychiefmind/ai-maestro setup # asks about your project; Enter accepts every default
-```
+**Answering non-interactively** — for scripts, CI, or an agent running setup on your behalf —
+pass any of `--name`, `--areas`, `--outcome`, `--users`, `--stack`, `--constraints`, `--run`,
+`--test`, plus `--yes`. Anything you omit falls back to `propose one`, which becomes an open
+question in your brief rather than a silent blank.
 
-The questionnaire is your **project brief**: name, product outcome, primary users, stack,
-constraints, how it should run locally, how it should be tested, and the areas work is divided
-into. Every description defaults to `propose one` — press Enter and that decision goes to the
-agents, which propose an answer and show it to you before any code is written. To answer
-non-interactively (scripts, CI, or an agent running setup for you), pass `--name`, `--areas`,
-`--outcome`, `--users`, `--stack`, `--constraints`, `--run`, `--test`, and `--yes`.
+**From a clone** ([Path 3](../README.md#path-3--global-install-or-git-clone)) — `npm run setup`
+runs from inside the `maestro/` folder. If you'd rather stay at your project root,
+`node maestro/bin/cli.mjs setup` is exactly equivalent.
 
-That copies the kit into `./maestro/` and sets it up — cockpit UI included, so `npm run board`
-works right away. If you prefer git (updates via `git pull`), cloning produces the identical layout:
+**What it won't clobber** — an existing root `CLAUDE.md` is never overwritten, and an existing
+`context.md` is kept rather than replaced by your answers. `setup` is idempotent: re-running does
+nothing once you're set up.
 
-```bash
-cd ~/code/my-app                                          # your project
-git clone https://github.com/my-chiefmind/ai-maestro.git maestro
-cd maestro && npm run setup                               # same questions
-```
+**The board prompt** — `setup` ends by asking *"Open the visual board now?"*. `--yes` opens it
+without asking; `--no-board` skips the prompt entirely. Both matter for scripted/CI runs, which
+never auto-start the server (it blocks until stopped).
 
-> `npm run setup` runs from inside the `maestro/` folder. If you'd rather stay at your project
-> root, `node maestro/bin/cli.mjs setup` is exactly equivalent.
+**No command at all** — running `ai-maestro` (or `maestro`) bare prints the help, then in an
+interactive terminal shows a numbered picker for `setup` / `sync` / `validate` / `init`.
 
-`setup` writes your `config.json` + `context.md` from those answers and seeds a board inside
-`maestro/`, runs `git init` if the folder isn't a repository yet (tickets run in git worktrees,
-so one is required), then renders the agents & skills to **`.claude/` and `CLAUDE.md` at your
-repo root** — where the coding tool discovers them, so the orchestrator operates on *your* repo,
-not the `maestro/` subfolder. It finishes by validating the board. An existing root `CLAUDE.md`
-is never overwritten, and an existing `context.md` is kept rather than replaced by your answers.
-It's idempotent — re-running does nothing once you're set up.
+> **Adopting into an existing codebase?** Don't answer the questionnaire from memory — have your
+> coding agent fill it in from the real repo, then plan a board of near-term work for you to
+> review. The ready-made prompt for that is
+> [Path 2 in the README](../README.md#path-2--hands-free-onboarding-with-claude-code).
 
-Then, in your coding agent, run **`/project-plan`**: it turns the brief into 3-6 epics and 5-15
-dependency-ordered tickets, resolves anything you left as `propose one`, validates the board, and
-stops for your review. Approve it, then run **`/orchestrator`** to build a ticket. (Both are
-skills, so plain language reaches them too — "plan the project", "run the board".)
+## What you maintain
 
-At the end, `setup` asks **"Open the visual board now?"** — answer `Y` and it installs the
-cockpit's deps (first run only) and starts it at `http://localhost:5273`; answer `n` and nothing
-is left running. Pass `--yes` to open it without asking, or `--no-board` to skip the prompt (both
-handy for scripted/CI runs, which never auto-start the server). You can always launch it later
-with `npm run board` from the `maestro/` folder.
-
-Running `ai-maestro` (or `maestro`) with **no command** prints the help and then, in an
-interactive terminal, shows a numbered picker so you can choose `setup` / `sync` / `validate` /
-`init` instead of retyping it.
-
-### Let Claude Code do the onboarding
-
-Prefer not to answer the questionnaire yourself? Open your project in
-[Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste the
-prompt below. It answers `setup` from your real codebase and plans a board for you to review —
-then stops, so nothing runs until you say so:
-
-```text
-Add AI Maestro — the AI-agent orchestration kit — to this project.
-
-1. From the repo root, run setup non-interactively, filling each answer
-   from the ACTUAL codebase (README, package manifests, configs) — not
-   guesses. Show me the answers before you run it:
-
-   npx @mychiefmind/ai-maestro setup --yes --no-board \
-     --name "<project name>" --areas "<areas, e.g. frontend,backend,infra>" \
-     --outcome "<what this project does>" --users "<who it's for>" \
-     --stack "<languages, frameworks, database, hosting>" \
-     --constraints "<real conventions and guardrails>" \
-     --run "<real dev command>" --test "<real test command>"
-
-   This vendors the kit into ./maestro/ and renders agents + skills into
-   ./.claude/ at the repo root. It must NOT touch my application code.
-
-2. Then plan the work: propose a few real starter tickets based on
-   near-term work you can see (TODOs, missing tests, rough edges), keep
-   every ticket status "todo", and validate the board.
-
-3. Report back: the answers you used, the agent roster, the proposed
-   tickets, and whether I should commit maestro/ or gitignore it.
-
-Do NOT start executing tickets. Stop after planning so I can review —
-then I'll invoke the `orchestrator` agent myself.
-```
-
-## How it sits in your project
-
-AI Maestro is a **sidecar**: the kit (vendored by `npx @mychiefmind/ai-maestro setup` or cloned by you) and
-your settings live in `maestro/`, and the generated agents land at your repo root. It never
-touches your application code.
-
-```
-my-app/
-├── src/ …                    ← your real code (untouched)
-├── maestro/                  ← the kit + your settings
-│   ├── config.json           ← project name, areas, models   (setup writes this)
-│   ├── context.md            ← the brief every agent reads    (setup writes it from your answers)
-│   ├── board/data.json       ← epics + tickets (edit here or in the cockpit)
-│   ├── agents/*.md           ← optional: your own custom agents
-│   └── skills/*/SKILL.md     ← optional: your own custom skills
-├── .claude/                  ← GENERATED — agents & skills (don't hand-edit)
-└── CLAUDE.md                 ← GENERATED — project brief
-```
+AI Maestro is a **sidecar** — the tooling lives in `maestro/`, the generated agents land at your
+repo root, and your application code is never touched. See the
+[layout diagram](../README.md#how-it-sits-in-your-project) in the README.
 
 You maintain **three things** — `config.json`, `context.md`, and the **board**. Everything in
-`.claude/` is rendered from them. After any change to `config.json` or `context.md`, re-render
-(from inside the `maestro/` folder):
+`.claude/` is rendered from them, so it is never the thing you edit. After any change to
+`config.json` or `context.md`, re-render (from inside the `maestro/` folder):
 
 ```bash
 npm run sync
@@ -154,7 +83,7 @@ In CI or a pre-commit hook, add `--check` to fail if the generated files are sta
 removes files it generated last time (tracked in `.maestro.lock`), so anything else you keep
 under `.claude/` is left alone.
 
-## 1. Describe your project — `maestro/context.md`
+## The brief — `maestro/context.md`
 
 This is the **brief every agent reads** — the single biggest lever on output quality. `setup`
 writes it from your answers, and anything you left as `propose one` is listed under **Open
@@ -171,7 +100,7 @@ questions** for the agents to resolve and show you. Keep it short and true:
 
 Re-run `sync` after editing so the context reaches the agents.
 
-## 2. Tune models & areas — `maestro/config.json` (optional)
+## Tuning areas & models — `maestro/config.json`
 
 `setup` already wrote sensible defaults. Adjust to taste:
 
@@ -194,11 +123,13 @@ Re-run `sync` after editing so the context reaches the agents.
   floor (a floor can raise a ticket, never lower it). `validate-board` warns on below-floor tickets.
 - **`humanGates`** — the allowed `human_gate` phrases; the validator warns on anything else.
 
-## 3. Seed the board
+## The board — what a ticket needs
 
-Open `maestro/board/data.json` (or use the cockpit — see below). A ticket needs at minimum an
-`id` and a `status`; a **runnable** ticket also wants `name`, `area`, `agent_plan`, and `model`
-(the validator warns when a `todo` ticket is missing them):
+`/project-plan` writes the board for you from your brief, and the cockpit edits it with validated
+pickers — but this is the shape underneath, for when you hand-edit `maestro/board/data.json`.
+
+A ticket needs at minimum an `id` and a `status`; a **runnable** ticket also wants `name`, `area`,
+`agent_plan`, and `model` (the validator warns when a `todo` ticket is missing them):
 
 ```jsonc
 {
@@ -219,7 +150,7 @@ Validate before running:
 node maestro/scripts/validate-board.mjs maestro/board/data.json
 ```
 
-## 4. Run the orchestrator
+## Running the orchestrator
 
 Open your agentic coding tool at your **repo root** (not inside `maestro/`) and run
 **`/orchestrator`** (in Claude Code) or ask for the `orchestrator` agent by name. The skill
@@ -233,16 +164,15 @@ pre-flights the board and your working tree, then hands off to the agent. Each r
 It does **one ticket per run** unless you tell it to keep going, so you stay in the loop between
 tickets. Run **one orchestrator at a time** — claiming a ticket is best-effort, not atomic.
 
-## 5. Watch the board (optional UI)
+## The visual board
 
-A visual console — stat cards, epics, filterable tickets, a roster view. The only part that runs
-a server:
+The [cockpit](../README.md#the-cockpit) is the one part that runs a server, and it's optional:
 
 ```bash
 cd maestro && npm run board   # installs the cockpit's deps if needed, then → http://localhost:5273
 ```
 
-## 6. Keep it clean
+## Keeping it clean
 
 - After a ticket lands, the `worktree-cleanup` skill removes its worktree/branch.
 - Use the `gc` skill to catch a stale checkout up to `main`.

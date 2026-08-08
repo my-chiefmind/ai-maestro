@@ -19,7 +19,7 @@
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
   <a href="#whats-in-the-box">What's in the box</a> ·
-  <a href="#the-visual-board-optional">Visual board</a> ·
+  <a href="#the-cockpit">Visual board</a> ·
   <a href="#how-it-sits-in-your-project">Project layout</a> ·
   <a href="./docs/GETTING-STARTED.md">Docs</a>
 </p>
@@ -84,10 +84,13 @@ Three ways in — pick one:
 | **[3 — Global Install or Git Clone](#path-3--global-install-or-git-clone)** | A permanent global install, or a git clone. | `npm i -g @mychiefmind/ai-maestro` |
 
 Starting from an empty folder, or showing someone else how this works? The
-**[new-project demo](./demo/demo.html)** walks the whole path in plain language — install,
-answer a few questions about your project, review the generated epics and dependency-ordered
-tickets, then run the orchestrator. Open `demo/demo.html` in a browser (it's written for a
-complete beginner), or hand out **[demo.pdf](./demo/demo.pdf)**.
+**[new-project demo](https://mychiefmind.com/ai-maestro/demo)** walks the whole path in plain
+language, written for a complete beginner — install, answer a few questions about your project,
+review the generated epics and dependency-ordered tickets, then run the orchestrator.
+
+[![The AI Maestro new-project demo: an arcade-style walkthrough titled "You're the Maestro", with the install command, the setup questions, and the plan-then-build loop](./cockpit/asset/ai-maestro-hero-poster.jpg)](./cockpit/asset/ai-maestro-hero.mp4)
+
+<p align="center"><i>▶ <a href="./cockpit/asset/ai-maestro-hero.mp4">Play the 8-second tour</a> · or <a href="https://mychiefmind.com/ai-maestro/demo">open the live demo</a></i></p>
 
 ### Path 1 — Instant Setup with npx
 
@@ -143,7 +146,7 @@ Add AI Maestro — the AI-agent orchestration kit — to this project.
    tickets, and whether I should commit maestro/ or gitignore it.
 
 Do NOT start executing tickets. Stop after planning so I can review —
-then I'll invoke the `orchestrator` agent myself.
+then I'll run /orchestrator myself.
 ```
 
 ### Path 3 — Global Install or Git Clone
@@ -179,17 +182,8 @@ Open your project in Claude Code and run these once, in order:
 
 ### Going further
 
-> Full walkthrough, layouts, and troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
-
-## The visual board (optional)
-
-**Want the visual board?** It's optional (the only part that runs a server) and ships with both
-paths — `npx setup` vendors it into your `maestro/` folder, and a clone has it too. `setup`
-offers to open it for you at the end; you can also start it any time:
-
-```bash
-npm run board      # from the maestro/ folder — installs the cockpit's deps on first run, then → http://localhost:5273
-```
+> Adopting this into an existing codebase, tuning models and areas, alternative layouts, and
+> troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 
 ## The core idea in one ticket
 
@@ -221,9 +215,9 @@ discovers them.
 ```
 my-app/
 ├── src/  …                    ← your real code (untouched)
-├── maestro/                   ← the cloned kit + your settings
+├── maestro/                   ← the kit + your settings
 │   ├── config.json            ← project name, areas, models   (setup writes this)
-│   ├── context.md             ← the brief every agent reads    (you fill in)
+│   ├── context.md             ← the brief every agent reads    (setup writes it from your answers)
 │   ├── board/data.json        ← epics + tickets (edit here or in the cockpit)
 │   ├── agents/*.md            ← optional: your own custom agents (merged in, kept on re-render)
 │   └── skills/*/SKILL.md      ← optional: your own custom skills
@@ -231,32 +225,26 @@ my-app/
 └── CLAUDE.md                  ← GENERATED — project brief
 ```
 
-**You'll need:**
-
-| Requirement | Notes |
-| --- | --- |
-| git | — |
-| Node.js 18+ | — |
-| An agentic coding tool that can run subagents | [Claude Code](https://claude.com/claude-code) or compatible |
-
-Setup is the single command from
-the [Quickstart](#quickstart) — `cd maestro && npm run setup` — then run
-**`/orchestrator`** from your coding tool at the repo root.
+**You'll need** git, Node.js 18+, and an agentic coding tool that can run subagents
+([Claude Code](https://claude.com/claude-code) or compatible). Setup is the single command from
+the [Quickstart](#quickstart) — then, from your coding tool at the repo root, run
+**`/project-plan`**, approve the plan, and run **`/orchestrator`**.
 
 > **Keep your own agents/skills in one place.** Drop custom agents in `maestro/agents/` and
 > skills in `maestro/skills/<name>/SKILL.md`. `sync` merges them into `.claude/` (overriding a
 > kit file of the same name) and — unlike hand-editing `.claude/` — they survive every
 > re-render. List them in `config.json`'s `roster` so tickets can route to them.
 
-> **Keep the kit out of your project's git?** (`npx @mychiefmind/ai-maestro setup` vendors a plain folder —
-> just commit it or ignore it.) A cloned kit has its own `.git`. Either `rm -rf maestro/.git`
-> to vendor it as a plain folder, or add `maestro/` to your `.gitignore` (then commit `.claude/`
-> and `CLAUDE.md`, which sit at your root). Update later with `git -C maestro pull` then `sync`.
-
-For the alternative layout — one shared kit serving several repos, via `maestro init` — see
-👉 [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+> **Keep the kit out of your project's git?** `npx setup` vendors a plain folder — commit it or
+> ignore it. A cloned kit brings its own `.git`, so either `rm -rf maestro/.git` or gitignore
+> `maestro/`. Both variants, plus the shared-kit and vendored layouts, are in
+> 👉 [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md#alternative-layouts).
 
 ## The cockpit
+
+Optional, and the only part that runs a server. It ships with both install paths — `npx setup`
+vendors it into your `maestro/` folder, and a clone has it too — and `setup` offers to open it for
+you at the end.
 
 A no-terminal way to run the board: stat cards, an epic sidebar, and filterable ticket cards.
 Add and edit epics and tickets in place — areas, models, and the agent pipeline are **pickers
