@@ -10,6 +10,24 @@
  */
 
 export const STATUSES = ["backlog", "todo", "in-progress", "review", "blocked", "done"];
+
+/**
+ * Terminal states a ticket may carry ONLY in archive.json — for tickets that left the
+ * board without being completed: shelved pending an owner decision (`archived`), filed
+ * twice (`duplicate`), or deliberately declined (`wont-do`). Folding these into `done`
+ * would record work as finished that never was, so a LIVE ticket carrying one of them
+ * is a hard error.
+ */
+export const ARCHIVE_ONLY_STATUSES = ["archived", "duplicate", "wont-do"];
+export const ARCHIVE_STATUSES = [...STATUSES, ...ARCHIVE_ONLY_STATUSES];
+
+/**
+ * Known values for `failureKind` on blocker tickets created after a failed merge —
+ * an enum so merge failures are classifiable rather than free text. Unknown values
+ * are a warning, not an error, so a newer board doesn't hard-fail an older validator.
+ */
+export const FAILURE_KINDS = ["merge-conflict", "merge-schema-invalid", "merge-unknown-status", "merge-missing-sha"];
+
 export const PRIORITY = ["P0", "P1", "P2", "P3"];
 export const SWAG = ["XS", "S", "M", "L", "XL"];
 export const MODELS = ["haiku", "sonnet", "opus"];
@@ -96,8 +114,29 @@ export function validateBoard(data, opts = {}) {
   }
   const allEpicIds = new Set([...epicIds, ...archivedEpics.map((e) => e.id)]);
 
+  // ── Archived tickets are validated too: they stay dependency targets forever, so a
+  //    malformed or duplicated archive entry corrupts eligibility just as surely as a
+  //    live one. Ids must be unique ACROSS active + archive — a collision here is how
+  //    archive-on-done tooling has historically deleted the wrong ticket.
+  const archivedIds = new Set();
+  for (const t of archived) {
+    const id = t.id ?? "(no id)";
+    if (!t.id) err(`archive: ticket missing id: ${JSON.stringify(t).slice(0, 60)}`);
+    if (archivedIds.has(t.id)) err(`archive: duplicate ticket id "${t.id}" — ids must be unique across data.json + archive.json.`);
+    archivedIds.add(t.id);
+
+    // Archived tickets may additionally carry the archive-only terminal states.
+    if (!t.status || !ARCHIVE_STATUSES.includes(t.status)) err(`archive ${id}: invalid status "${t.status}".`);
+    if (t.priority && !PRIORITY.includes(t.priority)) err(`archive ${id}: invalid priority "${t.priority}".`);
+    if (t.swag && !SWAG.includes(t.swag)) err(`archive ${id}: invalid swag "${t.swag}".`);
+    if (t.model && !MODELS.includes(t.model)) err(`archive ${id}: invalid model "${t.model}".`);
+    if (t.execution_mode && !MODES.includes(t.execution_mode)) err(`archive ${id}: invalid execution_mode "${t.execution_mode}".`);
+    if (t.failureKind && !FAILURE_KINDS.includes(t.failureKind)) {
+      warn(`archive ${id}: unknown failureKind "${t.failureKind}" — known: ${FAILURE_KINDS.join(", ")}.`);
+    }
+  }
+
   // ── Ids that exist somewhere, and ids that count as "done" for dependency purposes ──
-  const archivedIds = new Set(archived.map((t) => t.id));
   const ticketIds = new Set(); // live only
   const deps = new Map();
   const statusById = new Map();
@@ -106,16 +145,33 @@ export function validateBoard(data, opts = {}) {
     const id = t.id ?? "(no id)";
     if (!t.id) err(`Ticket missing id: ${JSON.stringify(t).slice(0, 60)}`);
     if (ticketIds.has(t.id)) err(`Duplicate ticket id: ${t.id}`);
-    if (archivedIds.has(t.id)) warn(`${id}: also present in archive.json (live copy wins).`);
+    if (archivedIds.has(t.id)) err(`${id}: also present in archive.json — ids must be unique across data.json + archive.json.`);
     ticketIds.add(t.id);
     statusById.set(t.id, t.status);
 
-    if (!t.status || !STATUSES.includes(t.status)) err(`${id}: invalid status "${t.status}".`);
+    if (ARCHIVE_ONLY_STATUSES.includes(t.status)) {
+      // A declined or duplicate ticket belongs in the archive; leaving it live either
+      // clutters the board or, worse, gets "resolved" by flipping it to done — recording
+      // work as finished that never was.
+      err(`${id}: status "${t.status}" is archive-only — move the ticket to archive.json (live statuses: ${STATUSES.join(", ")}).`);
+    } else if (!t.status || !STATUSES.includes(t.status)) {
+      err(`${id}: invalid status "${t.status}".`);
+    }
     if (t.priority && !PRIORITY.includes(t.priority)) err(`${id}: invalid priority "${t.priority}".`);
     if (t.swag && !SWAG.includes(t.swag)) err(`${id}: invalid swag "${t.swag}".`);
     if (t.model && !MODELS.includes(t.model)) err(`${id}: invalid model "${t.model}".`);
     else if (!t.model) warn(`${id}: no model set (will fall back to the area default).`);
     if (t.execution_mode && !MODES.includes(t.execution_mode)) err(`${id}: invalid execution_mode "${t.execution_mode}".`);
+    if (t.failureKind && !FAILURE_KINDS.includes(t.failureKind)) {
+      warn(`${id}: unknown failureKind "${t.failureKind}" — known: ${FAILURE_KINDS.join(", ")}.`);
+    }
+
+    // A human gate makes the ticket ineligible for auto-pick, so `todo`/`in-progress`
+    // is misleading — it looks runnable on the board but never runs. Flag it so a
+    // human notices and either clears the gate or moves it back to backlog.
+    if (t.human_gate && (t.status === "todo" || t.status === "in-progress")) {
+      warn(`${id}: human-gated ticket is "${t.status}" — the gate makes it ineligible; clear the gate or move it to backlog.`);
+    }
 
     // Model floor: surface when a ticket will be raised to its area's floor at run time.
     if (config && t.model && MODELS.includes(t.model)) {
@@ -152,7 +208,8 @@ export function validateBoard(data, opts = {}) {
     deps.set(t.id, Array.isArray(t.depends_on) ? t.depends_on : []);
   }
 
-  // A dependency exists if it's a live ticket OR an archived ticket.
+  // A dependency exists if it's a live ticket OR an archived ticket — landed tickets move
+  // to archive.json by design, so deps legitimately point into the archive.
   const existingIds = new Set([...ticketIds, ...archivedIds]);
   // A dependency is satisfied if it's archived (all archived work is done) or a live done ticket.
   const doneIds = new Set([
@@ -161,9 +218,12 @@ export function validateBoard(data, opts = {}) {
   ]);
 
   // ── Dependency integrity ──
+  // An id found in NEITHER data.json nor archive.json is a hard error, not a warning:
+  // the runtime treats an absent dependency as satisfied, so a typo'd dep silently
+  // UNBLOCKS the ticket instead of holding it — the opposite of what the author meant.
   for (const [id, ds] of deps) {
     for (const d of ds) {
-      if (!existingIds.has(d)) err(`${id}: depends_on "${d}" which does not exist.`);
+      if (!existingIds.has(d)) err(`${id}: depends_on "${d}" which does not exist in data.json or archive.json.`);
     }
   }
 
