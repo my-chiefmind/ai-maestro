@@ -32,6 +32,7 @@ const FULL_ROSTER = [
   "backend-developer",
   "frontend-developer",
   "devops",
+  "technical-writer",
   "qa",
   "principal-delivery",
 ];
@@ -92,6 +93,21 @@ test("a plan routed to an agent the project dropped is rejected", () => {
     const { ok, out } = validate(dir);
     assert.equal(ok, false, "board with an off-roster agent must be invalid");
     assert.match(out, /unknown agent "devops"/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The starter ships a `docs` area and a model floor for it, so a docs ticket is something
+// users will file on day one. Until technical-writer existed there was no agent behind that
+// code and every such ticket failed validation — the example board never exercised the area,
+// so nothing caught it.
+test("the docs area has an agent behind it", () => {
+  const dir = project({ roster: FULL_ROSTER, plan: ["docs", "qa", "merge"] });
+  try {
+    const { ok, out } = validate(dir);
+    assert.equal(ok, true, `a docs ticket must be runnable, got:\n${out}`);
+    assert.match(out, /Board valid/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

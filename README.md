@@ -67,7 +67,7 @@ same way of working.
 | Piece | What it is |
 | --- | --- |
 | [`board/`](./board/) | The board format (`board.schema.json`) + a runnable example board |
-| [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, qa, principal-delivery |
+| [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, technical-writer, qa, principal-delivery |
 | [`skills/`](./skills/) | Reusable skills — the `/project-plan` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
 | [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |

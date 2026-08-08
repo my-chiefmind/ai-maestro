@@ -33,7 +33,7 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
 
    Run each stage:
    - `pe` → produce a plan.
-   - `backend`/`frontend`/`devops` → implement against the plan in the worktree.
+   - `backend`/`frontend`/`devops`/`docs` → implement against the plan in the worktree.
    - `qa` → independent review vs. the ticket's acceptance criteria.
    - `pd` → delivery validation.
 6. **Land or block**:
