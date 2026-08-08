@@ -3,6 +3,7 @@
  * maestro — the one command a newcomer runs.
  *
  *   maestro init [--dir <repo>] [--name <name>] [--areas a,b,c] [--starter orchestrated|lightweight] [--yes]
+ *   maestro update [--kit <dir>] [--force]   (bring a set-up kit to this CLI's version)
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *
@@ -13,7 +14,7 @@
  * No third-party dependencies.
  */
 
-import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync } from "fs";
 import { resolve, dirname, join, relative, basename, sep } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
@@ -46,16 +47,15 @@ const VENDORED = ["agents", "skills", "render", "scripts", "board", "cockpit", "
 // install on first `npm run board` (see the `preboard` script below).
 const VENDOR_SKIP = new Set(["node_modules", "dist", ".backups", ".git"]);
 
-function vendorKit(dest) {
-  mkdirSync(dest, { recursive: true });
-  const filter = (src) => !VENDOR_SKIP.has(basename(src));
-  for (const entry of VENDORED) {
-    const src = join(KIT_ROOT, entry);
-    if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter });
-  }
-  // Minimal package.json so `npm run sync` / `npm run validate` / `npm run board` work from
-  // the folder, matching what the docs tell clone users to run. `preboard` installs the
-  // cockpit's deps on demand so the first `npm run board` just works.
+// The vendored board folder mixes kit files (schema, README) with the project's live tickets —
+// these two are the user's work and must survive an update.
+const BOARD_USER_FILES = new Set(["data.json", "archive.json"]);
+
+// Minimal package.json so `npm run sync` / `npm run validate` / `npm run board` work from
+// the folder, matching what the docs tell clone users to run. `preboard` installs the
+// cockpit's deps on demand so the first `npm run board` just works. `update` goes through
+// npx: the vendored copy is dependency-free and can't fetch a newer version itself.
+function writeVendorPackageJson(dest) {
   const pkg = {
     name: "maestro",
     private: true,
@@ -64,11 +64,51 @@ function vendorKit(dest) {
       setup: "node bin/cli.mjs setup",
       sync: "node render/sync.mjs --project .",
       validate: "node scripts/validate-board.mjs board/data.json",
+      update: "npx @mychiefmind/ai-maestro@latest update --kit .",
       preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
     },
   };
   writeFileSync(join(dest, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
+}
+
+function vendorKit(dest) {
+  mkdirSync(dest, { recursive: true });
+  const filter = (src) => !VENDOR_SKIP.has(basename(src));
+  for (const entry of VENDORED) {
+    const src = join(KIT_ROOT, entry);
+    if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter });
+  }
+  writeVendorPackageJson(dest);
+}
+
+// Re-vendor over an existing kit copy. Each entry is removed before copying so files deleted
+// upstream disappear too — a plain overwrite would leave them behind forever. board/ is the
+// exception: its user files are kept in place and everything else is swapped file by file.
+function refreshVendoredKit(dest) {
+  const filter = (src) => !VENDOR_SKIP.has(basename(src));
+  for (const entry of VENDORED) {
+    const src = join(KIT_ROOT, entry);
+    if (!existsSync(src)) continue;
+    if (entry === "board") {
+      const destBoard = join(dest, "board");
+      mkdirSync(destBoard, { recursive: true });
+      for (const f of readdirSync(destBoard)) {
+        if (BOARD_USER_FILES.has(f) || VENDOR_SKIP.has(f) || existsSync(join(src, f))) continue;
+        rmSync(join(destBoard, f), { recursive: true, force: true });
+      }
+      for (const f of readdirSync(src)) {
+        if (VENDOR_SKIP.has(f)) continue;
+        if (BOARD_USER_FILES.has(f) && existsSync(join(destBoard, f))) continue;
+        rmSync(join(destBoard, f), { recursive: true, force: true });
+        cpSync(join(src, f), join(destBoard, f), { recursive: true, filter });
+      }
+    } else {
+      rmSync(join(dest, entry), { recursive: true, force: true });
+      cpSync(src, join(dest, entry), { recursive: true, filter });
+    }
+  }
+  writeVendorPackageJson(dest);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -501,6 +541,111 @@ ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or t
   }
 }
 
+const readKitVersion = (dir) =>
+  existsSync(join(dir, "VERSION")) ? readFileSync(join(dir, "VERSION"), "utf8").trim() : "0.0.0";
+
+function cmpSemver(a, b) {
+  const pa = a.split(/[.+-]/, 3).map(Number);
+  const pb = b.split(/[.+-]/, 3).map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
+
+// A clone updates via git — but only when KIT_ROOT is itself the top of a repository. A kit
+// vendored into a user's project sits *inside* their repo, so a bare "am I in a repo?" check
+// would happily `git pull` the user's project instead of the kit.
+function isKitClone() {
+  const r = spawnSync("git", ["-C", KIT_ROOT, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  return r.status === 0 && resolve(r.stdout.trim()) === KIT_ROOT;
+}
+
+/**
+ * update — bring an installed kit up to the version this CLI ships.
+ *
+ * From npm/npx/global (IS_PACKAGED): refreshes the kit that `setup` vendored into
+ * <repo>/maestro/ — kit files are replaced, the user's config.json / context.md / board data
+ * are kept — then re-renders .claude/ and re-checks the board. The registry is the update
+ * channel, so run it through the latest package:
+ *
+ *   npx @mychiefmind/ai-maestro@latest update      # at the repo root
+ *   npm run update                                 # from the maestro/ folder (same thing)
+ *
+ * From a clone of the kit repo: `git pull --ff-only`, then re-render (or, for a shared kit
+ * with no config.json of its own, print the per-project re-render command).
+ */
+async function update(args) {
+  if (!IS_PACKAGED) {
+    if (!isKitClone()) {
+      console.error(`✗ This kit copy has no update channel of its own — it was vendored by 'setup'.
+  Update it from the registry instead (from your repo root):
+
+    npx @mychiefmind/ai-maestro@latest update`);
+      process.exit(2);
+    }
+    const before = readKitVersion(KIT_ROOT);
+    console.log(`→ Pulling the kit clone at ${KIT_ROOT} …`);
+    const pull = spawnSync("git", ["-C", KIT_ROOT, "pull", "--ff-only"], { stdio: "inherit" });
+    if (pull.status !== 0) {
+      console.error("✗ 'git pull --ff-only' failed — resolve that in the kit clone, then re-run.");
+      process.exit(1);
+    }
+    const after = readKitVersion(KIT_ROOT);
+    console.log(before === after ? `✓ Already up to date (v${after}).` : `✓ Kit updated v${before} → v${after}.`);
+    if (existsSync(join(KIT_ROOT, "config.json"))) {
+      console.log("\n→ Re-rendering agents & skills…");
+      if (run("render/sync.mjs", ["--project", KIT_ROOT]) !== 0) process.exit(1);
+    } else {
+      // A shared kit serves several repos and doesn't know where they are.
+      console.log(`  This kit has no project of its own — re-render each repo that uses it:
+    node ${join(KIT_ROOT, "render", "sync.mjs")} --project <repo>/maestro`);
+    }
+    return;
+  }
+
+  // Packaged: find the vendored kit. `--kit` wins; then a kit at the cwd (npm run update from
+  // inside maestro/); then the default vendoring spot, <cwd>/maestro.
+  const cwdIsKit = existsSync(join(process.cwd(), "config.json")) && existsSync(join(process.cwd(), "render", "sync.mjs"));
+  const kit = resolve(flag(args, "kit") || (cwdIsKit ? process.cwd() : join(process.cwd(), "maestro")));
+  const kitRel = relative(process.cwd(), kit) || ".";
+  if (!existsSync(join(kit, "config.json"))) {
+    console.error(`✗ No set-up kit at ${kitRel}/ — nothing to update.
+  Run 'npx @mychiefmind/ai-maestro setup' first, or point at the kit folder with --kit <dir>.`);
+    process.exit(2);
+  }
+
+  const before = readKitVersion(kit);
+  const target = readKitVersion(KIT_ROOT);
+  if (before === target && !has(args, "force")) {
+    console.log(`✓ Already up to date (v${target}).`);
+    return;
+  }
+  if (cmpSemver(target, before) < 0 && !has(args, "force")) {
+    console.error(`✗ ${kitRel}/ is at v${before} but this CLI ships v${target} — refusing to downgrade.
+  Run the latest CLI ('npx @mychiefmind/ai-maestro@latest update'), or pass --force to downgrade anyway.`);
+    process.exit(2);
+  }
+
+  console.log(`→ Updating ${kitRel}/ v${before} → v${target} …`);
+  refreshVendoredKit(kit);
+  console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
+
+  console.log("\n→ Re-rendering agents & skills…");
+  if (run("render/sync.mjs", ["--project", kit], kit) !== 0) {
+    console.error(`✗ Render failed. Fix the errors above, then run 'npm run sync' from ${kitRel}/.`);
+    process.exit(1);
+  }
+
+  const boardData = join(kit, "board", "data.json");
+  if (existsSync(boardData)) {
+    console.log("\n→ Checking the board…");
+    run("scripts/validate-board.mjs", [boardData, "--agents", join(kit, "agents")], kit);
+  }
+
+  console.log(`\n${C.green(C.b(`✅  ${kitRel}/ is on v${target}.`))}`);
+}
+
 function help() {
   console.log(`ai-maestro <command>
 
@@ -510,6 +655,11 @@ function help() {
               Offers to open the visual board at the end (--no-board to skip, --yes to auto-open)
               Answer non-interactively with: --name, --areas, --outcome, --users, --stack,
               --constraints, --run, --test  (anything omitted defaults to "propose one")
+  update      Bring a set-up kit to this CLI's version
+              Refreshes the kit files in maestro/ and re-renders .claude/; your config.json,
+              context.md, and board data are kept. Run it through the latest package:
+              'npx @mychiefmind/ai-maestro@latest update' (or 'npm run update' from maestro/).
+              On a git clone of the kit it pulls the clone and re-renders instead.
   sync        Re-render .claude/ from config.json + context.md
   validate    Check the board's integrity
   init        Alternative: set up as a small capsule pointing at a kit elsewhere
@@ -534,6 +684,7 @@ Examples:
 // The commands the interactive picker offers, in menu order.
 const COMMANDS = [
   { key: "setup", label: "Set up AI Maestro in your project (start here)" },
+  { key: "update", label: "Bring a set-up kit to this CLI's version" },
   { key: "sync", label: "Re-render .claude/ from config.json + context.md" },
   { key: "validate", label: "Check the board's integrity" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
@@ -542,6 +693,7 @@ const COMMANDS = [
 async function dispatch(command, args) {
   switch (command) {
     case "setup": await setup(args); break;
+    case "update": await update(args); break;
     case "init": await init(args); break;
     case "sync": process.exit(run("render/sync.mjs", args)); break;
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
