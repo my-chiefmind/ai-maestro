@@ -101,10 +101,10 @@ The enumerated surface:
 | Component | Contacts | When |
 | --- | --- | --- |
 | `bin/cli.mjs`, `render/`, `scripts/` | Nothing. No HTTP client, no `fetch`, no sockets. | — |
-| Cockpit data service (`cockpit/server/index.mjs`) | Binds `127.0.0.1:4600`. Listens only; never dials out. | While the board runs |
+| Cockpit data service (`cockpit/server/index.mjs`) | Binds `127.0.0.1`, on 4600 or the next free port above it. Loopback either way; listens only, never dials out. | While the board runs |
 | Cockpit UI (`cockpit/src/`) | Same-origin relative paths only (`/api/board`, `/api/config`, `/api/roster`, `/api/docs`, `/api/spec/*`). No absolute URLs. | While the board is open |
 | Your browser, rendering a doc | Whatever external image hosts that doc references. No shipped doc currently references any. | Only while the Docs tab shows such a doc |
-| Vite dev server | Serves `localhost:5273`, proxies `/api` → `localhost:4600`. | Dev only |
+| Vite dev server | Serves `localhost:5273` (or the next free port), proxies `/api` → the data service's port. | Dev only |
 | `npm ci` for the cockpit | Your configured npm registry. | First `npm run board` only |
 
 There is **no telemetry, no analytics, and no crash reporting**, and no plan to add any.

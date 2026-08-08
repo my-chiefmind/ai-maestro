@@ -6,6 +6,7 @@ import RosterPage from './RosterPage';
 import DocsPage from './DocsPage';
 import HelpPage from './HelpPage';
 import WelcomeModal from './WelcomeModal';
+import { useConfig } from './useConfig';
 import logoUrl from '../asset/logo.png';
 
 type Tab = 'board' | 'roster' | 'docs' | 'help';
@@ -14,6 +15,9 @@ export default function App() {
   const [mode, setMode] = useState<ThemeMode>('dark');
   const [tab, setTab] = useState<Tab>('board');
   const theme = useMemo(() => buildTheme(mode), [mode]);
+  // Which project this board belongs to. Without it the console looks identical for every
+  // repo, which matters as soon as you have two of them open.
+  const projectName = useConfig()?.name;
 
   return (
     <ThemeProvider theme={theme}>
@@ -25,6 +29,14 @@ export default function App() {
           <Box component="img" src={logoUrl} alt="AI Maestro"
             sx={{ height: 24, width: 24, borderRadius: 1, display: 'block', objectFit: 'cover' }} />
           <Typography sx={{ fontWeight: 800, letterSpacing: '-0.02em' }}>AI Maestro</Typography>
+          {projectName && (
+            <>
+              <Typography aria-hidden sx={{ color: 'text.disabled', mx: 0.2 }}>/</Typography>
+              <Typography sx={{ fontWeight: 700, color: 'primary.main', letterSpacing: '-0.01em' }}>
+                {projectName}
+              </Typography>
+            </>
+          )}
           <Box sx={{ display: 'flex', gap: 0.5, ml: 2 }}>
             <NavButton active={tab === 'board'} onClick={() => setTab('board')}>Board</NavButton>
             <NavButton active={tab === 'roster'} onClick={() => setTab('roster')}>Roster</NavButton>
