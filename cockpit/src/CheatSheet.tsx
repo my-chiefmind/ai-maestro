@@ -2,21 +2,22 @@ import { useState } from 'react';
 import { Box, Typography, Tooltip, IconButton } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 
-// The onboarding prompt a user pastes into Claude Code on first use — fills context.md from
-// the real codebase, seeds starter tickets, and re-renders. Kept in one place so the welcome
-// modal, the Help page, and the docs all speak with one voice.
-export const ONBOARDING_PROMPT = `Onboard AI Maestro into this project.
+// The prompt a user pastes into Claude Code on first use. `setup` already wrote the brief from
+// their answers, so this is the planning step: brief → epics + dependency-ordered tickets,
+// stopping for review. Kept in one place so the welcome modal, the Help page, and the docs all
+// speak with one voice.
+export const ONBOARDING_PROMPT = `Plan this project in AI Maestro.
 
-1. Fill in maestro/context.md — the brief every agent reads: what this
-   project is, its stack, conventions, and how to run and test it, drawn
-   from the ACTUAL codebase (README, manifests, configs) — not guesses.
-2. Seed maestro/board/data.json with a few real starter tickets from
-   obvious near-term work (TODOs, missing tests, rough edges), status "todo".
-3. Run \`npm run sync\` from the maestro/ folder so .claude/ reflects it.
-4. Report back the areas, the agent roster, and whether I should commit maestro/.
+Read the brief I gave setup and propose an answer for anything I left as
+"propose one", drawn from the ACTUAL codebase (README, manifests, configs)
+— not guesses. Then turn the brief into a board: a few outcome-based epics
+and small, dependency-ordered tickets, each with acceptance criteria I
+could verify, all at status "todo".
 
-Do NOT execute tickets yet. Stop after sync so I can review — then I'll
-ask the orchestrator agent to start.`;
+Validate the board, then STOP and show me the epics, the tickets in
+delivery order, which one is ready first, and every assumption that needs
+my approval. Do NOT implement anything yet — once I've approved the plan
+I'll ask the orchestrator agent to start.`;
 
 type Step = { n: number; title: string; body: React.ReactNode };
 type Cmd = { cmd: string; what: string };
@@ -30,19 +31,22 @@ const STEPS: Step[] = [
   },
   {
     n: 2,
-    title: 'Onboard the project (paste the prompt)',
-    body: <>Paste the onboarding prompt below. It fills <Code>maestro/context.md</Code> from your real code, seeds a few starter tickets, and runs <Code>npm&nbsp;run&nbsp;sync</Code>.</>,
+    title: 'Plan the work',
+    body: <>Run <Code>/project-plan</Code> (or paste the prompt below). Your brief becomes epics and dependency-ordered tickets — then it stops for your review.</>,
   },
   {
     n: 3,
     title: 'Start conducting',
-    body: <>Ask the <Code>orchestrator</Code> agent to begin — it picks the first unblocked ticket and runs it through plan → build → QA → merge.</>,
+    body: <>Approve the plan, then run <Code>/orchestrator</Code> — it picks the first unblocked ticket and runs it through plan → build → QA → merge, one ticket per run.</>,
   },
 ];
 
-// Handy commands, all run from the maestro/ folder unless noted.
+// Handy commands, all run from the maestro/ folder unless noted. The slash commands run inside
+// Claude Code at the repo root, not in a shell.
 const COMMANDS: Cmd[] = [
   { cmd: 'claude', what: 'Open Claude Code in your repo root' },
+  { cmd: '/project-plan', what: 'Turn your brief into epics + tickets, then stop for review' },
+  { cmd: '/orchestrator', what: 'Build the next unblocked ticket (one per run)' },
   { cmd: 'npm run sync', what: 'Re-render .claude/ after editing context.md or the board' },
   { cmd: 'npm run validate', what: "Check the board's integrity" },
   { cmd: 'npm run board', what: 'Open this visual board' },
@@ -116,7 +120,7 @@ export default function CheatSheet({ compact = false }: { compact?: boolean }) {
 
       {/* The copyable onboarding prompt */}
       <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: '.11em', textTransform: 'uppercase',
-        color: 'text.secondary', mb: 0.8 }}>Onboarding prompt — paste into Claude Code</Typography>
+        color: 'text.secondary', mb: 0.8 }}>Planning prompt — paste into Claude Code</Typography>
       <Box sx={(t) => ({ position: 'relative', borderRadius: 2, border: '1px solid',
         borderColor: alpha(t.palette.primary.main, 0.25), bgcolor: alpha(t.palette.primary.main, 0.06), mb: 3 })}>
         <Box component="pre" sx={{ m: 0, p: 2, pr: 6, fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace',

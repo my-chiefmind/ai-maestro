@@ -37,14 +37,21 @@ You'll need:
 That's it. The core kit is **dependency-free**, so setup needs no `npm install` and starts
 nothing running.
 
-## Set up — one command, answer two questions
+## Set up — one command, a few questions
 
 Run one command in your project:
 
 ```bash
 cd ~/code/my-app     # your project
-npx @mychiefmind/ai-maestro setup # asks project name + areas
+npx @mychiefmind/ai-maestro setup # asks about your project; Enter accepts every default
 ```
+
+The questionnaire is your **project brief**: name, product outcome, primary users, stack,
+constraints, how it should run locally, how it should be tested, and the areas work is divided
+into. Every description defaults to `propose one` — press Enter and that decision goes to the
+agents, which propose an answer and show it to you before any code is written. To answer
+non-interactively (scripts, CI, or an agent running setup for you), pass `--name`, `--areas`,
+`--outcome`, `--users`, `--stack`, `--constraints`, `--run`, `--test`, and `--yes`.
 
 That copies the kit into `./maestro/` and sets it up — cockpit UI included, so `npm run board`
 works right away. If you prefer git (updates via `git pull`), cloning produces the identical layout:
@@ -52,17 +59,24 @@ works right away. If you prefer git (updates via `git pull`), cloning produces t
 ```bash
 cd ~/code/my-app                                          # your project
 git clone https://github.com/my-chiefmind/ai-maestro.git maestro
-cd maestro && npm run setup                               # asks project name + areas
+cd maestro && npm run setup                               # same questions
 ```
 
 > `npm run setup` runs from inside the `maestro/` folder. If you'd rather stay at your project
 > root, `node maestro/bin/cli.mjs setup` is exactly equivalent.
 
-`setup` writes your `config.json` + `context.md` and seeds a board inside `maestro/`, then
-renders the agents & skills to **`.claude/` and `CLAUDE.md` at your repo root** — where the
-coding tool discovers them, so the orchestrator operates on *your* repo, not the `maestro/`
-subfolder. An existing root `CLAUDE.md` is never overwritten. It's idempotent — re-running does
-nothing once you're set up.
+`setup` writes your `config.json` + `context.md` from those answers and seeds a board inside
+`maestro/`, runs `git init` if the folder isn't a repository yet (tickets run in git worktrees,
+so one is required), then renders the agents & skills to **`.claude/` and `CLAUDE.md` at your
+repo root** — where the coding tool discovers them, so the orchestrator operates on *your* repo,
+not the `maestro/` subfolder. It finishes by validating the board. An existing root `CLAUDE.md`
+is never overwritten, and an existing `context.md` is kept rather than replaced by your answers.
+It's idempotent — re-running does nothing once you're set up.
+
+Then, in your coding agent, run **`/project-plan`**: it turns the brief into 3-6 epics and 5-15
+dependency-ordered tickets, resolves anything you left as `propose one`, validates the board, and
+stops for your review. Approve it, then run **`/orchestrator`** to build a ticket. (Both are
+skills, so plain language reaches them too — "plan the project", "run the board".)
 
 At the end, `setup` asks **"Open the visual board now?"** — answer `Y` and it installs the
 cockpit's deps (first run only) and starts it at `http://localhost:5273`; answer `n` and nothing
@@ -76,35 +90,37 @@ interactive terminal, shows a numbered picker so you can choose `setup` / `sync`
 
 ### Let Claude Code do the onboarding
 
-Prefer not to run the questionnaire by hand? Open your project in
+Prefer not to answer the questionnaire yourself? Open your project in
 [Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste the
-prompt below. It runs `setup`, fills in your `context.md` from the real codebase, and seeds a
-few starter tickets for you to review — then stops, so nothing runs until you say so:
+prompt below. It answers `setup` from your real codebase and plans a board for you to review —
+then stops, so nothing runs until you say so:
 
 ```text
 Add AI Maestro — the AI-agent orchestration kit — to this project.
 
-1. From the repo root, run: npx @mychiefmind/ai-maestro setup
-   It's interactive: it asks for a project name and the areas of this
-   codebase (e.g. frontend, backend, infra). Infer sensible answers from
-   the repo, but show them to me before you commit to them.
+1. From the repo root, run setup non-interactively, filling each answer
+   from the ACTUAL codebase (README, package manifests, configs) — not
+   guesses. Show me the answers before you run it:
+
+   npx @mychiefmind/ai-maestro setup --yes --no-board \
+     --name "<project name>" --areas "<areas, e.g. frontend,backend,infra>" \
+     --outcome "<what this project does>" --users "<who it's for>" \
+     --stack "<languages, frameworks, database, hosting>" \
+     --constraints "<real conventions and guardrails>" \
+     --run "<real dev command>" --test "<real test command>"
+
    This vendors the kit into ./maestro/ and renders agents + skills into
    ./.claude/ at the repo root. It must NOT touch my application code.
 
-2. Fill in maestro/context.md — the brief every agent reads. Summarize
-   what this project is, its stack, key conventions, and how to run and
-   test it, drawn from the ACTUAL codebase (README, package manifests,
-   configs) — not guesses.
+2. Then plan the work: propose a few real starter tickets based on
+   near-term work you can see (TODOs, missing tests, rough edges), keep
+   every ticket status "todo", and validate the board.
 
-3. Seed maestro/board/data.json with a few real starter tickets based on
-   obvious near-term work you can see (TODOs, missing tests, rough edges).
-   Keep them status: "todo" and let me review before anything runs.
+3. Report back: the answers you used, the agent roster, the proposed
+   tickets, and whether I should commit maestro/ or gitignore it.
 
-4. Report back: the areas you chose, the agent roster, and whether I
-   should commit maestro/ or gitignore it.
-
-Do NOT start executing tickets. Stop after setup so I can review — then
-I'll invoke the `orchestrator` agent myself.
+Do NOT start executing tickets. Stop after planning so I can review —
+then I'll invoke the `orchestrator` agent myself.
 ```
 
 ## How it sits in your project
@@ -118,7 +134,7 @@ my-app/
 ├── src/ …                    ← your real code (untouched)
 ├── maestro/                  ← the kit + your settings
 │   ├── config.json           ← project name, areas, models   (setup writes this)
-│   ├── context.md            ← the brief every agent reads    (you fill in)
+│   ├── context.md            ← the brief every agent reads    (setup writes it from your answers)
 │   ├── board/data.json       ← epics + tickets (edit here or in the cockpit)
 │   ├── agents/*.md           ← optional: your own custom agents
 │   └── skills/*/SKILL.md     ← optional: your own custom skills
@@ -141,7 +157,8 @@ under `.claude/` is left alone.
 ## 1. Describe your project — `maestro/context.md`
 
 This is the **brief every agent reads** — the single biggest lever on output quality. `setup`
-seeds a template; replace it with something short and true:
+writes it from your answers, and anything you left as `propose one` is listed under **Open
+questions** for the agents to resolve and show you. Keep it short and true:
 
 - What the app is and who it's for
 - Stack and conventions per area
@@ -204,8 +221,9 @@ node maestro/scripts/validate-board.mjs maestro/board/data.json
 
 ## 4. Run the orchestrator
 
-Open your agentic coding tool at your **repo root** (not inside `maestro/`) and invoke the
-`orchestrator` agent. Each run it will:
+Open your agentic coding tool at your **repo root** (not inside `maestro/`) and run
+**`/orchestrator`** (in Claude Code) or ask for the `orchestrator` agent by name. The skill
+pre-flights the board and your working tree, then hands off to the agent. Each run it will:
 
 1. Read `maestro/board/data.json` and pick the highest-priority unblocked `todo` ticket.
 2. Create a worktree + branch for it (via the `git-branch` skill).

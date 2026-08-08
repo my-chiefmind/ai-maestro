@@ -1,0 +1,994 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>You're the Maestro — build your own game with AI Maestro</title>
+<meta name="description" content="A beginner-friendly quest: install AI Maestro, answer a few questions about your idea, and let a team of AI agents build it one small job at a time." />
+<style>
+/* ────────────────────────────────────────────────────────────────────────────
+   "You're the Maestro" — a kid-friendly quest through an AI Maestro project.
+   Single file on purpose: no fonts, scripts, or images are fetched, so it works
+   offline straight off the disk. Look: arcade cabinet manual, tetromino palette.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Tetromino pieces, used as the whole palette. */
+  --i: #22d3ee;   /* cyan   */
+  --o: #ffd23f;   /* yellow */
+  --t: #c084fc;   /* purple */
+  --s: #4ade80;   /* green  */
+  --z: #fb7185;   /* red    */
+  --l: #fb923c;   /* orange */
+  --j: #60a5fa;   /* blue   */
+
+  --ink: #0b0a1f;
+  --deep: #14122e;
+  --panel: #1d1a3d;
+  --panel-2: #262250;
+  --line: #3b3570;
+  --text: #f2f0ff;
+  --muted: #b3aede;
+
+  --display: Futura, "Avenir Next", "Century Gothic", "Trebuchet MS", "Franklin Gothic Medium", sans-serif;
+  --body: "Avenir Next", Avenir, "Segoe UI", Verdana, sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, "Courier New", monospace;
+
+  --r: 18px;
+  --shadow: 0 18px 0 -8px rgba(0, 0, 0, .45);
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; scroll-padding-top: 92px; }
+
+body {
+  margin: 0;
+  font-family: var(--body);
+  font-size: 18px;
+  line-height: 1.65;
+  color: var(--text);
+  background:
+    radial-gradient(900px 600px at 12% -8%, rgba(96, 165, 250, .22), transparent 60%),
+    radial-gradient(800px 620px at 92% 4%, rgba(192, 132, 252, .20), transparent 62%),
+    radial-gradient(700px 500px at 50% 110%, rgba(34, 211, 238, .14), transparent 60%),
+    linear-gradient(180deg, var(--ink), var(--deep) 45%, var(--ink));
+  background-attachment: fixed;
+}
+
+/* Film grain so the flat colors get some texture. Inline SVG = no network. */
+.grain {
+  position: fixed; inset: 0; z-index: 999; pointer-events: none; opacity: .5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+}
+
+h1, h2, h3, .num, .btn, .kicker, .lvl-label { font-family: var(--display); }
+h2, h3 { line-height: 1.1; letter-spacing: -.01em; }
+
+a { color: var(--i); }
+a:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 3px solid var(--o); outline-offset: 3px; border-radius: 6px;
+}
+
+.wrap { width: min(980px, 92vw); margin: 0 auto; }
+
+.skip {
+  position: absolute; left: -9999px;
+  background: var(--o); color: var(--ink); padding: 10px 16px; border-radius: 0 0 12px 0;
+  font-weight: 700; z-index: 1000;
+}
+.skip:focus { left: 0; top: 0; }
+
+/* ── Brand bar ────────────────────────────────────────────────────────────────
+   This file is handed out on its own (and as a PDF) as well as being served at
+   mychiefmind.com/ai-maestro/demo, so the way back to the project is absolute
+   links rather than site chrome. */
+
+.brandbar { border-bottom: 1px solid var(--line); background: rgba(11, 10, 31, .55); font-size: 14.5px; }
+.brandbar .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 11px 0; }
+.brandbar a { color: var(--i); text-decoration: none; font-weight: 700; }
+.brandbar a:hover { text-decoration: underline; }
+.brandbar .by { margin-left: auto; color: var(--muted); font-weight: 400; }
+.brandbar .by a { color: var(--o); }
+
+/* ── Hero ─────────────────────────────────────────────────────────────────── */
+
+.hero { position: relative; overflow: hidden; padding: 88px 0 64px; }
+
+.hero .wrap { position: relative; z-index: 2; }
+
+/* Blocks drifting down behind the title. Decorative only. */
+.rain { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.rain b {
+  position: absolute; top: -70px; width: 30px; height: 30px; border-radius: 6px;
+  opacity: .5; animation: fall linear infinite;
+  box-shadow: inset 0 0 0 4px rgba(0, 0, 0, .28);
+}
+@keyframes fall {
+  0%   { transform: translateY(-70px) rotate(0deg); }
+  100% { transform: translateY(112vh) rotate(220deg); }
+}
+
+.kicker {
+  display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(255, 210, 63, .14); color: var(--o);
+  border: 2px solid rgba(255, 210, 63, .5);
+  padding: 7px 16px; border-radius: 999px;
+  font-size: 14px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+}
+
+h1 {
+  margin: 20px 0 8px;
+  font-size: clamp(46px, 11vw, 108px);
+  line-height: .92; letter-spacing: -.03em; text-transform: uppercase;
+  text-shadow: 5px 5px 0 rgba(0, 0, 0, .5);
+}
+h1 .stack { display: block; }
+h1 em {
+  font-style: normal;
+  background: linear-gradient(100deg, var(--o), var(--z) 42%, var(--t) 72%, var(--i));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+.tagline { font-size: clamp(19px, 2.4vw, 25px); max-width: 34ch; color: #e9e6ff; margin: 0 0 26px; }
+.tagline b { color: var(--o); }
+
+.facts { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; margin: 0 0 30px; list-style: none; }
+.facts li {
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--line);
+  padding: 6px 14px; border-radius: 999px; font-size: 15px;
+}
+
+.btn {
+  display: inline-block; text-decoration: none;
+  background: var(--o); color: var(--ink);
+  padding: 15px 30px; border-radius: 14px;
+  font-size: 20px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+  box-shadow: 0 7px 0 #b8891a; transition: transform .12s ease, box-shadow .12s ease;
+}
+.btn:hover { transform: translateY(3px); box-shadow: 0 4px 0 #b8891a; }
+.btn:active { transform: translateY(7px); box-shadow: 0 0 0 #b8891a; }
+
+/* ── Sticky progress rail ─────────────────────────────────────────────────── */
+
+.rail {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(11, 10, 31, .86);
+  backdrop-filter: blur(10px);
+  border-block: 1px solid var(--line);
+}
+.rail .wrap { display: flex; align-items: center; gap: 18px; padding: 11px 0; }
+.rail .lvl-label { font-size: 13px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+.meter { flex: 1; height: 13px; background: #0a0920; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.meter i {
+  display: block; height: 100%; width: 0%;
+  background: repeating-linear-gradient(90deg, var(--s) 0 14px, var(--i) 14px 28px);
+  transition: width .35s cubic-bezier(.3, 1.4, .6, 1);
+}
+.score { font-family: var(--mono); font-size: 14px; color: var(--o); min-width: 8ch; text-align: right; }
+
+/* ── Panels ───────────────────────────────────────────────────────────────── */
+
+section { padding: 54px 0; }
+
+.panel {
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 2px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 30px clamp(20px, 4vw, 38px) 34px;
+}
+
+.level-head { display: flex; align-items: center; gap: 18px; margin-bottom: 18px; }
+.num {
+  flex: none; display: grid; place-items: center;
+  width: 62px; height: 62px; border-radius: 16px;
+  font-size: 30px; font-weight: 800; color: var(--ink);
+  box-shadow: inset 0 0 0 5px rgba(0, 0, 0, .22);
+  transform: rotate(-4deg);
+}
+.level-head h2 { font-size: clamp(26px, 4.4vw, 40px); margin: 0; }
+.level-head .sub { display: block; font-family: var(--body); font-size: 15px; color: var(--muted); letter-spacing: 0; text-transform: none; margin-top: 4px; }
+
+/* Each level owns a piece color. */
+#gear      .num { background: var(--o); } #gear      h2 { color: var(--o); }
+#level-1   .num { background: var(--i); } #level-1   h2 { color: var(--i); }
+#level-2   .num { background: var(--t); } #level-2   h2 { color: var(--t); }
+#level-3   .num { background: var(--s); } #level-3   h2 { color: var(--s); }
+#level-4   .num { background: var(--l); } #level-4   h2 { color: var(--l); }
+#level-5   .num { background: var(--z); } #level-5   h2 { color: var(--z); }
+
+p { margin: 0 0 16px; }
+.lead { font-size: 20px; }
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+
+.cards { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin: 26px 0 0; }
+.card {
+  background: rgba(255, 255, 255, .05);
+  border: 2px solid var(--line); border-radius: 14px; padding: 20px;
+}
+.card .ico { font-size: 30px; display: block; margin-bottom: 8px; }
+.card h3 { margin: 0 0 6px; font-size: 20px; }
+.card p { margin: 0; font-size: 16px; color: #e4e1ff; }
+.card:nth-child(1) { border-color: rgba(34, 211, 238, .6); }
+.card:nth-child(2) { border-color: rgba(255, 210, 63, .6); }
+.card:nth-child(3) { border-color: rgba(74, 222, 128, .6); }
+
+/* ── Terminal blocks ──────────────────────────────────────────────────────── */
+
+.term { margin: 22px 0; border-radius: 14px; overflow: hidden; border: 2px solid var(--line); background: #0a0920; }
+.term-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; background: #151233; border-bottom: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+}
+.dot { width: 11px; height: 11px; border-radius: 50%; }
+.term-bar .t { margin-left: 6px; }
+.term-bar button {
+  margin-left: auto; cursor: pointer;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 12px; font-family: var(--body); font-size: 13px; font-weight: 700;
+}
+.term-bar button:hover { background: var(--line); }
+.term-bar button.done { background: var(--s); color: var(--ink); border-color: var(--s); }
+
+.term pre {
+  margin: 0; padding: 16px 18px; overflow-x: auto;
+  font-family: var(--mono); font-size: 15px; line-height: 1.75; color: #e7e4ff;
+}
+.term .c { color: #6f68a8; }             /* comment  */
+.term .p { color: var(--s); }            /* prompt   */
+.term .k { color: var(--o); }            /* key word */
+.term .q { color: var(--i); }            /* question */
+
+/* ── Word check ───────────────────────────────────────────────────────────── */
+
+.word {
+  display: flex; gap: 14px; align-items: flex-start;
+  background: rgba(96, 165, 250, .1);
+  border-left: 5px solid var(--j);
+  border-radius: 0 14px 14px 0;
+  padding: 15px 18px; margin: 20px 0;
+  font-size: 17px;
+}
+.word .ico { font-size: 22px; line-height: 1.3; }
+.word b { color: var(--j); }
+
+.tip { background: rgba(74, 222, 128, .1); border-left-color: var(--s); }
+.tip b { color: var(--s); }
+.warn { background: rgba(251, 113, 133, .1); border-left-color: var(--z); }
+.warn b { color: var(--z); }
+
+/* ── Checklist / save points ──────────────────────────────────────────────── */
+
+.checks { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 10px; }
+.checks li {
+  background: rgba(255, 255, 255, .05); border: 2px solid var(--line);
+  border-radius: 12px; transition: border-color .18s ease, background .18s ease;
+}
+.checks label { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; cursor: pointer; }
+.checks input { flex: none; width: 24px; height: 24px; margin: 2px 0 0; accent-color: var(--s); cursor: pointer; }
+.checks li:has(input:checked) { border-color: var(--s); background: rgba(74, 222, 128, .12); }
+.checks li:has(input:checked) .txt { color: var(--muted); text-decoration: line-through; }
+.checks .txt b { display: block; font-size: 17px; color: var(--text); text-decoration: none; }
+.checks .txt span { font-size: 15.5px; color: #dcd8ff; }
+
+/* ── Tables ───────────────────────────────────────────────────────────────── */
+
+.tbl-scroll { overflow-x: auto; margin: 24px 0 0; border: 2px solid var(--line); border-radius: 14px; }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 16px; }
+th, td { text-align: left; padding: 12px 15px; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th { background: #151233; font-family: var(--display); font-size: 14px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:nth-child(even) { background: rgba(255, 255, 255, .03); }
+code {
+  font-family: var(--mono); font-size: .92em;
+  background: rgba(34, 211, 238, .13); color: var(--i);
+  padding: 2px 7px; border-radius: 6px;
+}
+td code { white-space: nowrap; }
+
+/* ── Speech bubble from the robot ─────────────────────────────────────────── */
+
+.bot { display: flex; gap: 16px; align-items: flex-end; margin: 28px 0 0; }
+.bot .face { flex: none; font-size: 44px; filter: drop-shadow(0 6px 0 rgba(0, 0, 0, .4)); }
+.bubble {
+  position: relative; background: var(--panel-2);
+  border: 2px solid var(--line); border-radius: 16px; padding: 16px 20px; font-size: 17px;
+}
+.bubble::before {
+  content: ""; position: absolute; left: -9px; bottom: 16px;
+  width: 16px; height: 16px; background: var(--panel-2);
+  border-left: 2px solid var(--line); border-bottom: 2px solid var(--line);
+  transform: rotate(45deg);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+
+footer { padding: 50px 0 70px; text-align: center; color: var(--muted); font-size: 16px; }
+footer .big { font-family: var(--display); font-size: clamp(24px, 4vw, 36px); color: var(--text); text-transform: uppercase; margin-bottom: 10px; }
+
+.outlinks { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 12px; list-style: none; padding: 0; margin: 26px 0 16px; }
+.outlinks a {
+  display: inline-block; text-decoration: none; color: var(--text);
+  background: rgba(255, 255, 255, .05); border: 2px solid var(--line);
+  border-radius: 999px; padding: 8px 18px; font-size: 15px; font-weight: 700;
+  transition: border-color .18s ease, color .18s ease;
+}
+.outlinks a:hover { border-color: var(--i); color: var(--i); }
+.fineprint { font-size: 14px; }
+
+/* ── Load-in animation ────────────────────────────────────────────────────── */
+
+.rise { animation: rise .6s cubic-bezier(.2, .9, .3, 1) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .rain { display: none; }
+  *, *::before, *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }
+}
+
+@media (max-width: 560px) {
+  body { font-size: 17px; }
+  .num { width: 52px; height: 52px; font-size: 25px; }
+  .rail .lvl-label { display: none; }
+}
+
+/* ── Print / PDF ──────────────────────────────────────────────────────────────
+   demo.pdf is generated from this file, so the printed version has to be a real
+   layout rather than a screenshot: keep the colors (they're the whole identity),
+   drop anything that only makes sense on screen, and stop panels from being cut
+   in half across a page break. */
+@media print {
+  html, body {
+    print-color-adjust: exact; -webkit-print-color-adjust: exact;
+    background: var(--ink); font-size: 11.5pt;
+  }
+  @page { size: A4; margin: 12mm 13mm; }
+
+  /* Screen-only furniture. */
+  .grain, .rain, .rail, .skip, .btn, .brandbar, [data-copy] { display: none !important; }
+
+  /* On paper a pill-shaped link is a dead end — print the address next to it. */
+  .outlinks { display: block; margin: 10pt 0 6pt; }
+  .outlinks li { display: block; margin: 3pt 0; }
+  .outlinks a { border: 0; background: none; padding: 0; color: var(--i); }
+  .outlinks a::after { content: " — " attr(href); color: var(--muted); font-weight: 400; }
+
+  /* The load-in animation starts at opacity 0. Printing doesn't run it, so without this the
+     whole hero renders invisible on page 1. */
+  .rise { animation: none !important; opacity: 1 !important; transform: none !important; }
+
+  .wrap { width: 100%; }
+  /* Page 1 becomes a cover: the hero alone, then a clean break. */
+  .hero { padding: 24pt 0; break-after: page; }
+  h1 { font-size: 44pt; text-shadow: none; }
+  /* Clipping a gradient to the glyphs isn't honored when printing — it paints as a solid
+     rectangle over the word. Use a flat color instead. */
+  h1 em {
+    background: none; color: var(--o); -webkit-text-fill-color: var(--o);
+    -webkit-background-clip: border-box; background-clip: border-box;
+  }
+  .facts li { border-color: #4a4290; }
+
+  section { padding: 12pt 0; break-inside: avoid; }
+  .panel { box-shadow: none; padding: 16pt 18pt; break-inside: avoid; }
+  .cards { break-inside: avoid; }
+  .card, .term, .word, .bot, .checks li, .tbl-scroll { break-inside: avoid; }
+  .term pre { white-space: pre-wrap; word-break: break-word; font-size: 9.5pt; }
+  table { min-width: 0; font-size: 10pt; }
+  .tbl-scroll { overflow: visible; }
+  thead { display: table-header-group; }        /* repeat headers on split tables */
+  tr { break-inside: avoid; }
+  footer { padding: 18pt 0 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+<a class="skip" href="#gear">Skip to the first step</a>
+
+<div class="brandbar">
+  <div class="wrap">
+    <a href="https://mychiefmind.com/ai-maestro">◂ What AI Maestro is</a>
+    <span class="by">an open-source instrument by <a href="https://mychiefmind.com">My Chief Mind</a></span>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="rain" aria-hidden="true"></div>
+  <div class="wrap">
+    <p class="kicker rise">🎮 Build-your-own-thing quest</p>
+    <h1 class="rise" style="animation-delay:.08s">
+      <span class="stack">You're the</span>
+      <span class="stack"><em>Maestro</em></span>
+    </h1>
+    <p class="tagline rise" style="animation-delay:.16s">
+      You have the ideas. A team of <b>robot coders</b> does the typing — one small job at a time,
+      and you check every single one.
+    </p>
+    <ul class="facts rise" style="animation-delay:.24s">
+      <li>⏱ about 30 minutes to start</li>
+      <li>🧠 no coding experience needed</li>
+      <li>🧱 we'll build a Tetris game (or your own idea)</li>
+    </ul>
+    <a class="btn rise" href="#gear" style="animation-delay:.3s">Press start ▸</a>
+  </div>
+</header>
+
+<div class="rail">
+  <div class="wrap">
+    <span class="lvl-label">Your progress</span>
+    <span class="meter" role="progressbar" aria-label="Steps finished" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="fill"></i></span>
+    <span class="score" id="score">0 / 0</span>
+  </div>
+</div>
+
+<main>
+
+  <!-- What's about to happen ------------------------------------------------->
+  <section class="wrap" id="what">
+    <div class="panel">
+      <h2 style="color:var(--i)">Here's the whole plan</h2>
+      <p class="lead">Three moves. That's it. Everything below is just those three moves, slowly.</p>
+      <div class="cards">
+        <div class="card">
+          <span class="ico" aria-hidden="true">💬</span>
+          <h3>1. You describe it</h3>
+          <p>You answer a few questions about the thing you want to make. Short answers are fine.</p>
+        </div>
+        <div class="card">
+          <span class="ico" aria-hidden="true">🗂️</span>
+          <h3>2. It makes a plan</h3>
+          <p>Your idea gets chopped into small jobs, in the order they should be built. You approve it.</p>
+        </div>
+        <div class="card">
+          <span class="ico" aria-hidden="true">🔨</span>
+          <h3>3. It builds, you check</h3>
+          <p>One small job per turn. You look at the result before the next one starts. You're in charge.</p>
+        </div>
+      </div>
+      <div class="word">
+        <span class="ico" aria-hidden="true">📖</span>
+        <div><b>Word check — "the board".</b> Your project's to-do list. Big goals are called
+        <b>epics</b> (like "make the pieces fall"), and each small job is a <b>ticket</b>
+        (like "make the left arrow key move the piece"). Robots work tickets, one at a time.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Level 0 --------------------------------------------------------------->
+  <section class="wrap" id="gear">
+    <div class="panel">
+      <div class="level-head">
+        <span class="num" aria-hidden="true">0</span>
+        <h2>Get your gear<span class="sub">Tick each box as you go — your progress bar fills up.</span></h2>
+      </div>
+      <p>You need three free tools installed. If they're already there, great — tick and move on.
+        Installing things might need a grown-up's password.</p>
+
+      <ul class="checks">
+        <li><label>
+          <input type="checkbox" data-save="gear-node" />
+          <span class="txt"><b>Node.js, version 18 or newer</b>
+          <span>Type <code>node --version</code> in your terminal. If you see something like
+          <code>v20.11.0</code>, you're set. No number? Install it from nodejs.org.</span></span>
+        </label></li>
+        <li><label>
+          <input type="checkbox" data-save="gear-git" />
+          <span class="txt"><b>Git</b>
+          <span>Type <code>git --version</code>. Git is a time machine for your files — it remembers
+          every version, so nothing is ever really lost.</span></span>
+        </label></li>
+        <li><label>
+          <input type="checkbox" data-save="gear-claude" />
+          <span class="txt"><b>Claude Code</b>
+          <span>The AI tool you'll type your wishes into. This is where the robot team lives.</span></span>
+        </label></li>
+      </ul>
+
+      <div class="word">
+        <span class="ico" aria-hidden="true">⌨️</span>
+        <div><b>Word check — "terminal".</b> A window where you <em>type</em> commands instead of
+        clicking buttons. On a Mac it's called <b>Terminal</b>; on Windows, <b>PowerShell</b>.
+        Type a line, press Enter, and the computer does it. Typos are normal — just retype.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Level 1 --------------------------------------------------------------->
+  <section class="wrap" id="level-1">
+    <div class="panel">
+      <div class="level-head">
+        <span class="num" aria-hidden="true">1</span>
+        <h2>Make a home for your project<span class="sub">Three lines. Then the questions start.</span></h2>
+      </div>
+      <p>Open your terminal and type these lines, pressing Enter after each one.
+        Swap <code>tetris-clone</code> for whatever you're making.</p>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">terminal</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre><span class="c"># make a new folder and step inside it</span>
+mkdir tetris-clone
+cd tetris-clone
+
+<span class="c"># bring in AI Maestro and start the questions</span>
+npx @mychiefmind/ai-maestro setup</pre>
+      </div>
+
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>Line</th><th>What it actually does</th></tr></thead>
+          <tbody>
+            <tr><td><code>mkdir tetris-clone</code></td><td><b>M</b>a<b>k</b>e <b>dir</b>ectory — creates an empty folder for your project.</td></tr>
+            <tr><td><code>cd tetris-clone</code></td><td><b>C</b>hange <b>d</b>irectory — walks into that folder. Now you're standing inside it.</td></tr>
+            <tr><td><code>npx …&nbsp;setup</code></td><td>Downloads AI Maestro, sets it up, and starts asking you about your idea.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="word tip">
+        <span class="ico" aria-hidden="true">✅</span>
+        <div><b>It tidies up for you.</b> Setup also starts Git for you (your time machine),
+        creates the robot team, and checks everything is wired up correctly. You don't run any of that yourself.</div>
+      </div>
+
+      <ul class="checks">
+        <li><label>
+          <input type="checkbox" data-save="l1" />
+          <span class="txt"><b>Done — the questions appeared on my screen</b>
+          <span>You should see <em>"AI Maestro — tell me about the project and you're set up"</em>. That's Level 2.</span></span>
+        </label></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Level 2 --------------------------------------------------------------->
+  <section class="wrap" id="level-2">
+    <div class="panel">
+      <div class="level-head">
+        <span class="num" aria-hidden="true">2</span>
+        <h2>Describe your idea<span class="sub">Eight questions. Every one has an escape hatch.</span></h2>
+      </div>
+      <p class="lead">This is the important bit — it's you telling the robots what you actually want.
+        Answer in normal words. Nothing here is permanent.</p>
+
+      <div class="word tip">
+        <span class="ico" aria-hidden="true">↩️</span>
+        <div><b>The magic key is Enter.</b> Every question shows a suggested answer in brackets.
+        Press Enter to accept it. Most say <code>propose one</code>, which means
+        <em>"you figure it out and show me"</em> — the robots will suggest an answer later and ask you to approve it.
+        You can't get this wrong.</div>
+      </div>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">the questions</span>
+        </div>
+<pre><span class="q">Project name</span> <span class="c">(tetris-clone)</span>:
+<span class="q">Product outcome — what the finished product should do</span> <span class="c">(propose one)</span>:
+<span class="q">Primary users — who it is for</span> <span class="c">(propose one)</span>:
+<span class="q">Stack — languages, frameworks, database, hosting</span> <span class="c">(propose one)</span>:
+<span class="q">Constraints — non-negotiable technical or product rules</span> <span class="c">(propose one)</span>:
+<span class="q">How it should run locally</span> <span class="c">(propose one)</span>:
+<span class="q">How it should be tested</span> <span class="c">(propose one)</span>:
+<span class="q">Areas of work (comma-separated)</span> <span class="c">(backend, frontend, infra, docs)</span>:
+<span class="q">Open the visual board now?</span> <span class="c">(Y/n)</span>:</pre>
+      </div>
+
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>It asks…</th><th>It really means…</th></tr></thead>
+          <tbody>
+            <tr><td><b>Product outcome</b></td><td>What can someone <em>do</em> when it's finished? "Play Tetris in a browser, with a score and levels."</td></tr>
+            <tr><td><b>Primary users</b></td><td>Who's going to use it? "Me and my friends, on phones and laptops."</td></tr>
+            <tr><td><b>Stack</b></td><td>What it's built out of. Don't know? Press Enter and let the robots pick.</td></tr>
+            <tr><td><b>Constraints</b></td><td>Your rules that can't be broken. "It must work on a phone." "Don't collect anyone's personal info."</td></tr>
+            <tr><td><b>How it should run</b></td><td>The command that starts your thing so you can look at it.</td></tr>
+            <tr><td><b>How it should be tested</b></td><td>How we prove it works — a robot must check its own homework.</td></tr>
+            <tr><td><b>Areas of work</b></td><td>The parts of the job. A browser game only needs <code>frontend, docs</code>.</td></tr>
+            <tr><td><b>Visual board</b></td><td>Say <b>Y</b> to open a colorful web page showing all your jobs. Press <code>Ctrl+C</code> to close it later.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="bot">
+        <span class="face" aria-hidden="true">🤖</span>
+        <p class="bubble">Answer whatever you know, press Enter for the rest.
+          Anything you skip gets written down as an <b>open question</b> — I'll come back with a
+          suggestion and wait for your yes.</p>
+      </div>
+
+      <ul class="checks">
+        <li><label>
+          <input type="checkbox" data-save="l2" />
+          <span class="txt"><b>Done — it said my project is ready</b>
+          <span>You'll see a green ✅ and a short list of next steps. Installing is finished. Really.</span></span>
+        </label></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Level 3 --------------------------------------------------------------->
+  <section class="wrap" id="level-3">
+    <div class="panel">
+      <div class="level-head">
+        <span class="num" aria-hidden="true">3</span>
+        <h2>Ask for a plan<span class="sub">One command. Nothing gets built yet.</span></h2>
+      </div>
+      <p>Open the AI tool in your project folder:</p>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">terminal</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre>claude</pre>
+      </div>
+
+      <p>Then type this and press Enter:</p>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">claude code</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre><span class="p">&gt;</span> <span class="k">/project-plan</span></pre>
+      </div>
+
+      <p>Now the robots read your answers and turn them into a to-do list:</p>
+
+      <div class="cards">
+        <div class="card">
+          <span class="ico" aria-hidden="true">🏔️</span>
+          <h3>3–6 epics</h3>
+          <p>The big goals. For Tetris: get it on screen → make it playable → make it fun.</p>
+        </div>
+        <div class="card">
+          <span class="ico" aria-hidden="true">🎫</span>
+          <h3>5–15 tickets</h3>
+          <p>The small jobs inside those goals, each one small enough to check in a few minutes.</p>
+        </div>
+        <div class="card">
+          <span class="ico" aria-hidden="true">🔗</span>
+          <h3>An order</h3>
+          <p>Some jobs must wait for others. You can't clear a line before pieces can fall.</p>
+        </div>
+      </div>
+
+      <div class="word warn">
+        <span class="ico" aria-hidden="true">🛑</span>
+        <div><b>It stops here on purpose.</b> No code gets written yet. Planning ends with the plan
+        on your screen and a question: <em>is this right?</em> That pause is yours.</div>
+      </div>
+
+      <ul class="checks">
+        <li><label>
+          <input type="checkbox" data-save="l3" />
+          <span class="txt"><b>Done — I can see my epics and tickets</b>
+          <span>Also shown: which job is ready first, and any guesses it wants you to confirm.</span></span>
+        </label></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Level 4 --------------------------------------------------------------->
+  <section class="wrap" id="level-4">
+    <div class="panel">
+      <div class="level-head">
+        <span class="num" aria-hidden="true">4</span>
+        <h2>Be the boss<span class="sub">Read the plan. Change what you don't like.</span></h2>
+      </div>
+      <p class="lead">This is the most Maestro-ish moment of the whole thing. Read it like you're
+        checking someone else's homework.</p>
+
+      <ul class="checks">
+        <li><label><input type="checkbox" data-save="r1" /><span class="txt"><b>Is everything I imagined in there?</b><span>If something's missing, say so.</span></span></label></li>
+        <li><label><input type="checkbox" data-save="r2" /><span class="txt"><b>Is each job small?</b><span>"Build the whole game" is too big. "Make pieces rotate" is right.</span></span></label></li>
+        <li><label><input type="checkbox" data-save="r3" /><span class="txt"><b>Can I tell when a job is done?</b><span>Each ticket should say what "finished" looks like.</span></span></label></li>
+        <li><label><input type="checkbox" data-save="r4" /><span class="txt"><b>Is something ready to start right now?</b><span>If everything is waiting on something else, nothing can begin.</span></span></label></li>
+      </ul>
+
+      <p style="margin-top:24px">Want changes? Just say them in normal words:</p>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">claude code</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre><span class="p">&gt;</span> Change the plan: add a ticket for sound effects, split the
+  movement job into "move left and right" and "rotate", and
+  don't build anything yet.</pre>
+      </div>
+
+      <p>Happy with it? Make a save point:</p>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">terminal</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre>git add .
+git commit -m "chore: initialize project with AI Maestro plan"</pre>
+      </div>
+
+      <div class="word">
+        <span class="ico" aria-hidden="true">💾</span>
+        <div><b>Word check — "commit".</b> A save point, exactly like in a game. Git remembers this
+        moment forever, so you can always come back to it if a later change goes wrong.</div>
+      </div>
+
+      <ul class="checks">
+        <li><label><input type="checkbox" data-save="l4" /><span class="txt"><b>Done — plan approved and saved</b><span>Now the fun part.</span></span></label></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Level 5 --------------------------------------------------------------->
+  <section class="wrap" id="level-5">
+    <div class="panel">
+      <div class="level-head">
+        <span class="num" aria-hidden="true">5</span>
+        <h2>Build it, one job at a time<span class="sub">The command you'll use over and over.</span></h2>
+      </div>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">claude code</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre><span class="p">&gt;</span> <span class="k">/orchestrator</span></pre>
+      </div>
+
+      <p>Here's what happens behind the curtain. Each ticket names its own robot pipeline, so a
+        tiny job may skip the planner while a bigger one uses the full team:</p>
+
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>#</th><th>What the robot team does</th></tr></thead>
+          <tbody>
+            <tr><td><b>1</b></td><td>Picks the most important job that isn't waiting on another one.</td></tr>
+            <tr><td><b>2</b></td><td>Copies your project into a safe sandbox, so your real files can't break.</td></tr>
+            <tr><td><b>3</b></td><td>Runs the ticket's robot pipeline in order — often a planner first, then the right builder.</td></tr>
+            <tr><td><b>4</b></td><td>The required review robots check the work, like teachers marking it.</td></tr>
+            <tr><td><b>5</b></td><td>If it passes, the work joins your real project. If not, it stops and tells you why.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="word">
+        <span class="ico" aria-hidden="true">🏖️</span>
+        <div><b>Word check — "worktree".</b> That safe sandbox: a separate copy of your project where
+        a robot can make a mess without touching the version you care about. Nothing joins your real
+        project until it passes the check.</div>
+      </div>
+
+      <div class="bot">
+        <span class="face" aria-hidden="true">🤖</span>
+        <p class="bubble">I do <b>one job per turn</b>, then stop and wait. That's not me being slow —
+          it's your turn to look. Type <code>/orchestrator</code> again for the next one.</p>
+      </div>
+
+      <div class="word tip">
+        <span class="ico" aria-hidden="true">🔁</span>
+        <div><b>Now repeat.</b> Look at what changed, then run it again. Job by job, your idea turns
+        into a real thing you can open and play.</div>
+      </div>
+
+      <ul class="checks">
+        <li><label><input type="checkbox" data-save="l5" /><span class="txt"><b>Done — my first ticket is finished</b><span>🎉 You just conducted an AI team. Keep going.</span></span></label></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Tetris example -------------------------------------------------------->
+  <section class="wrap" id="example">
+    <div class="panel">
+      <h2 style="color:var(--t)">Copy my homework: a Tetris clone</h2>
+      <p>Stuck on what to type at Level 2? Use these answers exactly, and you'll be building Tetris.</p>
+
+      <div class="term">
+        <div class="term-bar">
+          <span class="dot" style="background:var(--z)"></span>
+          <span class="dot" style="background:var(--o)"></span>
+          <span class="dot" style="background:var(--s)"></span>
+          <span class="t">answers for a Tetris clone</span>
+          <button type="button" data-copy>Copy</button>
+        </div>
+<pre><span class="q">Project name:</span> tetris-clone
+<span class="q">Product outcome:</span> A browser Tetris game with a score, levels,
+  pause, restart, and a game-over screen.
+<span class="q">Primary users:</span> Players on laptops and phones.
+<span class="q">Stack:</span> Plain JavaScript, HTML and CSS, drawing on a canvas.
+  No extra tools.
+<span class="q">Constraints:</span> Keep the game rules separate from the drawing
+  code; work with both keyboard and touch; store nothing about players.
+<span class="q">How it should run locally:</span> npx serve
+<span class="q">How it should be tested:</span> Node's built-in test runner for the
+  game rules, plus a quick play-test in the browser.
+<span class="q">Areas of work:</span> frontend, docs</pre>
+      </div>
+
+      <p>A plan for that usually comes out looking like this:</p>
+
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>Epic (big goal)</th><th>Tickets (small jobs), in order</th></tr></thead>
+          <tbody>
+            <tr><td><b style="color:var(--i)">Get it on screen</b></td><td>the empty game box → drawing the grid</td></tr>
+            <tr><td><b style="color:var(--o)">Make it playable</b></td><td>the 7 piece shapes → moving and rotating → falling, landing, clearing lines</td></tr>
+            <tr><td><b style="color:var(--s)">Make it fun</b></td><td>score and levels → pause, restart, game over, phone controls</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Troubleshooting ------------------------------------------------------->
+  <section class="wrap" id="oops">
+    <div class="panel">
+      <h2 style="color:var(--z)">When something goes wrong</h2>
+      <p class="lead">It will. That's normal, and none of it breaks your computer.</p>
+
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>You see…</th><th>What to do</th></tr></thead>
+          <tbody>
+            <tr><td><code>command not found: npx</code></td><td>Node.js isn't installed yet. Go back to Level 0.</td></tr>
+            <tr><td><code>command not found: git</code></td><td>Install Git, then try the same line again.</td></tr>
+            <tr><td>It says <b>idle</b></td><td>Every job is waiting on another job. Say: <em>"nothing can start — fix the order in the plan"</em>.</td></tr>
+            <tr><td>It says <b>blocked</b></td><td>A robot hit a real problem and stopped instead of guessing. Read the reason — that's the honest answer, not a failure.</td></tr>
+            <tr><td>The board page won't open</td><td>In your terminal: <code>cd maestro</code> then <code>npm run board</code>, and visit <code>localhost:5273</code>.</td></tr>
+            <tr><td>You changed your mind about the idea</td><td>Just say so in the AI tool: <em>"add a rule: it must work on a phone"</em>. Your brief gets updated.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="word tip">
+        <span class="ico" aria-hidden="true">🦸</span>
+        <div><b>You can always ask.</b> The robots read plain English. "I don't understand what
+        blocked means" is a perfectly good thing to type.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Cheat sheet ----------------------------------------------------------->
+  <section class="wrap" id="cheats">
+    <div class="panel">
+      <h2 style="color:var(--o)">Cheat sheet</h2>
+      <p>Everything you need, on one card.</p>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>Type this</th><th>Where</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>npx @mychiefmind/ai-maestro setup</code></td><td>terminal</td><td>Sets everything up and asks about your idea</td></tr>
+            <tr><td><code>claude</code></td><td>terminal</td><td>Opens the AI tool in your project</td></tr>
+            <tr><td><code>/project-plan</code></td><td>Claude Code</td><td>Turns your idea into epics and tickets, then stops for you</td></tr>
+            <tr><td><code>/orchestrator</code></td><td>Claude Code</td><td>Builds the next job — one per turn</td></tr>
+            <tr><td><code>npm run board</code></td><td>terminal, in <code>maestro</code></td><td>Opens the colorful board of all your jobs</td></tr>
+            <tr><td><code>git commit -m "…"</code></td><td>terminal</td><td>Makes a save point you can always return to</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="wrap">
+  <p class="big">Now go make something 🎛️</p>
+  <p>You don't have to know how to code to lead a team that does.<br />
+    But keep reading the work — a Maestro who never listens isn't conducting anything.</p>
+
+  <ul class="outlinks">
+    <li><a href="https://mychiefmind.com/ai-maestro">What AI Maestro is</a></li>
+    <li><a href="https://github.com/my-chiefmind/ai-maestro">GitHub</a></li>
+    <li><a href="https://www.npmjs.com/package/@mychiefmind/ai-maestro">npm</a></li>
+    <li><a href="https://github.com/my-chiefmind/ai-maestro/blob/main/docs/GETTING-STARTED.md">Getting started (for developers)</a></li>
+  </ul>
+  <p class="fineprint">MIT-licensed · free and open-source · built by
+    <a href="https://mychiefmind.com">My Chief Mind</a></p>
+</footer>
+
+<script>
+/* ── Falling blocks in the hero (decorative) ─────────────────────────────── */
+(function () {
+  const rain = document.querySelector('.rain');
+  if (!rain || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const colors = ['--i', '--o', '--t', '--s', '--z', '--l', '--j'];
+  for (let n = 0; n < 16; n++) {
+    const b = document.createElement('b');
+    b.style.left = (n * 6.4 + (n % 3) * 2) + '%';
+    b.style.background = 'var(' + colors[n % colors.length] + ')';
+    b.style.animationDuration = (7 + (n % 5) * 2.4) + 's';
+    b.style.animationDelay = (-n * 1.35) + 's';
+    const size = 20 + (n % 4) * 12;
+    b.style.width = b.style.height = size + 'px';
+    rain.appendChild(b);
+  }
+})();
+
+/* ── Copy buttons ───────────────────────────────────────────────────────── */
+document.querySelectorAll('[data-copy]').forEach(function (btn) {
+  btn.addEventListener('click', async function () {
+    const pre = btn.closest('.term').querySelector('pre');
+    // Drop the comments and the fake `>` prompt so what lands on the clipboard is only what
+    // you'd actually type. Question labels stay — in the answers block they're the useful part.
+    const text = Array.from(pre.childNodes)
+      .filter(function (n) { return !(n.nodeType === 1 && (n.classList.contains('c') || n.classList.contains('p'))); })
+      .map(function (n) { return n.textContent; })
+      .join('')
+      .split('\n').map(function (l) { return l.trim(); }).filter(Boolean).join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied ✓';
+    } catch (e) {
+      btn.textContent = 'Select it yourself ✋';   // clipboard blocked on file:// in some browsers
+    }
+    btn.classList.add('done');
+    setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1800);
+  });
+});
+
+/* ── Progress meter: ticked boxes fill the bar, and survive a refresh ───── */
+(function () {
+  const boxes = Array.from(document.querySelectorAll('.checks input[data-save]'));
+  const fill = document.getElementById('fill');
+  const score = document.getElementById('score');
+  const meter = document.querySelector('.meter');
+  const KEY = 'ai-maestro-demo-progress';
+
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { saved = {}; }
+
+  function paint() {
+    const done = boxes.filter(function (b) { return b.checked; }).length;
+    const pct = boxes.length ? Math.round((done / boxes.length) * 100) : 0;
+    fill.style.width = pct + '%';
+    score.textContent = done + ' / ' + boxes.length;
+    meter.setAttribute('aria-valuenow', String(pct));
+    if (done === boxes.length && boxes.length) score.textContent = 'ALL DONE 🏆';
+  }
+
+  boxes.forEach(function (b) {
+    if (saved[b.dataset.save]) b.checked = true;
+    b.addEventListener('change', function () {
+      saved[b.dataset.save] = b.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) { /* private mode — fine */ }
+      paint();
+    });
+  });
+  paint();
+})();
+</script>
+</body>
+</html>
