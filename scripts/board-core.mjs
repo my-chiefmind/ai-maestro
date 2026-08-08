@@ -25,6 +25,7 @@ export const MODEL_RANK = { haiku: 0, sonnet: 1, opus: 2 };
 export const CODE_ALIASES = {
   "backend-developer": "backend",
   "frontend-developer": "frontend",
+  "pipeline-developer": "pipeline",
   "principal-engineer": "pe",
   "principal-delivery": "pd",
   // `docs` matches the area name, like backend/frontend do. Without it the starter shipped a

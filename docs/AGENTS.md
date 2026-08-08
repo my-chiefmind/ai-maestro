@@ -10,6 +10,7 @@ receives and what it produces. The orchestrator wires them together per the tick
 | `pe` | [principal-engineer](../agents/principal-engineer.md) | Turns a ticket into a concrete implementation plan. | A ticket | A plan the build agent can follow |
 | `backend` | [backend-developer](../agents/backend-developer.md) | Implements server/data/API work against the plan. | Ticket + plan | A branch with the change |
 | `frontend` | [frontend-developer](../agents/frontend-developer.md) | Implements UI/client work against the plan. | Ticket + plan | A branch with the change |
+| `pipeline` | [pipeline-developer](../agents/pipeline-developer.md) | Implements data-pipeline work against the plan, holding the idempotency invariant. | Ticket + plan | A branch with the change |
 | `devops` | [devops](../agents/devops.md) | Infra, CI, build/release tooling (writing it, not running prod). | Ticket + plan | A branch with the change |
 | `docs` | [technical-writer](../agents/technical-writer.md) | Writes the document a ticket asks for, when the document *is* the deliverable. | Ticket + plan | A branch with the document |
 | `qa` | [qa](../agents/qa.md) | Independent review of the diff vs. acceptance criteria. | A branch + the ticket | Pass, or a specific list of defects |
