@@ -13,12 +13,21 @@ You receive a **ticket + plan** and produce a **branch with the UI change**.
   that already exist.
 - No new console errors or warnings. Check responsive behavior and the empty/error/loading
   states, not just the populated happy path.
-- Keep state and data-fetching consistent with how the app already does it.
+- Keep state and data-fetching consistent with how the app already does it. Cache
+  invalidation uses the correct query key — audit the existing keys, don't guess. No
+  hardcoded localhost or API URLs in component code; go through the app's configured
+  base/proxy.
+- Accessibility is part of done: semantic heading order and landmarks, `alt` on images, full
+  keyboard operability, WCAG AA contrast (4.5:1), `aria-label` on icon-only buttons.
+- No type escape hatches: no `as any` / `as unknown as T` hiding a real mismatch, no unused
+  `@ts-ignore`.
 - Match the surrounding code's style. Keep the diff scoped to the ticket.
 - Where behavior is testable (logic, hooks, critical flows), add tests. For pure visual work,
   note what to verify by eye.
 
 ## Hand off
 
-Leave the branch landable and note anything QA should look at closely (a layout edge case, a
-deliberate design trade-off). You don't merge — QA reviews, delivery lands.
+Verification means the build **and** lint both exit 0 and the build artifact actually exists
+— not just "no console errors". Leave the branch landable and note anything QA should look at
+closely (a layout edge case, a deliberate design trade-off). You don't merge — QA reviews,
+delivery lands.
