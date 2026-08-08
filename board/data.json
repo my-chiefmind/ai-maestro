@@ -13,7 +13,7 @@
     {
       "id": "e3",
       "name": "Release & deploy",
-      "desc": "All work that ships to production. Gated track — never blocks a dev ticket."
+      "desc": "All work that ships to production. Gated track \u2014 never blocks a dev ticket."
     }
   ],
   "tickets": [
@@ -26,8 +26,15 @@
       "priority": "P1",
       "swag": "M",
       "status": "todo",
-      "depends_on": ["T-001"],
-      "agent_plan": ["pe", "backend", "qa", "merge"],
+      "depends_on": [
+        "T-001"
+      ],
+      "agent_plan": [
+        "pe",
+        "backend",
+        "qa",
+        "merge"
+      ],
       "execution_mode": "multi-agent",
       "model": "sonnet"
     },
@@ -41,7 +48,11 @@
       "swag": "S",
       "status": "todo",
       "depends_on": [],
-      "agent_plan": ["frontend", "qa", "merge"],
+      "agent_plan": [
+        "frontend",
+        "qa",
+        "merge"
+      ],
       "execution_mode": "single-agent",
       "model": "sonnet"
     },
@@ -54,8 +65,16 @@
       "priority": "P1",
       "swag": "L",
       "status": "backlog",
-      "depends_on": ["T-002"],
-      "agent_plan": ["pe", "backend", "qa", "pd", "merge"],
+      "depends_on": [
+        "T-002"
+      ],
+      "agent_plan": [
+        "pe",
+        "backend",
+        "qa",
+        "pd",
+        "merge"
+      ],
       "execution_mode": "multi-agent",
       "model": "opus"
     },
@@ -63,16 +82,37 @@
       "id": "T-005",
       "epicId": "e3",
       "name": "Production cutover",
-      "desc": "Cut the new release over to production. Gated — requires explicit human go-ahead and a maintenance window.",
+      "desc": "Cut the new release over to production. Gated \u2014 requires explicit human go-ahead and a maintenance window.",
       "area": "infra",
       "priority": "P1",
       "swag": "M",
       "status": "backlog",
       "depends_on": [],
-      "agent_plan": ["pd", "merge"],
+      "agent_plan": [
+        "pd",
+        "merge"
+      ],
       "execution_mode": "multi-agent",
       "model": "opus",
       "human_gate": "prod release approved"
+    },
+    {
+      "id": "T-006",
+      "epicId": "e2",
+      "name": "Write the operator runbook",
+      "desc": "Standalone runbook for on-call: how to restart the service, read its logs, and roll back a release. AC: every command in it has been run; failure paths documented, not just the happy path.",
+      "area": "docs",
+      "priority": "P2",
+      "swag": "S",
+      "status": "todo",
+      "depends_on": [],
+      "agent_plan": [
+        "docs",
+        "qa",
+        "merge"
+      ],
+      "execution_mode": "single-agent",
+      "model": "haiku"
     }
   ]
 }

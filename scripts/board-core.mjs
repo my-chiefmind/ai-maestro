@@ -27,6 +27,9 @@ export const CODE_ALIASES = {
   "frontend-developer": "frontend",
   "principal-engineer": "pe",
   "principal-delivery": "pd",
+  // `docs` matches the area name, like backend/frontend do. Without it the starter shipped a
+  // `docs` area (and a model floor for it) that no agent could implement.
+  "technical-writer": "docs",
 };
 
 /** Map an agent file basename (no extension) to the code used in agent_plan. */

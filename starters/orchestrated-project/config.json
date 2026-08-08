@@ -1,7 +1,12 @@
 {
   "project": {
     "name": "my-app",
-    "areas": ["backend", "frontend", "infra", "docs"]
+    "areas": [
+      "backend",
+      "frontend",
+      "infra",
+      "docs"
+    ]
   },
   "roster": [
     "orchestrator",
@@ -9,6 +14,7 @@
     "backend-developer",
     "frontend-developer",
     "devops",
+    "technical-writer",
     "qa",
     "principal-delivery"
   ],
