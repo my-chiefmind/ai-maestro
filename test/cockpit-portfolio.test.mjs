@@ -169,7 +169,7 @@ test("an unknown or not-set-up ?project= name 404s; without a registry it 404s a
 test("/api/portfolio/boards carries a per-board version usable for optimistic concurrency", { skip: SKIP }, async () => {
   const boards = (await (await fetch(`${WITH_ORIGIN}/api/portfolio/boards`)).json()).boards;
   const c = boards.find((b) => b.name === "proj-c");
-  assert.match(c.version, /^\d+-\d+$/);
+  assert.match(c.version, /^sha256:[0-9a-f]+$/, "the shared board-io version token, not a server-local format");
   const single = await (await fetch(`${WITH_ORIGIN}/api/board?project=proj-c`)).json();
   assert.equal(c.version, single.version, "listing and single-board endpoint must agree on the version");
 });

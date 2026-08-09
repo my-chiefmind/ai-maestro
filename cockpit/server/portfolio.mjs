@@ -10,10 +10,11 @@
  * (validation, backups, optimistic concurrency) against a board dir resolved from the
  * registry — not yet wired in here; see board/specs/T-003.md for what's still open.
  */
-import { readFileSync, existsSync, statSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { readRegistry, findKitDir } from "../../scripts/registry.mjs";
 import { eligibleTickets } from "../../scripts/board-core.mjs";
+import { boardVersion } from "../../scripts/board-io.mjs";
 
 function readJSON(p, fallback) {
   try {
@@ -50,7 +51,6 @@ export function readPortfolioBoard(entry) {
   const archive = readJSON(join(boardDir, "archive.json"), { epics: [], tickets: [] });
   // Same mtime+size formula as the single-board endpoint, so a client that loaded a board
   // from this listing can PUT it back with optimistic concurrency intact.
-  const s = statSync(join(boardDir, "data.json"));
   return {
     name: entry.name,
     path: entry.path,
@@ -60,7 +60,10 @@ export function readPortfolioBoard(entry) {
     tickets: data.tickets ?? [],
     archived: archive.tickets ?? [],
     archivedEpics: archive.epics ?? [],
-    version: `${Math.round(s.mtimeMs)}-${s.size}`,
+    // The shared token (scripts/board-io.mjs), not a local stat: a version computed a
+    // second way is a second concurrency rule, and a client that loads a board here and
+    // PUTs it back would compare tokens the two paths could disagree about.
+    version: boardVersion(join(boardDir, "data.json")),
   };
 }
 

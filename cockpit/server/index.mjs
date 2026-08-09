@@ -42,6 +42,7 @@ import { resolve, dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { marked } from "marked";
 import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
+import { boardVersion as sharedBoardVersion } from "../../scripts/board-io.mjs";
 import { neuterRawHtml } from "./sanitize.mjs";
 import { findFreePort } from "./ports.mjs";
 import { loadPortfolio, readPortfolioBoards, survey as portfolioSurvey } from "./portfolio.mjs";
@@ -207,12 +208,13 @@ function readJSON(p, fallback) {
   catch { return fallback; }
 }
 
-// Cheap content version: mtime+size. Changes whenever the file is written (by us or an agent).
+// Content version, shared with the CLI writer (scripts/board-io.mjs) so the UI and the
+// command line cannot disagree about whether the board moved — one concurrency rule for
+// the board, not one per caller. It was mtime+size here; a hash also distinguishes two
+// same-size boards, which is exactly what a swapped ticket looks like.
 /** @param {Scope} scope */
 function boardVersion(scope) {
-  if (!existsSync(scope.data)) return "0-0";
-  const s = statSync(scope.data);
-  return `${Math.round(s.mtimeMs)}-${s.size}`;
+  return sharedBoardVersion(scope.data);
 }
 
 function stamp() {

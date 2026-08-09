@@ -140,6 +140,7 @@ function writeVendorPackageJson(dest) {
       setup: "node bin/cli.mjs setup",
       sync: "node render/sync.mjs --project .",
       validate: "node scripts/validate-board.mjs board/data.json",
+      ticket: "node scripts/board-write.mjs",
       update: "npx @mychiefmind/ai-maestro@latest update --kit .",
       preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
@@ -1027,6 +1028,9 @@ function help() {
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.
   validate    Check the board's integrity
+  ticket      Change the board safely — set-status | block | archive | version
+              The only supported way to write a board: locked, validated and atomic, so two
+              writers can't silently overwrite each other. Run 'maestro ticket --help' for ops.
   drift       Report version + hand-edit drift across a registry of projects
               Needs a registry file (default ./maestro-registry.json): { "projects": [
               { "name": "...", "path": "..." } ] }. --offline skips the npm version check;
@@ -1056,6 +1060,7 @@ const COMMANDS = [
   { key: "update", label: "Bring a set-up kit to this CLI's version" },
   { key: "sync", label: "Re-render .claude/ from config.json + context.md" },
   { key: "validate", label: "Check the board's integrity" },
+  { key: "ticket", label: "Change the board safely (set-status | block | archive)" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
 ];
@@ -1067,6 +1072,7 @@ async function dispatch(command, args) {
     case "init": await init(args); break;
     case "sync": process.exit(run("render/sync.mjs", args)); break;
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
+    case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }

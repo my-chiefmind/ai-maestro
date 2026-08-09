@@ -53,14 +53,33 @@ const BOARD_REPO = BOARD.replace(/[\/\\]board[\/\\][^\/\\]+$/, "");
 
 // Board write epilogue, appended to every agent prompt that edits the board: validate, and
 // publish only when the project opts in.
-const BOARD_EPILOGUE = `
-  After writing the board, VERIFY it: run \`${VALIDATE_CMD}\` — if it reports errors, fix the
-  write (or revert to the previous content) and report what happened; an invalid board must
-  never be left on disk.${PUBLISH_BOARD ? `
+// The guarded board writer (T-010). Every board mutation goes through this command rather
+// than through an agent reading the file, editing it and writing it back: the command takes
+// a lock, applies the change to the board as it is ON DISK, validates the result and writes
+// atomically. A prompt cannot offer any of that, and "preserving every other field exactly"
+// stopped being something we ask a model to get right.
+// Injected by the wrapper with the kit's real path. The fallback derives it from the board,
+// which is correct in the vendored layout (kit IS the board's parent) and wrong in the
+// capsule layout — which is exactly why sync injects it instead.
+const TICKET_CMD = PROJECT_CONFIG.TICKET_CMD || `node ${BOARD_REPO}/scripts/board-write.mjs`;
+
+// How every board-writing prompt must handle the command's exit codes. Exit 2 is the
+// contended case — another writer held the lock or the board moved — and is precisely the
+// situation that used to produce a silent overwrite, so it is retried rather than reported.
+const BOARD_RETRY = `
+  Run the command EXACTLY as given. Do NOT edit ${BOARD} by hand and do NOT rewrite the file
+  yourself — the command is the only writer that locks, validates and writes atomically.
+  Exit 0: done. Exit 2: another writer got there first — run the SAME command again, up to 3
+  attempts, then report failure. Exit 1: the request itself is wrong — report it, never retry.`;
+
+// Publishing is still the agent's job — the writer command owns the file, not the git
+// history. Validation is no longer asked for here: the command refuses to write an invalid
+// board at all, so a post-hoc check could only ever report someone else's damage.
+const BOARD_EPILOGUE = PUBLISH_BOARD ? `
   Then publish the transition:
     git -C ${BOARD_REPO} add ${BOARD} ${ARCHIVE} && git -C ${BOARD_REPO} commit -m "board: transition" && git -C ${BOARD_REPO} push
   If the commit or push fails, report it — an unpublished transition does not count as recorded.` : `
-  Do NOT commit or push the board — this project keeps its board data local (PUBLISH_BOARD=false).`}`;
+  Do NOT commit or push the board — this project keeps its board data local (PUBLISH_BOARD=false).`;
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -249,18 +268,11 @@ function pickNextTicket(board) {
   return todos[0];
 }
 
-function nextTicketId(board) {
-  // Numeric-suffix ids (T-012, tl-045, …): next = max + 1 in the same width.
-  const ids = board.tickets
-    .concat(board.archiveTickets || [])
-    .map(t => {
-      const m = t.id.match(/(\d+)$/);
-      return m ? parseInt(m[1], 10) : NaN;
-    })
-    .filter(n => !isNaN(n));
-  const max = ids.length > 0 ? Math.max(...ids) : 0;
-  return `T-${String(max + 1).padStart(3, "0")}`;
-}
+// Ticket-id allocation deliberately does NOT live here any more (T-010). It used to run
+// against `board` — a snapshot read before the stage started — so two blockers filed from
+// the same snapshot claimed the same id. It now lives in scripts/board-write.mjs, which
+// allocates from the board on disk inside the write lock. Reintroducing it here would
+// reintroduce the collision.
 
 function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
@@ -511,13 +523,20 @@ async function writeRecord(record) {
 }
 
 async function markBoard(id, status, coord) {
-  const coordLine = coord
-    ? ` Also set these coordination fields on the ticket (create them if absent, preserve all other fields): execution_mode="${coord.executionMode}", agent_plan=${JSON.stringify(coord.agentPlan)}, currentAgent="${coord.currentAgent}", nextAgent="${coord.nextAgent}".`
+  // Coordination fields travel in the SAME command as the status they describe, so the
+  // pair lands in one atomic write — split across two, a crash between them leaves the
+  // board advertising a stage that is not running.
+  const coordFlags = coord
+    ? ` --execution-mode "${coord.executionMode}" --agent-plan "${coord.agentPlan.join(",")}"` +
+      ` --current-agent "${coord.currentAgent}" --next-agent "${coord.nextAgent}"`
     : "";
   await agent(
-    `Update the board file at ${BOARD}: set the status of ticket ${id} to "${status}", preserving every other field and every other ticket exactly.${coordLine} Write the full updated JSON back to the file.
+    `Move ticket ${id} to "${status}" on the board by running this command:
+
+    ${TICKET_CMD} set-status ${id} ${status} --board ${BOARD} --json${coordFlags}
+${BOARD_RETRY}
 ${BOARD_EPILOGUE}
-  Return the updated ticket object.`,
+  Return the command's JSON output.`,
     { label: `board-${id}-${status}` }
   );
 }
@@ -526,14 +545,20 @@ ${BOARD_EPILOGUE}
 // moves to board/archive.json with status "done" (the land-and-archive convention), so the
 // active board never carries a terminal state the validator would reject.
 async function archiveTicketDone(record) {
+  const evidence = `merged branch ${record.branch}: ${String(lastSummary(record)).replace(/"/g, "'").slice(0, 300)}`;
   await agent(
-    `Land ticket ${record.ticket} on the board, following the land-and-archive convention:
-  1. Read ${BOARD} and ${ARCHIVE}.
-  2. Remove ticket ${record.ticket} from the active board's tickets array (preserve every other ticket and epic exactly).
-  3. Append the removed ticket object to the archive's tickets array with: status="done", done_at=<today's date, YYYY-MM-DD>, evidence="merged branch ${record.branch}: ${String(lastSummary(record)).replace(/"/g, "'").slice(0, 300)}". Preserve its other fields.
-  4. Write both files back.
+    `Land ticket ${record.ticket} following the land-and-archive convention, by running this
+  command with <TODAY> replaced by today's date in YYYY-MM-DD form:
+
+    ${TICKET_CMD} archive ${record.ticket} --board ${BOARD} --archive ${ARCHIVE} --json \\
+      --evidence "${evidence}" --done-at <TODAY>
+
+  The command moves the ticket out of ${BOARD} and into ${ARCHIVE} in one guarded write —
+  both files, or neither. That matters here more than anywhere else: a ticket that lands in
+  neither file is silent data loss, and a ticket in both is a duplicate id the validator rejects.
+${BOARD_RETRY}
 ${BOARD_EPILOGUE}
-  Return a short confirmation naming the archived ticket id.`,
+  Return the command's JSON output.`,
     { label: `archive-${record.ticket}` }
   );
 }
@@ -657,8 +682,11 @@ async function idleReport(board) {
   return outcome;
 }
 
+// `board` is still taken for call-site compatibility but is deliberately NOT used to
+// allocate the blocker id: it is a snapshot read before the stage ran, and an id chosen
+// from a stale board is how two concurrent blockers claim the same number. The writer
+// command allocates from the board on disk, inside its lock, and reports what it used.
 async function blockTicket(record, board, desc, tag, blockerArea, blockerAgent) {
-  const blockerId = nextTicketId(board);
   const area = blockerArea || record.area || "";
   const outcome = await agent(
     `Ticket ${record.ticket} is blocked (${tag}): ${desc}
@@ -674,44 +702,56 @@ async function blockTicket(record, board, desc, tag, blockerArea, blockerAgent) 
     file it as written — report the discrepancy as the finding instead (the work exists; the
     coordination failed).
 
-    Update the board file at ${BOARD}, preserving every other field/ticket exactly:
-    1. Set ticket ${record.ticket} status to "blocked"
-    2. Add a new blocker ticket: id="${blockerId}", name="BLOCKER: ${record.ticket} ${tag}", desc="${desc}", epicId="${record.epicId}", area="${area}", priority="P0", swag="S", status="blocked", depends_on=[]
+    Block the ticket and file the blocker in one guarded write:
+
+      ${TICKET_CMD} block ${record.ticket} --board ${BOARD} --json \\
+        --name "BLOCKER: ${record.ticket} ${tag}" --desc "${desc}" \\
+        --epic "${record.epicId}" --area "${area}"
+
+    The blocker's id is allocated by the command from the board's current contents and comes
+    back in its JSON — do not choose one yourself, or two concurrent blockers collide.
+${BOARD_RETRY}
 ${BOARD_EPILOGUE}
     Then clean up the isolated worktree (the work is preserved on branch ${record.branch}):
        git -C ${record.repoPath} worktree remove ${record.worktree} --force  2>/dev/null || true
     Confirm ${record.repoPath} is on main afterward.
 
-    Return outcome="blocked", ticketId="${record.ticket}", blockerTicket="${blockerId}", blockerDesc="${desc}", summary.`,
+    Return outcome="blocked", ticketId="${record.ticket}", blockerTicket=<the id the command allocated, from its JSON>, blockerDesc="${desc}", summary.`,
     { label: `block-${record.ticket}-${tag}`, schema: OUTCOME_SCHEMA }
   );
   record.status = "blocked";
-  record.blockerTicket = blockerId;
+  record.blockerTicket = outcome?.blockerTicket ?? "";
   leaseRelease(record);
   await writeRecord(record);
-  log(`Blocked: ${record.ticket} (${tag}) — blocker ${blockerId} created`);
+  log(`Blocked: ${record.ticket} (${tag}) — blocker ${record.blockerTicket || "(id not reported)"} created`);
   return outcome;
 }
 
+// See blockTicket: `board` is not used to allocate the blocker id.
 async function mergeFailed(record, board, detail) {
-  const blockerId = nextTicketId(board);
   const outcome = await agent(
     `Merge of ${record.ticket} failed with conflicts.
     Merge result: ${detail}
 
-    Update board at ${BOARD}, preserving every other field/ticket exactly:
-    1. Set ${record.ticket} status to "blocked"
-    2. Add blocker: id="${blockerId}", name="BLOCKER: ${record.ticket} merge-conflict", desc="Merge conflict on branch ${record.branch}: ${detail}", epicId="${record.epicId}", area="${record.area || ""}", priority="P0", swag="S", status="blocked", depends_on=[]
+    Block the ticket and file the blocker in one guarded write:
+
+      ${TICKET_CMD} block ${record.ticket} --board ${BOARD} --json \\
+        --name "BLOCKER: ${record.ticket} merge-conflict" \\
+        --desc "Merge conflict on branch ${record.branch}: ${detail}" \\
+        --epic "${record.epicId}" --area "${record.area || ""}" --failure-kind merge-conflict
+
+    The blocker's id is allocated by the command and returned in its JSON — do not pick one.
+${BOARD_RETRY}
 ${BOARD_EPILOGUE}
     Leave the worktree at ${record.worktree} intact for conflict inspection.
 
-    Return outcome="merge-failed", ticketId="${record.ticket}", branch="${record.branch}", blockerTicket="${blockerId}", blockerDesc, summary.`,
+    Return outcome="merge-failed", ticketId="${record.ticket}", branch="${record.branch}", blockerTicket=<the id the command allocated, from its JSON>, blockerDesc, summary.`,
     { label: `merge-failed-${record.ticket}`, schema: OUTCOME_SCHEMA }
   );
   record.status = "blocked";
-  record.blockerTicket = blockerId;
+  record.blockerTicket = outcome?.blockerTicket ?? "";
   await writeRecord(record);
-  log(`Merge failed for ${record.ticket} — blocker ${blockerId} created`);
+  log(`Merge failed for ${record.ticket} — blocker ${record.blockerTicket || "(id not reported)"} created`);
   return outcome;
 }
 
@@ -941,15 +981,19 @@ async function startTicket(ticket, board) {
 
   const pre = await confirmTicket(ticket, repoPath, agentType, branch);
   if (pre.blockers && pre.blockers.length > 0) {
-    const blockerId = nextTicketId(board);
     const outcome = await agent(
       `The ticket ${ticket.id} has pre-implementation blockers: ${pre.blockers.join("; ")}.
 
-      Update the board file at ${BOARD}, preserving every other field/ticket exactly:
-      1. Set ticket ${ticket.id} status to "blocked"
-      2. Add a new blocker ticket: id="${blockerId}", name="BLOCKER: ${ticket.name}", desc="${pre.blockers.join("; ")}", epicId="${ticket.epicId}", area="${area}", priority="P0", swag="S", status="blocked", depends_on=[]
+      Block the ticket and file the blocker in one guarded write:
+
+        ${TICKET_CMD} block ${ticket.id} --board ${BOARD} --json \\
+          --name "BLOCKER: ${ticket.name}" --desc "${pre.blockers.join("; ")}" \\
+          --epic "${ticket.epicId}" --area "${area}"
+
+      The blocker's id is allocated by the command and returned in its JSON — do not pick one.
+${BOARD_RETRY}
 ${BOARD_EPILOGUE}
-      Return outcome="blocked", ticketId="${ticket.id}", blockerTicket="${blockerId}", blockerDesc="${pre.blockers.join("; ")}", summary.`,
+      Return outcome="blocked", ticketId="${ticket.id}", blockerTicket=<the id the command allocated, from its JSON>, blockerDesc="${pre.blockers.join("; ")}", summary.`,
       { label: "create-blocker", schema: OUTCOME_SCHEMA }
     );
     log(`Blocked (pre-impl): ${ticket.id} — blocker ${outcome.blockerTicket}`);
@@ -1074,7 +1118,10 @@ async function doAbort(id) {
     `Abort the orchestrate run for ${r.ticket}. Remove the isolated worktree but KEEP the branch for inspection:
        git -C ${r.repoPath} worktree remove ${r.worktree} --force  2>/dev/null || true
      Confirm ${r.repoPath} is on main: git -C ${r.repoPath} rev-parse --abbrev-ref HEAD
-     Then update the board at ${BOARD}: set ticket ${r.ticket} status back to "todo" (preserve every other field).
+     Then return the ticket to the queue:
+
+       ${TICKET_CMD} set-status ${r.ticket} todo --board ${BOARD} --json
+${BOARD_RETRY}
 ${BOARD_EPILOGUE}
      Return a short confirmation.`,
     { label: `abort-${r.ticket}` }
