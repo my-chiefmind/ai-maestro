@@ -522,7 +522,11 @@ async function setup(args) {
 
   const configPath = join(kit, "config.json");
   const kitName = basename(kit);
-  if (existsSync(configPath) && !has(args, "force")) {
+  // Whether this is a genuinely first-time setup, as opposed to a --force re-run over an
+  // already-configured project — decides below whether the board gets reseeded from the
+  // starter or left alone as the project's own live data.
+  const fresh = !existsSync(configPath);
+  if (!fresh && !has(args, "force")) {
     console.log(`✓ Already set up. Edit ${kitName}/context.md, then run 'npm run sync' from the ${kitName}/ folder.`);
     return;
   }
@@ -546,6 +550,18 @@ async function setup(args) {
   config.kitSource = { mode: "self", path: "." };
   config.outDir = ".."; // render .claude/ + CLAUDE.md to the repo root, where the tool looks
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+
+  // Seed the initial board from the starter, not from whatever ended up at kit/board/ —
+  // vendorKit() (packaged) copies the whole kit board/ wholesale, and a clone checkout
+  // (kit === KIT_ROOT) IS this kit's own board/ on disk. Both hold ai-maestro's own tickets,
+  // not example content a new project should start from (see T-001's archive note). Only on
+  // a genuinely fresh setup — a --force re-run must never clobber a project's live board.
+  if (fresh) {
+    for (const f of ["data.json", "archive.json"]) {
+      const starterFile = join(starter, "board", f);
+      if (existsSync(starterFile)) cpSync(starterFile, join(kit, "board", f));
+    }
+  }
 
   // Write the brief from the answers. An existing context.md is the user's own work (only a
   // `--force` re-run gets here with one) — keep it rather than overwrite their edits.
@@ -737,6 +753,10 @@ function help() {
               On a git clone of the kit it pulls the clone and re-renders instead.
   sync        Re-render .claude/ from config.json + context.md
   validate    Check the board's integrity
+  drift       Report version + hand-edit drift across a registry of projects
+              Needs a registry file (default ./maestro-registry.json): { "projects": [
+              { "name": "...", "path": "..." } ] }. --offline skips the npm version check;
+              --strict exits 1 if anything needs attention (for CI).
   init        Alternative: set up as a small capsule pointing at a kit elsewhere
 
 The usual flow — one command in your repo:
@@ -762,6 +782,7 @@ const COMMANDS = [
   { key: "update", label: "Bring a set-up kit to this CLI's version" },
   { key: "sync", label: "Re-render .claude/ from config.json + context.md" },
   { key: "validate", label: "Check the board's integrity" },
+  { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
 ];
 
@@ -772,6 +793,7 @@ async function dispatch(command, args) {
     case "init": await init(args); break;
     case "sync": process.exit(run("render/sync.mjs", args)); break;
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
+    case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }
 }

@@ -26,6 +26,21 @@
 node scripts/validate-board.mjs board/data.json
 ```
 
+## Promoting a downstream improvement
+
+A hand-edit in a project's generated `.claude/` is a signal, not a violation: someone improved
+something locally and it never made it back here. `node scripts/maestro-drift.mjs` finds these
+across a registry of projects — its output is the promote-upstream worklist. For each drifted
+file:
+
+1. **Decide if it generalizes.** Product-specific content (a company name, a domain, an internal
+   tool) stays in that project's `context.md`, not here.
+2. **Generalize it** — strip names, secrets, and domains; keep the underlying improvement.
+3. **File it** as a normal PR against the relevant `agents/<name>.md` or `skills/<name>/SKILL.md`.
+4. **Bump and publish** (see below) once it lands on `main`.
+5. The next `maestro update` in the downstream project overwrites the hand-edit with the same
+   content it now generates — drift resolved from both ends at once.
+
 ## Releasing
 
 **Don't touch the version in a PR.** CI fails any pull request that changes `version` in
