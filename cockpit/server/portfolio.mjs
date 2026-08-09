@@ -10,7 +10,7 @@
  * (validation, backups, optimistic concurrency) against a board dir resolved from the
  * registry — not yet wired in here; see board/specs/T-003.md for what's still open.
  */
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { readRegistry, findKitDir } from "../../scripts/registry.mjs";
 import { eligibleTickets } from "../../scripts/board-core.mjs";
@@ -48,6 +48,9 @@ export function readPortfolioBoard(entry) {
   const data = boardDir ? readJSON(join(boardDir, "data.json"), null) : null;
   if (!data) return { name: entry.name, path: entry.path, setUp: false };
   const archive = readJSON(join(boardDir, "archive.json"), { epics: [], tickets: [] });
+  // Same mtime+size formula as the single-board endpoint, so a client that loaded a board
+  // from this listing can PUT it back with optimistic concurrency intact.
+  const s = statSync(join(boardDir, "data.json"));
   return {
     name: entry.name,
     path: entry.path,
@@ -57,6 +60,7 @@ export function readPortfolioBoard(entry) {
     tickets: data.tickets ?? [],
     archived: archive.tickets ?? [],
     archivedEpics: archive.epics ?? [],
+    version: `${Math.round(s.mtimeMs)}-${s.size}`,
   };
 }
 

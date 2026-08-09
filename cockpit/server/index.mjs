@@ -14,8 +14,10 @@
  *   2. ../board relative to this cockpit
  *   3. ./board (cwd)
  *
- * Endpoints:
- *   GET  /api/board            -> { boardDir, epics, tickets, archived, archivedEpics, version }
+ * Endpoints (every one below also accepts ?project=<registry name> in portfolio mode,
+ * scoping it to that project's board/kit dir; without it they address the single board
+ * this service was started for, unchanged):
+ *   GET  /api/board            -> { boardDir, project, epics, tickets, archived, archivedEpics, version }
  *   GET  /api/board/version    -> { version }                (cheap poll for auto-refresh)
  *   PUT  /api/board            -> { epics, tickets, version } (409 on stale version, 400 on invalid)
  *   GET  /api/config           -> { name, areas, planSteps, models, humanGates } | null
@@ -23,9 +25,11 @@
  *   GET  /api/spec/:id         -> { id, content }
  *   PUT  /api/spec/:id         -> { ok }                     ({ content })
  *   GET  /api/docs             -> { sections: [{ key, label, files: [{ path, title }] }] }
- *   GET  /api/docs/render      -> { path, html }             (?path=<repo-relative .md>)
+ *   GET  /api/docs/render      -> { path, html }             (?path=<root-relative .md>)
+ *   GET  /api/reports          -> { reports: [{ name, mtime, size }] }   (board/reports/)
+ *   GET  /api/reports/render   -> { name, kind, html } for .md; sandboxed file for .html
  *
- * Portfolio mode (T-003, read-only; opt-in via --registry <file> / MAESTRO_REGISTRY):
+ * Portfolio mode (T-003; opt-in via --registry <file> / MAESTRO_REGISTRY):
  *   GET  /api/portfolio/boards -> { registry, boards: [...] } (each board dir read in place)
  *   GET  /api/portfolio/today  -> { week, projects: [...] }   (ready-to-run tickets per board)
  */
@@ -82,8 +86,11 @@ const errMessage = (/** @type {unknown} */ e) =>
 // Containment check for any path built from request input. Uses `sep` rather than a
 // hardcoded "/" because on Windows resolve() returns backslashes, so the "/" form never
 // matched and every docs request 404'd there — failing closed, but failing.
-const isInsideKit = (/** @type {string} */ abs) =>
-  abs === KIT_ROOT || abs.startsWith(KIT_ROOT + sep);
+// Generalized from the old isInsideKit (T-003): the boundary is the requesting scope's
+// root — the kit root in single-board mode, a registry project's kit dir in portfolio mode.
+// Portfolio mode widens which roots are legal; it must not widen whether paths are checked.
+const isInside = (/** @type {string} */ root, /** @type {string} */ abs) =>
+  abs === root || abs.startsWith(root + sep);
 
 /**
  * Value of a `--flag <value>` argv pair.
@@ -111,17 +118,82 @@ function resolveBoardDir() {
 }
 
 const BOARD_DIR = resolveBoardDir();
-const PROJECT_DIR = resolve(BOARD_DIR, ".."); // config.json / .claude live one level up
-const DATA = join(BOARD_DIR, "data.json");
-const ARCHIVE = join(BOARD_DIR, "archive.json");
-const BACKUPS = join(BOARD_DIR, ".backups");
 
 // Portfolio mode (T-003): opt-in only, via --registry or MAESTRO_REGISTRY — no default path,
-// so single-board mode (above) is unchanged when neither is set (AC2). Read-only for now:
-// see board/specs/T-003.md for what portfolio *writes* still need.
+// so single-board mode is unchanged when neither is set (AC2).
 const REGISTRY_PATH = argValue("--registry") || process.env.MAESTRO_REGISTRY || null;
-const SPECS = join(BOARD_DIR, "specs");
-const CONFIG = join(PROJECT_DIR, "config.json");
+
+/**
+ * Everything path-shaped the handlers need, derived once per scope instead of baked into
+ * module constants — the generalization the T-003 write half needed. A scope is either the
+ * default single-board one (below) or a registry entry resolved per-request by scopeOf().
+ *
+ * `root` doubles as the docs/asset containment boundary: the kit root in single-board mode,
+ * the project's vendored kit dir (maestro/) in portfolio mode. Every path check that used
+ * to be isInsideKit is now "inside this scope's root".
+ *
+ * @typedef {{
+ *   name: string | null, boardDir: string, projectDir: string, root: string,
+ *   data: string, archive: string, backups: string, specs: string, reports: string,
+ *   config: string,
+ * }} Scope
+ */
+/**
+ * @param {string} boardDir
+ * @param {string} root containment boundary for docs/assets/reports in this scope
+ * @param {string | null} [name] registry name (null for the single-board default)
+ * @returns {Scope}
+ */
+function scopeFor(boardDir, root, name = null) {
+  const projectDir = resolve(boardDir, ".."); // config.json / .claude live one level up
+  return {
+    name, boardDir, projectDir, root,
+    data: join(boardDir, "data.json"),
+    archive: join(boardDir, "archive.json"),
+    backups: join(boardDir, ".backups"),
+    specs: join(boardDir, "specs"),
+    reports: join(boardDir, "reports"),
+    config: join(projectDir, "config.json"),
+  };
+}
+
+const DEFAULT_SCOPE = scopeFor(BOARD_DIR, KIT_ROOT);
+
+// Registry names are matched exactly; the path always comes from the registry file, never
+// from the request. That keeps the registry as the write/read allowlist (T-003 §1) even now
+// that every board/spec/docs/report endpoint accepts ?project=<name>.
+/**
+ * Resolve the scope a request addresses: the default single-board scope when no ?project=
+ * is given (so single-board mode is byte-for-byte unchanged), else the named registry entry.
+ * Writes the error response and returns null when the name can't be resolved.
+ * @param {import("express").Request} req
+ * @param {import("express").Response} res
+ * @returns {Scope | null}
+ */
+function scopeOf(req, res) {
+  const name = typeof req.query.project === "string" ? req.query.project : null;
+  if (!name) return DEFAULT_SCOPE;
+  if (!REGISTRY_PATH) {
+    res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+    return null;
+  }
+  try {
+    const portfolio = loadPortfolio(REGISTRY_PATH);
+    const entry = portfolio?.find((/** @type {{ name: string, path: string, kitDir: string | null }} */ p) => p.name === name);
+    if (!entry) {
+      res.status(404).json({ error: `No project named "${name}" in the registry.` });
+      return null;
+    }
+    if (!entry.kitDir) {
+      res.status(404).json({ error: `Project "${name}" is registered but was never set up (no maestro kit dir).` });
+      return null;
+    }
+    return scopeFor(join(entry.kitDir, "board"), entry.kitDir, name);
+  } catch (e) {
+    res.status(500).json({ error: `cannot read registry: ${errMessage(e)}` });
+    return null;
+  }
+}
 
 /**
  * Read and parse a JSON file, falling back on any error (missing, unreadable, malformed).
@@ -136,9 +208,10 @@ function readJSON(p, fallback) {
 }
 
 // Cheap content version: mtime+size. Changes whenever the file is written (by us or an agent).
-function boardVersion() {
-  if (!existsSync(DATA)) return "0-0";
-  const s = statSync(DATA);
+/** @param {Scope} scope */
+function boardVersion(scope) {
+  if (!existsSync(scope.data)) return "0-0";
+  const s = statSync(scope.data);
   return `${Math.round(s.mtimeMs)}-${s.size}`;
 }
 
@@ -148,9 +221,12 @@ function stamp() {
 
 // The agent codes this project knows about, derived from config.roster (used for validation
 // and for the UI's agent_plan picker). Null when there's no config → skip the agent-code check.
-/** @returns {MaestroConfig | null} */
-function loadConfig() {
-  return existsSync(CONFIG) ? readJSON(CONFIG, /** @type {MaestroConfig | null} */ (null)) : null;
+/**
+ * @param {Scope} scope
+ * @returns {MaestroConfig | null}
+ */
+function loadConfig(scope) {
+  return existsSync(scope.config) ? readJSON(scope.config, /** @type {MaestroConfig | null} */ (null)) : null;
 }
 /**
  * @param {MaestroConfig | null} config
@@ -163,11 +239,12 @@ function planStepsFromConfig(config) {
   return [...new Set(codes)];
 }
 
-function pruneBackups() {
-  if (!existsSync(BACKUPS)) return;
-  const files = readdirSync(BACKUPS).filter((f) => f.endsWith(".json")).sort();
+/** @param {Scope} scope */
+function pruneBackups(scope) {
+  if (!existsSync(scope.backups)) return;
+  const files = readdirSync(scope.backups).filter((f) => f.endsWith(".json")).sort();
   for (const f of files.slice(0, Math.max(0, files.length - MAX_BACKUPS))) {
-    try { rmSync(join(BACKUPS, f), { force: true }); } catch { /* best effort */ }
+    try { rmSync(join(scope.backups, f), { force: true }); } catch { /* best effort */ }
   }
 }
 
@@ -236,39 +313,51 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "8mb" }));
 
 // ── Board ──────────────────────────────────────────────────────────────────────
-app.get("/api/board", (_req, res) => {
-  if (!existsSync(DATA)) {
-    return res.status(404).json({ error: `No board/data.json at ${BOARD_DIR}` });
+// All board/spec/config endpoints accept ?project=<registry name>. Absent, they address the
+// single board this service was started for, exactly as before.
+app.get("/api/board", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  if (!existsSync(scope.data)) {
+    return res.status(404).json({ error: `No board/data.json at ${scope.boardDir}` });
   }
-  const data = readJSON(DATA, { epics: [], tickets: [] });
-  const arch = readJSON(ARCHIVE, { epics: [], tickets: [] });
+  const data = readJSON(scope.data, { epics: [], tickets: [] });
+  const arch = readJSON(scope.archive, { epics: [], tickets: [] });
   res.json({
-    boardDir: BOARD_DIR,
+    boardDir: scope.boardDir,
+    project: scope.name,
     epics: data.epics ?? [],
     tickets: data.tickets ?? [],
     archived: arch.tickets ?? [],
     archivedEpics: arch.epics ?? [],
-    version: boardVersion(),
+    version: boardVersion(scope),
   });
 });
 
-app.get("/api/board/version", (_req, res) => res.json({ version: boardVersion() }));
+app.get("/api/board/version", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  res.json({ version: boardVersion(scope) });
+});
 
 app.put("/api/board", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
   const { epics, tickets, version } = req.body ?? {};
   if (!Array.isArray(epics) || !Array.isArray(tickets)) {
     return res.status(400).json({ error: "Body must be { epics: [], tickets: [] }." });
   }
 
   // Optimistic concurrency: refuse to overwrite a board that changed since the client loaded.
-  const current = boardVersion();
-  if (version != null && version !== current && existsSync(DATA)) {
-    const data = readJSON(DATA, { epics: [], tickets: [] });
-    const arch = readJSON(ARCHIVE, { epics: [], tickets: [] });
+  const current = boardVersion(scope);
+  if (version != null && version !== current && existsSync(scope.data)) {
+    const data = readJSON(scope.data, { epics: [], tickets: [] });
+    const arch = readJSON(scope.archive, { epics: [], tickets: [] });
     return res.status(409).json({
       error: "The board changed on disk since you loaded it (an agent or another tab wrote it). Reloaded the latest — reapply your edit.",
       current: {
-        boardDir: BOARD_DIR,
+        boardDir: scope.boardDir,
+        project: scope.name,
         epics: data.epics ?? [], tickets: data.tickets ?? [],
         archived: arch.tickets ?? [], archivedEpics: arch.epics ?? [],
         version: current,
@@ -276,9 +365,10 @@ app.put("/api/board", (req, res) => {
     });
   }
 
-  // Same integrity rules as the CLI — the pretty UI cannot bypass them.
-  const arch = readJSON(ARCHIVE, { epics: [], tickets: [] });
-  const config = loadConfig();
+  // Same integrity rules as the CLI — the pretty UI cannot bypass them, and a portfolio
+  // write is validated against ITS project's archive + config, not the local one's.
+  const arch = readJSON(scope.archive, { epics: [], tickets: [] });
+  const config = loadConfig(scope);
   const planSteps = planStepsFromConfig(config);
   const { errors } = validateBoard({ epics, tickets }, {
     archived: arch.tickets ?? [],
@@ -291,13 +381,13 @@ app.put("/api/board", (req, res) => {
   }
 
   try {
-    if (existsSync(DATA)) {
-      mkdirSync(BACKUPS, { recursive: true });
-      copyFileSync(DATA, join(BACKUPS, `data.${stamp()}.json`));
-      pruneBackups();
+    if (existsSync(scope.data)) {
+      mkdirSync(scope.backups, { recursive: true });
+      copyFileSync(scope.data, join(scope.backups, `data.${stamp()}.json`));
+      pruneBackups(scope);
     }
-    writeFileSync(DATA, JSON.stringify({ epics, tickets }, null, 2) + "\n");
-    res.json({ ok: true, version: boardVersion() });
+    writeFileSync(scope.data, JSON.stringify({ epics, tickets }, null, 2) + "\n");
+    res.json({ ok: true, version: boardVersion(scope) });
   } catch (e) {
     res.status(500).json({ error: errMessage(e) });
   }
@@ -330,8 +420,10 @@ app.get("/api/portfolio/today", (_req, res) => {
 });
 
 // ── Config (drives the UI's area / agent_plan / model pickers) ───────────────────
-app.get("/api/config", (_req, res) => {
-  const config = loadConfig();
+app.get("/api/config", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const config = loadConfig(scope);
   if (!config) return res.json(null);
   res.json({
     name: config.project?.name ?? null,
@@ -343,12 +435,14 @@ app.get("/api/config", (_req, res) => {
 });
 
 // ── Roster (read-only view of the project's agents + skills) ─────────────────────
-app.get("/api/roster", (_req, res) => {
-  // Prefer the rendered project roster; fall back to the kit's source roster.
-  const agentsDir = existsSync(join(PROJECT_DIR, ".claude", "agents"))
-    ? join(PROJECT_DIR, ".claude", "agents") : join(KIT_ROOT, "agents");
-  const skillsRoot = existsSync(join(PROJECT_DIR, ".claude", "skills"))
-    ? join(PROJECT_DIR, ".claude", "skills") : join(KIT_ROOT, "skills");
+app.get("/api/roster", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  // Prefer the rendered project roster; fall back to the scope's kit-source roster.
+  const agentsDir = existsSync(join(scope.projectDir, ".claude", "agents"))
+    ? join(scope.projectDir, ".claude", "agents") : join(scope.root, "agents");
+  const skillsRoot = existsSync(join(scope.projectDir, ".claude", "skills"))
+    ? join(scope.projectDir, ".claude", "skills") : join(scope.root, "skills");
 
   const agents = existsSync(agentsDir)
     ? readdirSync(agentsDir).filter((f) => f.endsWith(".md")).map((f) => {
@@ -368,18 +462,22 @@ app.get("/api/roster", (_req, res) => {
 // ── Specs (long-form ticket detail: board/specs/<id>.md) ─────────────────────────
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 app.get("/api/spec/:id", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
   const { id } = req.params;
   if (!SAFE_ID.test(id)) return res.status(400).json({ error: "Invalid spec id." });
-  const p = join(SPECS, `${id}.md`);
+  const p = join(scope.specs, `${id}.md`);
   res.json({ id, content: existsSync(p) ? readFileSync(p, "utf8") : "" });
 });
 app.put("/api/spec/:id", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
   const { id } = req.params;
   if (!SAFE_ID.test(id)) return res.status(400).json({ error: "Invalid spec id." });
   const content = String(req.body?.content ?? "");
   try {
-    mkdirSync(SPECS, { recursive: true });
-    writeFileSync(join(SPECS, `${id}.md`), content);
+    mkdirSync(scope.specs, { recursive: true });
+    writeFileSync(join(scope.specs, `${id}.md`), content);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: errMessage(e) });
@@ -418,13 +516,14 @@ function docTitle(abs, rel) {
 }
 
 /**
+ * @param {string} root the scope's doc root (kit root, or a project's vendored kit dir)
  * @param {DocSectionDef} section
  * @returns {DocFile[]} only files that exist, titled
  */
-function sectionFiles(section) {
+function sectionFiles(root, section) {
   let rels = [...(section.files ?? [])];
   if (section.dir) {
-    const base = join(KIT_ROOT, section.dir);
+    const base = join(root, section.dir);
     if (existsSync(base)) {
       for (const e of readdirSync(base, { withFileTypes: true })) {
         if (e.isDirectory() && existsSync(join(base, e.name, "SKILL.md"))) rels.push(`${section.dir}/${e.name}/SKILL.md`);
@@ -434,23 +533,35 @@ function sectionFiles(section) {
     rels.sort();
   }
   return rels
-    .filter((rel) => existsSync(join(KIT_ROOT, rel)))
-    .map((rel) => ({ path: rel, title: docTitle(join(KIT_ROOT, rel), rel) }));
+    .filter((rel) => existsSync(join(root, rel)))
+    .map((rel) => ({ path: rel, title: docTitle(join(root, rel), rel) }));
 }
 
-/** @returns {DocSection[]} the curated listing, empty sections dropped */
-function docSections() {
+/**
+ * The curated listing for one scope's root, empty sections dropped. A registry project's
+ * vendored kit (maestro/) mirrors the kit layout — README, docs/, agents/, skills/ — so the
+ * same curated set applies to every root (T-003 §4: the rendering was already solved; the
+ * gap was N roots vs one).
+ * @param {string} root
+ * @returns {DocSection[]}
+ */
+function docSections(root) {
   return DOC_SECTIONS
-    .map((s) => ({ key: s.key, label: s.label, files: sectionFiles(s) }))
+    .map((s) => ({ key: s.key, label: s.label, files: sectionFiles(root, s) }))
     .filter((s) => s.files.length);
 }
 
 // The exact set /api/docs advertises — and therefore the only set /api/docs/render will
 // render. Recomputed per request because the agents/ and skills/ sections are read from
 // disk and change as the project is re-rendered.
-const listedDocPaths = () => new Set(docSections().flatMap((s) => s.files.map((f) => f.path)));
+const listedDocPaths = (/** @type {string} */ root) =>
+  new Set(docSections(root).flatMap((s) => s.files.map((f) => f.path)));
 
-app.get("/api/docs", (_req, res) => res.json({ sections: docSections() }));
+app.get("/api/docs", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  res.json({ sections: docSections(scope.root) });
+});
 
 // Rewrite relative <img src> in rendered docs to the image endpoint below. A doc's image
 // links are relative to the doc's own folder (e.g. README's "./cockpit/asset/logo.png"),
@@ -458,15 +569,18 @@ app.get("/api/docs", (_req, res) => res.json({ sections: docSections() }));
 // External (http/https/protocol-relative), data:, and already-absolute-api srcs are left alone.
 /**
  * @param {string} html rendered doc HTML
- * @param {string} docRel kit-relative path of the doc, so relative srcs resolve correctly
+ * @param {string} docRel root-relative path of the doc, so relative srcs resolve correctly
+ * @param {string | null} project registry name, carried into asset URLs so the image is
+ *   fetched from the same scope the doc was rendered from
  * @returns {string}
  */
-function rewriteDocImages(html, docRel) {
+function rewriteDocImages(html, docRel, project) {
   const docDir = dirname(docRel);
+  const scopeQS = project ? `&project=${encodeURIComponent(project)}` : "";
   return html.replace(/(<img\b[^>]*?\bsrc=")([^"]+)(")/gi, (m, pre, src, post) => {
     if (/^(https?:)?\/\//i.test(src) || src.startsWith("data:") || src.startsWith("/api/")) return m;
     const rel = join(docDir, src).replace(/^(\.\/)+/, ""); // resolve ../ and ./ against the doc
-    return `${pre}/api/docs/asset?path=${encodeURIComponent(rel)}${post}`;
+    return `${pre}/api/docs/asset?path=${encodeURIComponent(rel)}${scopeQS}${post}`;
   });
 }
 
@@ -486,35 +600,85 @@ function rewriteDocImages(html, docRel) {
 // when it matches sanitize.mjs's allowlist exactly, escaped wholesale otherwise (wired
 // into marked at the top of this file).
 app.get("/api/docs/render", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
   const rel = String(req.query.path || "");
-  if (!listedDocPaths().has(rel)) return res.status(404).json({ error: "not found" });
-  const abs = resolve(join(KIT_ROOT, rel));
-  // Belt and braces: the listing is built from the kit root, so this should never fail —
+  if (!listedDocPaths(scope.root).has(rel)) return res.status(404).json({ error: "not found" });
+  const abs = resolve(join(scope.root, rel));
+  // Belt and braces: the listing is built from the scope root, so this should never fail —
   // but the check is cheap and keeps the guarantee local to the handler that reads the file.
-  if (!isInsideKit(abs) || !abs.endsWith(".md") || !existsSync(abs)) {
+  if (!isInside(scope.root, abs) || !abs.endsWith(".md") || !existsSync(abs)) {
     return res.status(404).json({ error: "not found" });
   }
   try {
     // `async: false` pins the synchronous overload — marked's return type is
     // string | Promise<string>, and the response builds the HTML inline.
     const html = marked.parse(readFileSync(abs, "utf8"), { async: false });
-    res.json({ path: rel, html: rewriteDocImages(html, rel) });
+    res.json({ path: rel, html: rewriteDocImages(html, rel, scope.name) });
   } catch (e) {
     res.status(500).json({ error: errMessage(e) });
   }
 });
 
-// Serve images referenced by the docs — path-allowlisted to the kit, image extensions only.
+// Serve images referenced by the docs — path-allowlisted to the scope root, image extensions only.
 app.get("/api/docs/asset", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
   const rel = String(req.query.path || "");
-  const abs = resolve(join(KIT_ROOT, rel));
-  if (!isInsideKit(abs) || !/\.(png|jpe?g|gif|svg|webp|ico|avif)$/i.test(abs) || !existsSync(abs)) {
+  const abs = resolve(join(scope.root, rel));
+  if (!isInside(scope.root, abs) || !/\.(png|jpe?g|gif|svg|webp|ico|avif)$/i.test(abs) || !existsSync(abs)) {
     return res.status(404).end();
   }
   // SVG is XML that may carry <script>, and it executes if the file is opened directly
   // rather than via <img>. This endpoint stays open to SVG because docs legitimately use
   // it, so deny the asset any privileges of its own instead.
   res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  res.sendFile(abs);
+});
+
+// ── Reports (T-003 §5) — generated files under board/reports/, served in place ─────────
+// Read-only. Names are validated against a strict basename pattern (no separators, so no
+// traversal) AND must exist inside the scope's reports dir. Generated HTML is agent-authored
+// content, so it never runs in the cockpit's origin: it ships with the same neutering CSP
+// sandbox the asset endpoint uses. Markdown reports render through the same neutered marked
+// pipeline as docs.
+const SAFE_REPORT = /^[A-Za-z0-9._-]+\.(html|md)$/;
+
+/** @param {Scope} scope */
+function listReports(scope) {
+  if (!existsSync(scope.reports)) return [];
+  return readdirSync(scope.reports)
+    .filter((f) => SAFE_REPORT.test(f))
+    .sort()
+    .map((f) => {
+      const s = statSync(join(scope.reports, f));
+      return { name: f, mtime: s.mtimeMs, size: s.size };
+    });
+}
+
+app.get("/api/reports", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  res.json({ reports: listReports(scope) });
+});
+
+app.get("/api/reports/render", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const name = String(req.query.name || "");
+  if (!SAFE_REPORT.test(name)) return res.status(400).json({ error: "Invalid report name." });
+  const abs = join(scope.reports, name);
+  if (!isInside(scope.reports, abs) || !existsSync(abs)) return res.status(404).json({ error: "not found" });
+  if (name.endsWith(".md")) {
+    try {
+      const html = marked.parse(readFileSync(abs, "utf8"), { async: false });
+      return res.json({ name, kind: "md", html });
+    } catch (e) {
+      return res.status(500).json({ error: errMessage(e) });
+    }
+  }
+  // .html: serve the file itself, sandboxed. The UI shows it in an <iframe> pointed here.
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
   res.sendFile(abs);
 });
 
@@ -565,7 +729,8 @@ const server = app.listen(PORT, HOST, () => {
     console.log(`    reachable beyond this machine. Requests must still be addressed to localhost.`);
   }
   console.log(`Board: ${BOARD_DIR}`);
-  if (!existsSync(DATA)) console.log(`  ⚠ no data.json found there yet.`);
+  if (!existsSync(DEFAULT_SCOPE.data)) console.log(`  ⚠ no data.json found there yet.`);
+  if (REGISTRY_PATH) console.log(`Portfolio registry: ${REGISTRY_PATH}`);
 });
 
 // Express calls the listen callback before the bind result is known, so a port clash still

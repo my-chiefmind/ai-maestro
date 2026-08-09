@@ -51,3 +51,23 @@ export interface Roster { agents: RosterAgent[]; skills: RosterSkill[] }
 
 export interface DocFile { path: string; title: string }
 export interface DocSection { key: string; label: string; files: DocFile[] }
+
+// ── Portfolio mode ──────────────────────────────────────────────────────────────
+export interface PortfolioReadyTicket {
+  id: string;
+  name: string;
+  priority?: string;
+  epicId?: string;
+  area?: string;
+}
+export interface PortfolioProject {
+  name: string;
+  setUp: boolean;
+  total: number;
+  ready: PortfolioReadyTicket[];
+  byStatus: Record<string, number>;
+}
+export interface PortfolioToday { week: string; projects: PortfolioProject[] }
+
+// ── Reports (generated files under board/reports/) ──────────────────────────────
+export interface ReportInfo { name: string; mtime: number; size: number }

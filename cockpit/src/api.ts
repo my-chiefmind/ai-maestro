@@ -1,4 +1,19 @@
-import type { Board, BoardEpic, BoardTicket, ProjectConfig, Roster, DocSection } from './types';
+import type { Board, BoardEpic, BoardTicket, ProjectConfig, Roster, DocSection, PortfolioToday, ReportInfo } from './types';
+
+// ── Portfolio scope ─────────────────────────────────────────────────────────────
+// Which registry project every call below addresses. Null (the default) means the single
+// board this service was started for — exactly the pre-portfolio behavior. The App sets
+// this when the user picks a project and remounts the tree, so every page refetches
+// through the new scope without threading a parameter through each component.
+let activeProject: string | null = null;
+export function setActiveProject(name: string | null) { activeProject = name; }
+export function getActiveProject(): string | null { return activeProject; }
+
+// Query-string suffix for the active scope. `first` decides '?' vs '&'.
+function scopeQS(first = true): string {
+  if (!activeProject) return '';
+  return `${first ? '?' : '&'}project=${encodeURIComponent(activeProject)}`;
+}
 
 // Thrown when a PUT is rejected because the board changed on disk since it was loaded.
 // Carries the current on-disk board so the UI can reconcile without a second round-trip.
@@ -12,7 +27,7 @@ export class ConflictError extends Error {
 }
 
 export async function getBoard(): Promise<Board> {
-  const r = await fetch('/api/board', { cache: 'no-store' });
+  const r = await fetch(`/api/board${scopeQS()}`, { cache: 'no-store' });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
     throw new Error(e.error || `load failed (${r.status})`);
@@ -21,7 +36,7 @@ export async function getBoard(): Promise<Board> {
 }
 
 export async function getBoardVersion(): Promise<string> {
-  const r = await fetch('/api/board/version', { cache: 'no-store' });
+  const r = await fetch(`/api/board/version${scopeQS()}`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`version check failed (${r.status})`);
   return (await r.json()).version;
 }
@@ -31,7 +46,7 @@ export async function getBoardVersion(): Promise<string> {
 export async function putBoard(
   body: { epics: BoardEpic[]; tickets: BoardTicket[]; version?: string },
 ): Promise<string> {
-  const r = await fetch('/api/board', {
+  const r = await fetch(`/api/board${scopeQS()}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -43,37 +58,37 @@ export async function putBoard(
 }
 
 export async function getConfig(): Promise<ProjectConfig | null> {
-  const r = await fetch('/api/config', { cache: 'no-store' });
+  const r = await fetch(`/api/config${scopeQS()}`, { cache: 'no-store' });
   if (!r.ok) return null;
   return r.json();
 }
 
 export async function getRoster(): Promise<Roster> {
-  const r = await fetch('/api/roster', { cache: 'no-store' });
+  const r = await fetch(`/api/roster${scopeQS()}`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`roster load failed (${r.status})`);
   return r.json();
 }
 
 export async function getDocs(): Promise<{ sections: DocSection[] }> {
-  const r = await fetch('/api/docs', { cache: 'no-store' });
+  const r = await fetch(`/api/docs${scopeQS()}`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`docs load failed (${r.status})`);
   return r.json();
 }
 
 export async function getDocHtml(path: string): Promise<string> {
-  const r = await fetch(`/api/docs/render?path=${encodeURIComponent(path)}`, { cache: 'no-store' });
+  const r = await fetch(`/api/docs/render?path=${encodeURIComponent(path)}${scopeQS(false)}`, { cache: 'no-store' });
   if (!r.ok) throw new Error(`doc render failed (${r.status})`);
   return (await r.json()).html;
 }
 
 export async function getSpec(id: string): Promise<string> {
-  const r = await fetch(`/api/spec/${encodeURIComponent(id)}`, { cache: 'no-store' });
+  const r = await fetch(`/api/spec/${encodeURIComponent(id)}${scopeQS()}`, { cache: 'no-store' });
   if (!r.ok) return '';
   return (await r.json()).content ?? '';
 }
 
 export async function putSpec(id: string, content: string): Promise<void> {
-  const r = await fetch(`/api/spec/${encodeURIComponent(id)}`, {
+  const r = await fetch(`/api/spec/${encodeURIComponent(id)}${scopeQS()}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -82,4 +97,33 @@ export async function putSpec(id: string, content: string): Promise<void> {
     const e = await r.json().catch(() => ({}));
     throw new Error(e.error || `spec save failed (${r.status})`);
   }
+}
+
+// ── Portfolio ("today" survey) — 404 means portfolio mode isn't configured ──────
+export async function getPortfolioToday(): Promise<PortfolioToday | null> {
+  const r = await fetch('/api/portfolio/today', { cache: 'no-store' });
+  if (r.status === 404) return null; // not configured: single-board mode
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `portfolio load failed (${r.status})`);
+  }
+  return r.json();
+}
+
+// ── Reports (board/reports/, generated files served read-only) ──────────────────
+export async function getReports(): Promise<ReportInfo[]> {
+  const r = await fetch(`/api/reports${scopeQS()}`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`reports load failed (${r.status})`);
+  return (await r.json()).reports ?? [];
+}
+
+export async function getReportHtml(name: string): Promise<string> {
+  const r = await fetch(`/api/reports/render?name=${encodeURIComponent(name)}${scopeQS(false)}`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(`report render failed (${r.status})`);
+  return (await r.json()).html;
+}
+
+// URL for an .html report, shown in a sandboxed iframe rather than fetched as JSON.
+export function reportFileUrl(name: string): string {
+  return `/api/reports/render?name=${encodeURIComponent(name)}${scopeQS(false)}`;
 }
