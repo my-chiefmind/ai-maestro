@@ -24,6 +24,10 @@
  *   PUT  /api/spec/:id         -> { ok }                     ({ content })
  *   GET  /api/docs             -> { sections: [{ key, label, files: [{ path, title }] }] }
  *   GET  /api/docs/render      -> { path, html }             (?path=<repo-relative .md>)
+ *
+ * Portfolio mode (T-003, read-only; opt-in via --registry <file> / MAESTRO_REGISTRY):
+ *   GET  /api/portfolio/boards -> { registry, boards: [...] } (each board dir read in place)
+ *   GET  /api/portfolio/today  -> { week, projects: [...] }   (ready-to-run tickets per board)
  */
 
 import express from "express";
@@ -36,6 +40,7 @@ import { marked } from "marked";
 import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
 import { neuterRawHtml } from "./sanitize.mjs";
 import { findFreePort } from "./ports.mjs";
+import { loadPortfolio, readPortfolioBoards, survey as portfolioSurvey } from "./portfolio.mjs";
 
 // Raw HTML in a doc must not pass through to the UI's dangerouslySetInnerHTML untouched:
 // the rendered set includes agent-authored files (agents/*.md, skills/*/SKILL.md), so it
@@ -110,6 +115,11 @@ const PROJECT_DIR = resolve(BOARD_DIR, ".."); // config.json / .claude live one 
 const DATA = join(BOARD_DIR, "data.json");
 const ARCHIVE = join(BOARD_DIR, "archive.json");
 const BACKUPS = join(BOARD_DIR, ".backups");
+
+// Portfolio mode (T-003): opt-in only, via --registry or MAESTRO_REGISTRY — no default path,
+// so single-board mode (above) is unchanged when neither is set (AC2). Read-only for now:
+// see board/specs/T-003.md for what portfolio *writes* still need.
+const REGISTRY_PATH = argValue("--registry") || process.env.MAESTRO_REGISTRY || null;
 const SPECS = join(BOARD_DIR, "specs");
 const CONFIG = join(PROJECT_DIR, "config.json");
 
@@ -290,6 +300,32 @@ app.put("/api/board", (req, res) => {
     res.json({ ok: true, version: boardVersion() });
   } catch (e) {
     res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+// ── Portfolio mode (T-003, read-only) — every board named in --registry/MAESTRO_REGISTRY ──
+// Absent registry -> 404 with a clear reason, not an empty list: a portfolio tab that reads
+// as "no projects" when the registry was simply never configured is worse than an explicit
+// "portfolio mode isn't set up" (T-003 §1's "loud, not silent" rule, applied to the endpoint
+// as well as to a malformed registry file).
+app.get("/api/portfolio/boards", (_req, res) => {
+  if (!REGISTRY_PATH) return res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+  try {
+    const portfolio = loadPortfolio(REGISTRY_PATH);
+    if (!portfolio) return res.status(404).json({ error: `No registry at ${REGISTRY_PATH}.` });
+    res.json({ registry: REGISTRY_PATH, boards: readPortfolioBoards(portfolio) });
+  } catch (e) {
+    res.status(500).json({ error: `cannot read registry: ${errMessage(e)}` });
+  }
+});
+app.get("/api/portfolio/today", (_req, res) => {
+  if (!REGISTRY_PATH) return res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+  try {
+    const portfolio = loadPortfolio(REGISTRY_PATH);
+    if (!portfolio) return res.status(404).json({ error: `No registry at ${REGISTRY_PATH}.` });
+    res.json(portfolioSurvey(portfolio));
+  } catch (e) {
+    res.status(500).json({ error: `cannot build survey: ${errMessage(e)}` });
   }
 });
 

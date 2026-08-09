@@ -86,6 +86,29 @@ export function suggestCode(unknown, knownCodes) {
 }
 
 /**
+ * Live `todo` tickets ready to run right now: every dependency satisfied (archived, or a live
+ * ticket already `done`) and not blocked by a human gate. `archived` only needs `id`s here —
+ * an archived ticket is done by definition (it left the board because it landed, or because it
+ * carries one of the archive-only terminal states that also make it a satisfied dependency).
+ * The single source of truth for "ready" — validateBoard's eligibleCount and the portfolio
+ * survey (T-003) both call this rather than keeping their own copy of the rule.
+ */
+export function eligibleTickets(data, archived = []) {
+  const archivedIds = new Set(archived.map((t) => t.id));
+  const statusById = new Map((data.tickets ?? []).map((t) => [t.id, t.status]));
+  const doneIds = new Set([
+    ...archivedIds,
+    ...[...statusById.keys()].filter((id) => statusById.get(id) === "done"),
+  ]);
+  return (data.tickets ?? []).filter(
+    (t) =>
+      t.status === "todo" &&
+      !t.human_gate &&
+      (Array.isArray(t.depends_on) ? t.depends_on : []).every((d) => doneIds.has(d))
+  );
+}
+
+/**
  * The pipeline a ticket actually runs: its `agent_plan` with terminal gates guaranteed at the
  * end, in canonical order. `qa` and `merge` are always appended if absent; `pd` (delivery
  * gate) is added for multi-agent or human-gated tickets. This is the single source of truth
@@ -241,11 +264,6 @@ export function validateBoard(data, opts = {}) {
   // A dependency exists if it's a live ticket OR an archived ticket — landed tickets move
   // to archive.json by design, so deps legitimately point into the archive.
   const existingIds = new Set([...ticketIds, ...archivedIds]);
-  // A dependency is satisfied if it's archived (all archived work is done) or a live done ticket.
-  const doneIds = new Set([
-    ...archivedIds,
-    ...[...ticketIds].filter((id) => statusById.get(id) === "done"),
-  ]);
 
   // ── Dependency integrity ──
   // An id found in NEITHER data.json nor archive.json is a hard error, not a warning:
@@ -279,12 +297,7 @@ export function validateBoard(data, opts = {}) {
   for (const id of ticketIds) if (color.get(id) === WHITE) visit(id);
 
   // ── Eligibility sanity ──
-  const eligible = data.tickets.filter(
-    (t) =>
-      t.status === "todo" &&
-      !t.human_gate &&
-      (deps.get(t.id) ?? []).every((d) => doneIds.has(d))
-  );
+  const eligible = eligibleTickets(data, archived);
   if (eligible.length === 0) {
     warn("No eligible `todo` ticket right now — the orchestrator will report idle.");
   }
