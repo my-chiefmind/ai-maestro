@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "run-record.schema.json",
+  "title": "Orchestrate Run Record",
+  "description": "Per-ticket execution record at <runs dir>/<ticket-id>.json. The orchestrator is the sole writer. Agents verify the record before touching files.",
+  "type": "object",
+  "required": [
+    "schemaVersion", "ticket", "branch", "worktree",
+    "status", "stage", "plan", "completedStages",
+    "handoffs", "ownedFiles", "writerLease", "fixLoops"
+  ],
+  "properties": {
+    "schemaVersion":   { "type": "integer" },
+    "ticket":          { "type": "string" },
+    "epicId":          { "type": "string" },
+    "name":            { "type": "string" },
+    "desc":            { "type": "string" },
+    "area":            { "type": "string" },
+    "repoPath":        { "type": "string" },
+    "testCmd":         { "type": "string" },
+    "branch":          { "type": "string" },
+    "worktree":        { "type": "string" },
+    "status":          { "type": "string", "enum": ["running", "blocked", "aborted", "done", "idle"] },
+    "stage":           { "type": "integer" },
+    "plan":            { "type": "array", "items": { "type": "string" } },
+    "completedStages": { "type": "array", "items": { "type": "string" } },
+    "activeAgent":     { "type": "string" },
+    "nextAgent":       { "type": "string" },
+    "writerLease": {
+      "type": "object",
+      "required": ["holder", "stageIndex", "acquiredTs", "staleAfterStages"],
+      "properties": {
+        "holder":           { "type": ["string", "null"] },
+        "stageIndex":       { "type": "integer" },
+        "acquiredTs":       { "type": ["string", "null"] },
+        "staleAfterStages": { "type": "integer" }
+      }
+    },
+    "ownedFiles":    { "type": "object" },
+    "handoffs":      { "type": "array", "items": { "$ref": "handoff.schema.json" } },
+    "gates": {
+      "type": "object",
+      "description": "Verdicts of the security-review (qa stage) and release-gate (pd stage) skills, made visible here so the orchestrator's merge decision is auditable.",
+      "properties": {
+        "securityReview": { "type": "string", "enum": ["ship", "block", "n/a"] },
+        "releaseGate":    { "type": "string", "enum": ["go", "no-go"] }
+      }
+    },
+    "blockerTicket": { "type": "string" },
+    "fixLoops":      { "type": "integer" }
+  }
+}

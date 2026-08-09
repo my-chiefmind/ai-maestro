@@ -181,6 +181,29 @@ pre-flights the board and your working tree, then hands off to the agent. Each r
 It does **one ticket per run** unless you tell it to keep going, so you stay in the loop between
 tickets. Run **one orchestrator at a time** — claiming a ticket is best-effort, not atomic.
 
+### Harness mode (optional): the orchestrate Workflow
+
+The `/orchestrator` skill is model-driven — the agent reads the method and follows it. If your
+tool supports **Workflow scripts** (Claude Code's Workflow tool) you can opt into a generated
+harness where the control flow is deterministic code instead: fix loops capped at 3, security
+and release gate verdicts enforced at merge (fail closed), one writer lease at a time, and a
+resumable run record per ticket under `.maestro/run/`.
+
+```jsonc
+// maestro/config.json
+"targets": { "workflow": true },
+"orchestrator": {                      // all optional
+  "mergeStrategy": "pr",               // "pr" for protected mains; default "local-push"
+  "publishBoard": false,               // commit+push board transitions? default false
+  "testCmd": { "backend": "npm test" } // per-area test commands the gates verify with
+}
+```
+
+`sync` then generates `.claude/workflows/orchestrate.js`. Run it with
+`Workflow({ name: "orchestrate" })` — no args picks the next unblocked `todo` ticket;
+`"start <id>"`, `"status <id>"`, `"resume <id>"`, `"abort <id>"` address one ticket. Finished
+tickets are archived (the land-and-archive convention), never left `done` on the live board.
+
 ## The visual board
 
 The [cockpit](../README.md#the-cockpit) is the one part that runs a server, and it's optional:

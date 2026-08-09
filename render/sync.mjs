@@ -28,6 +28,7 @@ import { resolve, dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { readRegistry, findKitDir } from "../scripts/registry.mjs";
+import { agentFileToCode } from "../scripts/board-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const THIS_KIT = resolve(__dir, "..");
@@ -323,6 +324,82 @@ ${body}
   }
 }
 
+// ── Multi-target rendering: the orchestrate Workflow script ──────────────────────
+// Opt-in via config.targets.workflow — generates .claude/workflows/orchestrate.js from
+// workflows/orchestrate.wrapper.js.tmpl with the shared core (workflows/orchestrator-core.js)
+// embedded, and the project's constants injected. Off by default: the orchestrator skill
+// covers the model-driven flow; the Workflow script is for teams that want the harness's
+// deterministic control flow (fix loops, gate enforcement, run records) instead.
+if (config.targets?.workflow) {
+  const orch = config.orchestrator ?? {};
+  const areas = config.project?.areas ?? [];
+
+  // area → repo dir. Single-repo projects (the default) run everything at the repo root;
+  // a multi-repo workspace overrides per area via config.orchestrator.repoPath.
+  const repoPath = {};
+  for (const [area, p] of Object.entries(orch.repoPath ?? {})) repoPath[area] = resolve(OUT, p);
+
+  // area → test command; missing areas fall back to the core's placeholder (which the qa/pd
+  // gates treat as "no real verification configured" and block on).
+  const testCmd = orch.testCmd ?? {};
+
+  // Roster codes + roles. qa and principal-delivery review; every other rostered agent
+  // writes. The orchestrator itself is the harness, not a stage.
+  const READERS = new Set(["qa", "pd"]);
+  const agentsMap = {};
+  for (const f of agentFiles) {
+    const name = f.replace(/\.md$/, "");
+    if (name === "orchestrator") continue;
+    const code = agentFileToCode(name);
+    agentsMap[code] = { type: name, role: READERS.has(code) ? "reader" : "writer" };
+  }
+
+  // area → default implementer agent type (used only when a ticket has no agent_plan).
+  const DEFAULT_AREA_AGENTS = {
+    backend: "backend-developer", frontend: "frontend-developer",
+    infra: "devops", docs: "technical-writer", pipeline: "pipeline-developer",
+  };
+  const agentType = {};
+  for (const area of areas) {
+    const wanted = orch.areaAgents?.[area] ?? DEFAULT_AREA_AGENTS[area] ?? "principal-engineer";
+    // Only route to agents actually on the roster; anything else falls back to pe.
+    agentType[area] = Object.values(agentsMap).some((a) => a.type === wanted) ? wanted : "principal-engineer";
+  }
+
+  // Fix-agent routing hints ({ code: regexString }), filtered to rostered writer codes.
+  const DEFAULT_HINTS = {
+    frontend: "\\.(tsx|jsx|css|scss|html|vue|svelte)$",
+    backend: "\\.(py|go|rb|rs|java|php)$|\\bapi\\b|server/",
+    devops: "Dockerfile|\\.tf$|\\.ya?ml$|infra/",
+    pipeline: "pipeline|etl|\\bdag\\b",
+  };
+  const fixHints = {};
+  for (const [code, pattern] of Object.entries({ ...DEFAULT_HINTS, ...(orch.fixAgentHints ?? {}) })) {
+    if (agentsMap[code]?.role === "writer" && pattern) fixHints[code] = pattern;
+  }
+
+  const wrapper = readFileSync(join(KIT, "workflows", "orchestrate.wrapper.js.tmpl"), "utf8");
+  const core = readFileSync(join(KIT, "workflows", "orchestrator-core.js"), "utf8");
+  const boardData = join(PROJECT, "board", "data.json");
+  generated.set(join(".claude", "workflows", "orchestrate.js"), substitute(wrapper, {
+    ORCHESTRATOR_CORE: core,
+    PROJECT_ROOT_JSON: JSON.stringify(OUT),
+    BOARD_ABS_JSON: JSON.stringify(boardData),
+    ARCHIVE_ABS_JSON: JSON.stringify(join(PROJECT, "board", "archive.json")),
+    WORKTREES_JSON: JSON.stringify(join(OUT, ".maestro", "worktrees")),
+    RUNS_JSON: JSON.stringify(join(OUT, ".maestro", "run")),
+    VALIDATE_CMD_JSON: JSON.stringify(`node ${join(KIT, "scripts", "validate-board.mjs")} ${boardData}`),
+    MERGE_STRATEGY_JSON: JSON.stringify(orch.mergeStrategy === "pr" ? "pr" : "local-push"),
+    PUBLISH_BOARD_JSON: JSON.stringify(orch.publishBoard === true),
+    REPO_PATH_JSON: JSON.stringify(repoPath),
+    TEST_CMD_JSON: JSON.stringify(testCmd),
+    AGENT_TYPE_JSON: JSON.stringify(agentType),
+    AGENTS_JSON: JSON.stringify(agentsMap),
+    AREA_PLAN_JSON: JSON.stringify(orch.areaPlan ?? {}),
+    FIX_AGENT_HINTS_JSON: JSON.stringify(fixHints),
+  }));
+}
+
 // ── Lock file ────────────────────────────────────────────────────────────────
 const lock = {
   kitVersion,
@@ -404,7 +481,8 @@ writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
 const skillCount = [...generated.keys()].filter((r) => r.endsWith("SKILL.md")).length;
 const codexCount = [...generated.keys()].filter((r) => r.startsWith(join(".codex", "agents"))).length;
+const hasWorkflow = generated.has(join(".claude", "workflows", "orchestrate.js"));
 console.log(
   `✓ Rendered ${projectName} (kit v${kitVersion}): ` +
-    `${agentCount} agents, ${skillCount} skills, CLAUDE.md, AGENTS.md${codexCount ? `, ${codexCount} Codex agent(s)` : ""}, .maestro.lock`
+    `${agentCount} agents, ${skillCount} skills, CLAUDE.md, AGENTS.md${codexCount ? `, ${codexCount} Codex agent(s)` : ""}${hasWorkflow ? ", orchestrate workflow" : ""}, .maestro.lock`
 );

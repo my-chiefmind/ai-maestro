@@ -16,6 +16,7 @@
     "scripts",
     "agents",
     "skills",
+    "workflows",
     "starters",
     "board",
     "!board/.backups",

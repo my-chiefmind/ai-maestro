@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handoff.schema.json",
+  "title": "Agent Handoff",
+  "description": "Structured handoff every agent (writer or reviewer) returns to the orchestrator after completing a stage of the orchestrate workflow.",
+  "type": "object",
+  "required": ["status", "summary", "filesChanged", "testsRun", "decisions", "risks", "recommendedNextAgent"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["done", "blocked", "error", "ship", "block"],
+      "description": "Writers: done/blocked/error. Reviewers (qa/pd): ship/block."
+    },
+    "agentCode":             { "type": "string" },
+    "summary":               { "type": "string" },
+    "filesChanged":          { "type": "array", "items": { "type": "string" } },
+    "testsRun":              { "type": "array", "items": { "type": "string" } },
+    "commit":                { "type": ["string", "null"] },
+    "decisions":             { "type": "array", "items": { "type": "string" } },
+    "risks":                 { "type": "array", "items": { "type": "string" } },
+    "recommendedNextAgent":  { "type": ["string", "null"] },
+    "blockerDesc":           { "type": "string" },
+    "findings":              { "type": "array", "items": { "type": "string" }, "description": "file:line issues for a block verdict." },
+    "leasedTs":              { "type": ["string", "null"] },
+    "securityReview":        { "type": "string", "enum": ["ship", "block", "n/a"], "description": "qa stage's security-review gate verdict. Persisted to run-record gates.securityReview and enforced at merge." },
+    "releaseGate":           { "type": "string", "enum": ["go", "no-go"], "description": "principal-delivery stage's release-gate verdict. Persisted to run-record gates.releaseGate and enforced at merge." }
+  }
+}
