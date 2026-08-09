@@ -266,9 +266,42 @@ work across all of them at once instead of one `cd` at a time:
 ```
 
 ```bash
-maestro drift --registry maestro-registry.json          # version + hand-edit report per project
+maestro drift  --registry maestro-registry.json         # version + hand-edit report per project
+maestro update --all --registry maestro-registry.json   # bring every project to this CLI's version
 node maestro/render/sync.mjs --all --registry maestro-registry.json --check   # re-render/--check all of them
 ```
+
+Two optional fields per project, both defaulted so the two-key form above keeps working:
+
+| Field | Values | What it does |
+| --- | --- | --- |
+| `status` | `active` (default), `parked` | `parked` keeps a repo on the list but out of every sweep. Use it instead of deleting the entry, so "deliberately not being worked" stays recorded. |
+| `kind` | `product` (default), `ops` | `ops` marks portfolio-level tooling that has no delivery pipeline of its own. |
+
+### Groups of groups
+
+An entry with `registry` instead of `path` pulls in another registry, resolved relative to the
+file naming it. Each group keeps its own list, and a parent composes them — so a group can be
+moved, or read on its own, without rewriting anyone's paths:
+
+```jsonc
+// ~/source/maestro-registry.json — everything
+{ "projects": [
+  { "registry": "./platform/maestro-registry.json" },   // a group, with its own members
+  { "registry": "./labs/maestro-registry.json" },
+  { "name": "standalone", "path": "~/source/standalone" },
+  { "name": "old-thing",  "path": "~/source/old-thing", "status": "parked",
+    "note": "Superseded by standalone; kept for reference." }
+] }
+```
+
+Project **names must be unique across the whole tree** — every tool keys on them, and the
+cockpit matches them exactly to decide which board a write lands on, so a duplicate is an error
+rather than a race. Include cycles are detected and reported with the chain that formed them.
+
+A registry that is missing or malformed is a **hard error**, never an empty list: "the list
+failed to load" and "there is no work anywhere" must not look the same. The full shape is in
+[`schemas/maestro-registry.schema.json`](../schemas/maestro-registry.schema.json).
 
 `maestro drift` reports, per project: the installed kit version vs. the latest on npm
 (`--offline` skips that check), and whether its generated files still match what its own

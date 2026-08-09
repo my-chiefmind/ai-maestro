@@ -237,3 +237,23 @@ test("serves doc images, but strips their ability to run script", { skip: SKIP }
   assert.ok(csp && /default-src 'none'/.test(csp) && /sandbox/.test(csp),
     `asset responses need a locking-down CSP, got: ${csp}`);
 });
+
+test("serves the long-form help guide, sandboxed and unable to escape the kit", { skip: SKIP }, async () => {
+  // docs/help.html is HTML, so the Markdown docs browser could not list or render it and it
+  // shipped with nothing pointing at it. It gets its own route — held to the same rules as an
+  // .html report, since it is a document rendered in the cockpit's frame.
+  const r = await get("/api/help/guide");
+  assert.equal(r.status, 200);
+  const csp = r.headers.get("content-security-policy") ?? "";
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /sandbox/, "the guide must not be able to run script in our origin");
+  assert.match(await r.text(), /How AI Maestro works/);
+
+  // The UI probes with HEAD before showing the tab; Express answers it from the same route.
+  assert.equal((await fetch(`${ORIGIN}/api/help/guide`, { method: "HEAD" })).status, 200);
+
+  // The route takes no filename — but the scope it resolves against comes from the query, so
+  // an unknown project must not become a path to read from.
+  const bogus = await get("/api/help/guide?project=" + encodeURIComponent("../../etc"));
+  assert.ok(bogus.status >= 400, `an unknown scope must not resolve (got ${bogus.status})`);
+});

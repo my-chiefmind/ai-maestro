@@ -17,8 +17,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, cpSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,22 +54,31 @@ test("--check passes against the committed tree", () => {
 });
 
 test("--check fails loudly when they disagree", () => {
-  // Simulated rather than mutated on disk: the point is that a mismatch exits non-zero.
-  assert.throws(
-    () =>
-      execFileSync(
-        process.execPath,
-        [
-          "-e",
-          `const {execFileSync}=require("child_process");
-           const fs=require("fs"),p=${JSON.stringify(join(KIT, "VERSION"))};
-           const orig=fs.readFileSync(p,"utf8");
-           fs.writeFileSync(p,"0.0.0-drift\\n");
-           try { execFileSync(process.execPath,[${JSON.stringify(join(KIT, "scripts", "sync-version.mjs"))},"--check"],{stdio:"pipe"}); }
-           finally { fs.writeFileSync(p,orig); }`,
-        ],
-        { stdio: "pipe" },
-      ),
-    /Command failed/,
-  );
+  // Run against a THROWAWAY copy of the kit, never the real one. This used to write
+  // "0.0.0-drift" into the repo's own VERSION and restore it in a finally — but `npm test`
+  // runs test files in parallel, and render/sync.mjs stamps VERSION into everything it
+  // generates. Any render test that happened to run inside that window baked a bogus kit
+  // version into its output, or straddled the restore and disagreed with its own lock. That
+  // made several suites intermittently red for reasons nothing in them explained.
+  const dir = mkdtempSync(join(tmpdir(), "maestro-version-"));
+  try {
+    mkdirSync(join(dir, "scripts"));
+    cpSync(join(KIT, "scripts", "sync-version.mjs"), join(dir, "scripts", "sync-version.mjs"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "1.2.3" }));
+    const run = (args = []) =>
+      execFileSync(process.execPath, [join(dir, "scripts", "sync-version.mjs"), ...args], {
+        encoding: "utf8",
+        stdio: "pipe",
+      });
+
+    writeFileSync(join(dir, "VERSION"), "0.0.0-drift\n");
+    assert.throws(() => run(["--check"]), /Command failed/, "a mismatch must exit non-zero");
+
+    // ...and the non-check run repairs it, which is what npm's `version` lifecycle relies on.
+    run();
+    assert.equal(readFileSync(join(dir, "VERSION"), "utf8").trim(), "1.2.3");
+    assert.match(run(["--check"]), /package\.json === VERSION/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -16,7 +16,9 @@
     "devops",
     "technical-writer",
     "qa",
-    "principal-delivery"
+    "principal-delivery",
+    "pipeline-developer",
+    "repo-audit"
   ],
   "skills": [
     "orchestrator",
@@ -31,7 +33,11 @@
     "worktree-cleanup",
     "land-and-archive",
     "gc",
-    "dev-report"
+    "dev-report",
+    "frontend-quality",
+    "pipeline-quality",
+    "orchestration-health",
+    "repo-audit"
   ],
   "model": {
     "default": "sonnet",

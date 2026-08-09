@@ -1,11 +1,22 @@
-import { Box, Card, Container, Typography } from '@mui/material';
+import { useEffect, useState } from 'react';
+import { Box, Button, Card, Container, Tab, Tabs, Typography } from '@mui/material';
 import CheatSheet from './CheatSheet';
+import { helpGuideUrl, hasHelpGuide } from './api';
 
-// The always-available cheat sheet — same content as the first-run welcome modal, reachable
-// any time from the Help tab in the nav bar.
+// The Help tab: the cheat sheet you need on day one, plus the long-form guide (docs/help.html)
+// that explains the model behind it. The guide is HTML, so the Markdown docs browser could not
+// carry it and it shipped unreachable — here it loads in a sandboxed iframe, exactly like an
+// .html report: no scripts, no same-origin, because it is a document and not an app.
 export default function HelpPage() {
+  const [tab, setTab] = useState<'cheatsheet' | 'guide'>('cheatsheet');
+  const [guide, setGuide] = useState<boolean | null>(null);
+
+  // A kit vendored before the guide existed simply doesn't have it — show the cheat sheet
+  // alone rather than a tab leading to an empty frame.
+  useEffect(() => { hasHelpGuide().then(setGuide); }, []);
+
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
+    <Container maxWidth={tab === 'guide' ? false : 'md'} sx={{ py: 4 }}>
       <Box sx={{ mb: 3 }}>
         <Typography sx={{ fontSize: 12, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase',
           color: 'primary.main', mb: 0.6 }}>Help &amp; cheat sheet 🎼</Typography>
@@ -13,9 +24,33 @@ export default function HelpPage() {
           Getting started
         </Typography>
       </Box>
-      <Card sx={{ p: { xs: 2.5, md: 4 } }}>
-        <CheatSheet />
-      </Card>
+
+      {guide && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, borderBottom: 1, borderColor: 'divider' }}>
+          <Tabs value={tab} onChange={(_e, v) => setTab(v)} sx={{ minHeight: 40 }}>
+            <Tab value="cheatsheet" label="Cheat sheet" sx={{ minHeight: 40, textTransform: 'none', fontWeight: 700 }} />
+            <Tab value="guide" label="How it works" sx={{ minHeight: 40, textTransform: 'none', fontWeight: 700 }} />
+          </Tabs>
+          {tab === 'guide' && (
+            <Button size="small" href={helpGuideUrl()} target="_blank" rel="noopener noreferrer"
+              sx={{ ml: 'auto', textTransform: 'none' }}>
+              Open in a new tab
+            </Button>
+          )}
+        </Box>
+      )}
+
+      {tab === 'guide' && guide ? (
+        <Card sx={{ p: 0, overflow: 'hidden' }}>
+          {/* Sandboxed: no scripts, no same-origin. */}
+          <Box component="iframe" src={helpGuideUrl()} sandbox="" title="How AI Maestro works"
+            sx={{ display: 'block', width: '100%', height: 'calc(100vh - 200px)', border: 0, bgcolor: '#fff' }} />
+        </Card>
+      ) : (
+        <Card sx={{ p: { xs: 2.5, md: 4 } }}>
+          <CheatSheet />
+        </Card>
+      )}
     </Container>
   );
 }

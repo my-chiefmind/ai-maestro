@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readRegistry, expandHome, findKitDir } from "../scripts/registry.mjs";
+import { readRegistry, expandHome, findKitDir, ENTRY_KEYS } from "../scripts/registry.mjs";
 
 const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -103,4 +103,32 @@ test("the registry example in docs/GETTING-STARTED.md is valid and loads via rea
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("an unknown key is rejected, so a typo cannot silently exclude nothing", () => {
+  // The failure this prevents: "stauts": "parked" reads as an active project, and the sweep the
+  // field exists to keep a repo out of runs against it anyway — the field appears to work, and
+  // only does nothing. The schema already declared the key set closed; the reader now agrees.
+  const tmp = mkdtempSync(join(tmpdir(), "registry-strict-"));
+  try {
+    const registryPath = join(tmp, "registry.json");
+    writeFileSync(registryPath, JSON.stringify({ projects: [{ path: join(tmp, "p"), stauts: "parked" }] }));
+    assert.throws(
+      () => readRegistry(registryPath),
+      (e) => e.code === "EBADREGISTRY" && /unknown key\(s\) "stauts"/.test(e.message),
+    );
+
+    // "note" is free text for humans and stays accepted.
+    writeFileSync(registryPath, JSON.stringify({ projects: [{ path: join(tmp, "p"), note: "why it's here" }] }));
+    assert.equal(readRegistry(registryPath).projects.length, 1);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("the reader's key set and the published schema do not drift apart", () => {
+  const schema = JSON.parse(readFileSync(join(KIT, "schemas", "maestro-registry.schema.json"), "utf8"));
+  const entry = schema.$defs.entry;
+  assert.equal(entry.additionalProperties, false, "the schema must stay closed for this to be enforceable");
+  assert.deepEqual([...ENTRY_KEYS].sort(), Object.keys(entry.properties).sort());
 });
