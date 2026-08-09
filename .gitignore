@@ -11,6 +11,16 @@ npm-debug.log*
 # Board write backups (the cockpit keeps timestamped copies; they're local-only)
 .backups/
 
+# This repo's own live workboard — local-only, never pushed to the public repo.
+# The structure (board.schema.json, README.md) stays tracked; new projects are
+# seeded from starters/orchestrated-project/board/, and npm pack excludes these
+# too (package.json "files"). Only the DATA is private.
+/board/data.json
+/board/archive.json
+/board/parked.json
+/board/specs/
+/board/reports/
+
 # Editor / OS
 .DS_Store
 .idea/

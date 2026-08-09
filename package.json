@@ -19,6 +19,10 @@
     "starters",
     "board",
     "!board/.backups",
+    "!board/data.json",
+    "!board/archive.json",
+    "!board/specs",
+    "!board/reports",
     "cockpit",
     "!cockpit/node_modules",
     "!cockpit/dist",
@@ -31,7 +35,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "prepublishOnly": "node scripts/validate-board.mjs board/data.json && node scripts/sync-version.mjs --check",
+    "prepublishOnly": "node scripts/validate-board.mjs starters/orchestrated-project/board/data.json && node scripts/sync-version.mjs --check",
     "version": "node scripts/sync-version.mjs && git add VERSION",
     "test": "node --test test/*.test.mjs",
     "typecheck": "npm --prefix cockpit run typecheck",

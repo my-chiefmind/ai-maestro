@@ -52,8 +52,10 @@ jobs:
         with:
           node-version: 22   # concurrently@10 requires >=22; also pins which npm validates the lockfile
 
-      - name: Validate the example board
-        run: node scripts/validate-board.mjs board/data.json
+      # The live workboard (board/data.json + archive + specs) is local-only and
+      # untracked — CI can only see the starter board new projects are seeded from.
+      - name: Validate the starter board
+        run: node scripts/validate-board.mjs starters/orchestrated-project/board/data.json
 
       # The suite pins the install path's guarantees (no lifecycle hooks, npm ci not
       # npm install, checksum-free vendoring) and the cockpit's exposure controls. It was
