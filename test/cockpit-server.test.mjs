@@ -24,7 +24,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -70,9 +70,12 @@ before(async () => {
 after(() => {
   if (SKIP) return;
   proc?.kill();
-  // The probe spec is written into the real board dir; remove it and the dir if we made it.
+  // The probe spec is written into the real board dir. Remove only the probe file, and the
+  // dir itself only when the probe was the sole thing in it (i.e. this run created the dir) —
+  // `rmSync(..., { recursive: true })` never refuses a non-empty directory, so a naive version
+  // of this cleanup wipes the repo's real specs/reports whenever they happen to be present.
   rmSync(join(SPECS, `${PROBE_ID}.md`), { force: true });
-  try { if (existsSync(SPECS)) rmSync(SPECS, { recursive: true }); } catch { /* had other specs */ }
+  if (existsSync(SPECS) && readdirSync(SPECS).length === 0) rmSync(SPECS, { recursive: true });
 });
 
 const get = (path, headers = {}) => fetch(`${ORIGIN}${path}`, { headers, redirect: "manual" });

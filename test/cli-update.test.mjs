@@ -110,3 +110,43 @@ test("update errors clearly when nothing is set up", () => {
   mkdirSync(empty, { recursive: true });
   assert.throws(() => cli(["update"], { cwd: empty, stdio: "pipe" }), /nothing to update/);
 });
+
+test("update never deletes a project's own board/ workspace folders (T-001)", () => {
+  // A folder the project created for itself under board/ — the starter README documents
+  // specs/ and reports/ as exactly this. Never shipped by the kit, so it must survive
+  // regardless of whether anything with that name exists upstream.
+  const evidenceDir = join(kitDir, "board", "evidence");
+  mkdirSync(evidenceDir);
+  writeFileSync(join(evidenceDir, "notes.md"), "user's own notes\n");
+  const specsDir = join(kitDir, "board", "specs");
+  mkdirSync(specsDir, { recursive: true });
+  writeFileSync(join(specsDir, "T-001.md"), "the project's own ticket detail\n");
+
+  writeFileSync(join(pkgDir, "VERSION"), "9.9.10\n");
+  cli(["update"]);
+
+  assert.equal(readFileSync(join(evidenceDir, "notes.md"), "utf8"), "user's own notes\n");
+  assert.equal(readFileSync(join(specsDir, "T-001.md"), "utf8"), "the project's own ticket detail\n");
+});
+
+test("update never seeds a project's board with the kit's own specs/reports", () => {
+  // The kit repo's own board/specs holds ITS maintenance tickets (T-003, T-004, ...), not
+  // example content — update must never copy those into a project's board, even though the
+  // project now has a specs/ dir of its own (created in the previous test).
+  assert.ok(!existsSync(join(kitDir, "board", "specs", "T-003.md")), "kit's own spec should not have been seeded");
+  assert.ok(!existsSync(join(kitDir, "board", "reports")), "reports/ should not have been seeded");
+});
+
+test("update keeps a hand-edited board/README.md, not just this once but every run after", () => {
+  const readmePath = join(kitDir, "board", "README.md");
+  const edited = readFileSync(readmePath, "utf8") + "\n<!-- our own notes -->\n";
+  writeFileSync(readmePath, edited);
+
+  writeFileSync(join(pkgDir, "VERSION"), "9.9.11\n");
+  cli(["update"]);
+  assert.equal(readFileSync(readmePath, "utf8"), edited, "edit should survive the first update after it was made");
+
+  writeFileSync(join(pkgDir, "VERSION"), "9.9.12\n");
+  cli(["update"]);
+  assert.equal(readFileSync(readmePath, "utf8"), edited, "edit should still survive a second, later update");
+});

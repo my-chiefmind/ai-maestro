@@ -14,11 +14,12 @@
  * No third-party dependencies.
  */
 
-import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync, statSync } from "fs";
 import { resolve, dirname, join, relative, basename, sep } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createInterface } from "readline";
+import { createHash } from "crypto";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -51,6 +52,36 @@ const VENDOR_SKIP = new Set(["node_modules", "dist", ".backups", ".git"]);
 // these two are the user's work and must survive an update.
 const BOARD_USER_FILES = new Set(["data.json", "archive.json"]);
 
+// Free-form workspace folders a project grows under board/ on its own (specs/, reports/ — see
+// the starter README) that the kit never shipped as template content in the first place, even
+// though this repo's OWN board now happens to have them (its specs/ holds ai-maestro's own
+// tickets, not example content — T-001). Never seed them into a project, and — belt and
+// braces alongside the lock-based removal below — never remove them either.
+const BOARD_NEVER_VENDOR = new Set(["specs", "reports"]);
+
+// Records, per board file, the content hash THIS tool last vendored — written by vendorKit /
+// refreshVendoredKit, read back on the next update. Lets refreshVendoredKit tell "the kit
+// stopped shipping this" (safe to remove) apart from "this was never ours to begin with" (a
+// project's own board content, e.g. an unlisted future workspace folder — never remove without
+// this), and lets it tell "the project hand-edited a kit file" (e.g. board/README.md — keep
+// their edit) apart from "unedited since we wrote it" (safe to overwrite). See T-001.
+const VENDOR_LOCK_FILE = ".maestro-vendor.lock";
+const sha256 = (data) => "sha256:" + createHash("sha256").update(data).digest("hex");
+
+function readVendorLock(dest) {
+  const p = join(dest, VENDOR_LOCK_FILE);
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return null; // corrupt/foreign file — treat as "no lock", the safe (never-remove) default
+  }
+}
+
+function writeVendorLock(dest, lock) {
+  writeFileSync(join(dest, VENDOR_LOCK_FILE), JSON.stringify(lock, null, 2) + "\n");
+}
+
 // Minimal package.json so `npm run sync` / `npm run validate` / `npm run board` work from
 // the folder, matching what the docs tell clone users to run. `preboard` installs the
 // cockpit's deps on demand so the first `npm run board` just works. `update` goes through
@@ -75,18 +106,41 @@ function writeVendorPackageJson(dest) {
 function vendorKit(dest) {
   mkdirSync(dest, { recursive: true });
   const filter = (src) => !VENDOR_SKIP.has(basename(src));
+  const boardFilter = (src) => filter(src) && !BOARD_NEVER_VENDOR.has(basename(src));
   for (const entry of VENDORED) {
     const src = join(KIT_ROOT, entry);
-    if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter });
+    if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter: entry === "board" ? boardFilter : filter });
   }
   writeVendorPackageJson(dest);
+  writeVendorLock(dest, { board: boardVendorHashes(join(dest, "board")) });
+}
+
+// Hashes what vendorKit's initial copy just wrote under board/, for the vendor lock. Only
+// correct for a brand-new vendor: nothing has diverged yet, so "what's on disk" and "what we
+// vendored" are the same thing. refreshVendoredKit tracks its own lock entries as it goes
+// instead, precisely to keep divergence (a hand-edited board/README.md, say) distinguishable
+// from "unedited since we wrote it" across repeated updates.
+function boardVendorHashes(destBoard) {
+  const hashes = {};
+  if (!existsSync(destBoard)) return hashes;
+  for (const f of readdirSync(destBoard)) {
+    if (BOARD_USER_FILES.has(f) || BOARD_NEVER_VENDOR.has(f) || VENDOR_SKIP.has(f) || f === VENDOR_LOCK_FILE) continue;
+    const abs = join(destBoard, f);
+    hashes[f] = statSync(abs).isFile() ? sha256(readFileSync(abs)) : "dir";
+  }
+  return hashes;
 }
 
 // Re-vendor over an existing kit copy. Each entry is removed before copying so files deleted
 // upstream disappear too — a plain overwrite would leave them behind forever. board/ is the
-// exception: its user files are kept in place and everything else is swapped file by file.
+// exception: it mixes kit-owned files with the project's own workspace, so nothing there is
+// removed on "not shipped upstream" alone — only files THIS tool vendored last time (per the
+// vendor lock) and that the new release no longer ships. See T-001: the old rule read a
+// project's own board/specs/, board/reports/, or any future workspace folder as "deleted
+// upstream" and deleted it right along with actual removals.
 function refreshVendoredKit(dest) {
   const filter = (src) => !VENDOR_SKIP.has(basename(src));
+  const priorBoard = readVendorLock(dest)?.board ?? {};
   for (const entry of VENDORED) {
     const src = join(KIT_ROOT, entry);
     if (!existsSync(src)) continue;
@@ -94,15 +148,36 @@ function refreshVendoredKit(dest) {
       const destBoard = join(dest, "board");
       mkdirSync(destBoard, { recursive: true });
       for (const f of readdirSync(destBoard)) {
-        if (BOARD_USER_FILES.has(f) || VENDOR_SKIP.has(f) || existsSync(join(src, f))) continue;
+        if (BOARD_USER_FILES.has(f) || VENDOR_SKIP.has(f) || f === VENDOR_LOCK_FILE) continue;
+        if (!(f in priorBoard)) continue; // never vendored by us — leave it, whatever it is
+        if (existsSync(join(src, f))) continue; // still shipped upstream — copy loop below handles it
         rmSync(join(destBoard, f), { recursive: true, force: true });
       }
+      const newBoardLock = {};
       for (const f of readdirSync(src)) {
-        if (VENDOR_SKIP.has(f)) continue;
-        if (BOARD_USER_FILES.has(f) && existsSync(join(destBoard, f))) continue;
-        rmSync(join(destBoard, f), { recursive: true, force: true });
-        cpSync(join(src, f), join(destBoard, f), { recursive: true, filter });
+        if (VENDOR_SKIP.has(f) || BOARD_NEVER_VENDOR.has(f)) continue;
+        if (BOARD_USER_FILES.has(f)) {
+          if (!existsSync(join(destBoard, f))) cpSync(join(src, f), join(destBoard, f), { recursive: true, filter });
+          continue; // never tracked in the lock — the project's own data, never touched again
+        }
+        const srcAbs = join(src, f);
+        const destAbs = join(destBoard, f);
+        const srcIsFile = statSync(srcAbs).isFile();
+        const srcHash = srcIsFile ? sha256(readFileSync(srcAbs)) : "dir";
+        // The project hand-edited this since we last vendored it (its on-disk content no
+        // longer matches what we wrote) — most concretely board/README.md, which projects
+        // commonly make their own. Keep their edit; keep recording OUR hash, not theirs, so
+        // the divergence keeps being detected on every future run, not just this one.
+        if (srcIsFile && existsSync(destAbs) && f in priorBoard && priorBoard[f] !== "dir"
+            && sha256(readFileSync(destAbs)) !== priorBoard[f]) {
+          newBoardLock[f] = priorBoard[f];
+          continue;
+        }
+        rmSync(destAbs, { recursive: true, force: true });
+        cpSync(srcAbs, destAbs, { recursive: true, filter });
+        newBoardLock[f] = srcHash;
       }
+      writeVendorLock(dest, { board: newBoardLock });
     } else {
       rmSync(join(dest, entry), { recursive: true, force: true });
       cpSync(src, join(dest, entry), { recursive: true, filter });
