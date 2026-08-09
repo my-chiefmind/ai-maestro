@@ -15,7 +15,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync, statSync } from "fs";
-import { resolve, dirname, join, relative, basename, sep } from "path";
+import { resolve, dirname, join, relative, basename, sep, isAbsolute } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createInterface } from "readline";
@@ -517,6 +517,34 @@ async function setup(args) {
     if (!existsSync(join(kit, "config.json"))) {
       console.log(`→ Copying the AI Maestro kit into ${relative(process.cwd(), kit) || kit}/ …`);
       vendorKit(kit);
+    }
+  } else {
+    // Not packaged: this is the "clone ai-maestro into your repo as maestro/, then run
+    // maestro/bin/cli.mjs setup" flow, where the project root is dirname(KIT_ROOT) — the
+    // kit's own physical location decides the target, not cwd. That's correct when cwd is
+    // the kit itself or somewhere above it (the documented flow), but an invocation from an
+    // unrelated cwd silently targets whatever dirname(KIT_ROOT) happens to be — kit-075 §2d:
+    // this scaffolded context.md/board/.claude straight into an uninvolved directory with no
+    // warning. Refuse rather than guess; cd to the right place is a one-word fix.
+    const cwd = process.cwd();
+    const relToKit = relative(cwd, KIT_ROOT);
+    const cwdRelatedToKit = cwd === KIT_ROOT || (!relToKit.startsWith("..") && !isAbsolute(relToKit));
+    if (!cwdRelatedToKit) {
+      console.error(`✗ Refusing to guess which project this is for.
+
+  You're running this kit's setup from:
+    ${cwd}
+  but the kit itself lives at:
+    ${KIT_ROOT}
+
+  That combination would target ${dirname(KIT_ROOT)}/ as the project — which has nothing to
+  do with where you are, and is very likely not what you meant.
+
+  Fix: cd to the project you actually want to set up (the kit should sit at
+  <project>/maestro/, so cd into <project> or into the maestro/ clone itself), then re-run.
+  Or use the npx flow instead, which always targets your current directory:
+    npx @mychiefmind/ai-maestro setup`);
+      process.exit(2);
     }
   }
 

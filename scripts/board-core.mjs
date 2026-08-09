@@ -56,6 +56,35 @@ export function agentFileToCode(basename) {
   return CODE_ALIASES[basename] ?? basename;
 }
 
+// kit-075 §2b: the alias map means the short code isn't always the obvious guess (`frontend`,
+// not `fe`) — an unknown-agent error is more useful with a nearest-match hint attached.
+function levenshtein(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/** The closest known code to an unrecognised one, or null if nothing is close enough to be
+ * worth suggesting (distance > half the input's length, floor 2 — short codes need an exact
+ * near-miss, not a same-length coincidence). */
+export function suggestCode(unknown, knownCodes) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const code of knownCodes) {
+    const d = levenshtein(unknown, code);
+    if (d < bestDist) { bestDist = d; best = code; }
+  }
+  const threshold = Math.max(2, Math.floor(unknown.length / 2));
+  return best && bestDist <= threshold ? best : null;
+}
+
 /**
  * The pipeline a ticket actually runs: its `agent_plan` with terminal gates guaranteed at the
  * end, in canonical order. `qa` and `merge` are always appended if absent; `pd` (delivery
@@ -199,7 +228,8 @@ export function validateBoard(data, opts = {}) {
       else if (agentCodes) {
         for (const code of t.agent_plan) {
           if (!agentCodes.has(code) && !TERMINAL.has(code)) {
-            err(`${id}: agent_plan references unknown agent "${code}".`);
+            const hint = suggestCode(code, agentCodes);
+            err(`${id}: agent_plan references unknown agent "${code}".${hint ? ` Did you mean "${hint}"?` : ""}`);
           }
         }
       }

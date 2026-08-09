@@ -29,11 +29,10 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { join, resolve, dirname } from "path";
 import { execFileSync, spawnSync } from "child_process";
 import { fileURLToPath } from "url";
-import { dirname } from "path";
+import { readRegistry, findKitDir } from "./registry.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -46,29 +45,23 @@ const flag = (name) => {
 const has = (name) => args.includes(`--${name}`);
 
 const registryPath = resolve(flag("registry") || "maestro-registry.json");
-if (!existsSync(registryPath)) {
-  console.error(`✗ No registry at ${registryPath}.
+let projects;
+try {
+  ({ projects } = readRegistry(registryPath));
+} catch (e) {
+  if (e.code === "ENOREGISTRY") {
+    console.error(`✗ No registry at ${registryPath}.
 
   Create one — a JSON file listing the projects to check:
 
     { "projects": [ { "name": "agrolense", "path": "~/source/agrolense" } ] }
 
   Then run: node scripts/maestro-drift.mjs --registry <file>`);
+  } else {
+    console.error(`✗ ${e.message}`);
+  }
   process.exit(2);
 }
-
-function expandHome(p) {
-  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
-}
-
-let registry;
-try {
-  registry = JSON.parse(readFileSync(registryPath, "utf8"));
-} catch (e) {
-  console.error(`✗ ${registryPath} is not valid JSON: ${e.message}`);
-  process.exit(2);
-}
-const projects = registry.projects ?? [];
 if (!projects.length) {
   console.error(`✗ ${registryPath} lists no projects.`);
   process.exit(2);
@@ -76,15 +69,6 @@ if (!projects.length) {
 
 const readVersion = (dir) =>
   existsSync(join(dir, "VERSION")) ? readFileSync(join(dir, "VERSION"), "utf8").trim() : null;
-
-// The kit a project actually has installed — vendored (<path>/maestro) or a clone (<path>
-// itself). Vendored wins when both somehow exist, since that's what `setup`/`update` produce.
-function findKitDir(projectPath) {
-  const vendored = join(projectPath, "maestro");
-  if (existsSync(join(vendored, "config.json"))) return vendored;
-  if (existsSync(join(projectPath, "config.json"))) return projectPath;
-  return null;
-}
 
 let latestVersion = null;
 if (!has("offline")) {
@@ -111,9 +95,7 @@ function checkDrift(kitDir) {
 }
 
 const rows = [];
-for (const p of projects) {
-  const name = p.name ?? p.path;
-  const projectPath = resolve(expandHome(p.path));
+for (const { name, path: projectPath } of projects) {
   const kitDir = existsSync(projectPath) ? findKitDir(projectPath) : null;
 
   if (!kitDir) {

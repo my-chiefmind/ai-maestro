@@ -8,10 +8,14 @@
  *
  * Usage:
  *   node render/sync.mjs --project <dir> [--kit <dir>] [--check]
+ *   node render/sync.mjs --all [--registry <file>] [--check]
  *
- *   --project  the managed project directory (contains config.json + context.md)
- *   --kit      the AI Maestro kit root (default: resolved from config.kitSource, else this repo)
- *   --check    verify generated files are current; exit 1 on drift (for CI / pre-commit)
+ *   --project   the managed project directory (contains config.json + context.md)
+ *   --kit       the AI Maestro kit root (default: resolved from config.kitSource, else this repo)
+ *   --check     verify generated files are current; exit 1 on drift (for CI / pre-commit)
+ *   --all       render every project in a registry (default ./maestro-registry.json), one
+ *               subprocess per project so a broken project can't abort the rest of the batch
+ *   --registry  registry file for --all — see scripts/registry.mjs
  *
  * No third-party dependencies.
  */
@@ -22,12 +26,16 @@ import {
 import { createHash } from "crypto";
 import { resolve, dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
+import { spawnSync } from "child_process";
+import { readRegistry, findKitDir } from "../scripts/registry.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const THIS_KIT = resolve(__dir, "..");
+const THIS_SCRIPT = fileURLToPath(import.meta.url);
 
 const args = process.argv.slice(2);
 const checkMode = args.includes("--check");
+const allMode = args.includes("--all");
 const projectArg = argValue("--project");
 const kitArg = argValue("--kit");
 
@@ -42,8 +50,46 @@ function readJSON(p) {
   return JSON.parse(readFileSync(p, "utf8"));
 }
 
+// ── --all: one project at a time, in a subprocess, so a broken project can't take the rest
+// of the batch down with it — each project's failure is isolated and reported, not fatal. ──
+if (allMode) {
+  const registryPath = resolve(argValue("--registry") || "maestro-registry.json");
+  let projects;
+  try {
+    ({ projects } = readRegistry(registryPath));
+  } catch (e) {
+    console.error(`✗ ${e.message}`);
+    process.exit(2);
+  }
+  if (!projects.length) {
+    console.error(`✗ ${registryPath} lists no projects.`);
+    process.exit(2);
+  }
+
+  let failures = 0;
+  for (const { name, path: projectPath } of projects) {
+    const kitDir = existsSync(projectPath) ? findKitDir(projectPath) : null;
+    if (!kitDir) {
+      console.error(`✗ ${name}: not set up (no config.json at ${projectPath}/maestro or ${projectPath})`);
+      failures++;
+      continue;
+    }
+    const r = spawnSync(process.execPath, [THIS_SCRIPT, "--project", kitDir, ...(checkMode ? ["--check"] : [])], {
+      encoding: "utf8",
+    });
+    process.stdout.write(r.stdout || "");
+    process.stderr.write(r.stderr || "");
+    if (r.status !== 0) {
+      console.error(`✗ ${name}: render failed (exit ${r.status})`);
+      failures++;
+    }
+  }
+  console.log(`\n${failures ? "✗" : "✓"} ${projects.length - failures}/${projects.length} project(s) rendered cleanly.`);
+  process.exit(failures ? 1 : 0);
+}
+
 if (!projectArg) {
-  console.error("Error: --project <dir> is required.");
+  console.error("Error: --project <dir> is required (or --all with a registry).");
   process.exit(2);
 }
 const PROJECT = resolve(projectArg);
@@ -83,16 +129,42 @@ const context = existsSync(join(PROJECT, "context.md"))
 const projectName = config.project?.name ?? "project";
 
 // ── Which agents / skills to include ──────────────────────────────────────────
+const projAgentsDir = join(PROJECT, "agents");
+const projAgentNames = existsSync(projAgentsDir)
+  ? readdirSync(projAgentsDir).filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""))
+  : [];
+const projSkillsDir = join(PROJECT, "skills");
+const projSkillNames = existsSync(projSkillsDir)
+  ? readdirSync(projSkillsDir).filter((d) => existsSync(join(projSkillsDir, d, "SKILL.md")))
+  : [];
+
 const allAgentFiles = readdirSync(join(KIT, "agents")).filter((f) => f.endsWith(".md"));
 const roster = config.roster; // array of file basenames without .md, or undefined = all
 const agentFiles = roster
   ? allAgentFiles.filter((f) => roster.includes(f.replace(/\.md$/, "")))
   : allAgentFiles;
+// A roster entry that matches neither the kit nor a project-local agent is silently dropped
+// below — that reads as "the agent doesn't exist" when it's usually a typo. Warn instead.
+if (roster) {
+  const known = new Set([...allAgentFiles.map((f) => f.replace(/\.md$/, "")), ...projAgentNames]);
+  for (const r of roster) {
+    if (!known.has(r)) console.warn(`  ⚠ config.roster: "${r}" matches no agent — typo?`);
+  }
+}
 
 const allSkills = readdirSync(join(KIT, "skills")).filter((d) =>
   existsSync(join(KIT, "skills", d, "SKILL.md"))
 );
-const skills = config.skills ?? allSkills; // array of skill dir names, or undefined = all
+// Filter to real kit skills, exactly like agentFiles above — otherwise a typo'd config.skills
+// entry gets passed straight into the readFileSync below and crashes with a raw ENOENT
+// instead of being caught by the warning right next to it.
+const skills = config.skills ? allSkills.filter((s) => config.skills.includes(s)) : allSkills;
+if (config.skills) {
+  const known = new Set([...allSkills, ...projSkillNames]);
+  for (const s of config.skills) {
+    if (!known.has(s)) console.warn(`  ⚠ config.skills: "${s}" matches no skill — typo?`);
+  }
+}
 
 // ── Template substitution ──────────────────────────────────────────────────────
 // Paths the generated agents/skills reference, expressed relative to OUT (where .claude/ and
@@ -103,12 +175,28 @@ const posix = (p) => p.split("\\").join("/");
 const boardRel = posix(relative(OUT, join(PROJECT, "board"))) || "board";
 const kitRel = posix(relative(OUT, KIT)) || ".";
 
-function substitute(text) {
-  return text
-    .replaceAll("{{PROJECT_NAME}}", projectName)
-    .replaceAll("{{KIT_VERSION}}", kitVersion)
-    .replaceAll("{{BOARD}}", boardRel)
-    .replaceAll("{{KIT}}", kitRel);
+const TEMPLATE_VALUES = {
+  PROJECT_NAME: projectName,
+  KIT_VERSION: kitVersion,
+  BOARD: boardRel,
+  KIT: kitRel,
+};
+
+// Generic {{KEY}} substitution with optional `| filter` (title/upper/lower), rather than one
+// hardcoded .replaceAll per placeholder — new placeholders (project-level or per-call `extra`
+// values) need no new line here. A key with no match — including anything not in
+// TEMPLATE_VALUES — passes through literally as `{{KEY}}`, exactly like the old hardcoded
+// version left every placeholder it didn't know about untouched.
+function substitute(text, extra) {
+  const values = extra ? { ...TEMPLATE_VALUES, ...extra } : TEMPLATE_VALUES;
+  return text.replace(/\{\{\s*([A-Z0-9_]+)(?:\s*\|\s*([a-z]+))?\s*\}\}/g, (whole, key, filter) => {
+    if (!(key in values)) return whole;
+    let val = String(values[key]);
+    if (filter === "title") val = val.charAt(0).toUpperCase() + val.slice(1);
+    if (filter === "upper") val = val.toUpperCase();
+    if (filter === "lower") val = val.toLowerCase();
+    return val;
+  });
 }
 
 // ── Build the generated file set (path -> content) ──────────────────────────────
@@ -128,15 +216,13 @@ for (const s of skills) {
 // `<project>/skills/<name>/SKILL.md`. These are merged in (overriding a kit file of the same
 // name) so a team keeps everything in one place — and, unlike hand-editing `.claude/`, they
 // survive the next render.
-const projAgentsDir = join(PROJECT, "agents");
 if (existsSync(projAgentsDir)) {
   for (const f of readdirSync(projAgentsDir).filter((f) => f.endsWith(".md"))) {
     generated.set(join(".claude", "agents", f), substitute(readFileSync(join(projAgentsDir, f), "utf8")));
   }
 }
-const projSkillsDir = join(PROJECT, "skills");
 if (existsSync(projSkillsDir)) {
-  for (const s of readdirSync(projSkillsDir).filter((d) => existsSync(join(projSkillsDir, d, "SKILL.md")))) {
+  for (const s of projSkillNames) {
     generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(readFileSync(join(projSkillsDir, s, "SKILL.md"), "utf8")));
   }
 }
@@ -172,9 +258,75 @@ ${context.trim() || "_(fill in context.md)_"}
 `;
 generated.set("CLAUDE.md", claudeMd);
 
+// AGENTS.md: the same brief, for tools that look for that filename by convention instead of
+// (or alongside) CLAUDE.md — e.g. Codex. Content mirrors CLAUDE.md; only the framing differs.
+const agentsMd = `# ${projectName} — agent brief
+
+> Generated by AI Maestro v${kitVersion} from \`config.json\` / \`context.md\`. Do not hand-edit —
+> re-run \`sync.mjs\` after changing either. (Also see \`CLAUDE.md\`, generated from the same
+> source for Claude Code specifically.)
+
+This project is run board-first. Work lives in \`${boardRel}/data.json\`; each ticket declares its
+\`agent_plan\` and \`model\`. Agents and skills are generated under \`.claude/\`.
+
+## Model policy
+
+- **Default model:** \`${config.model?.default ?? "sonnet"}\`
+- **Area floors:** ${floorLines}
+
+Run each ticket on the **stronger** of its \`model\` and its area's floor. A ticket's plan always
+ends with the terminal gates \`qa → merge\` (add \`pd\` for \`multi-agent\` or human-gated tickets),
+even if \`agent_plan\` omits them.
+
+## Project context
+
+${context.trim() || "_(fill in context.md)_"}
+`;
+generated.set("AGENTS.md", agentsMd);
+
+// ── Multi-target rendering: Codex agent files ────────────────────────────────────
+// Opt-in via config.targets.codex — most projects only run Claude Code, and a second agent
+// file per agent (in a format Claude Code itself never reads) is pure noise until asked for.
+// Frontmatter values come straight from the .claude/agents/*.md source already generated
+// above, so this never drifts from it independently.
+if (config.targets?.codex) {
+  function frontmatterValue(md, key) {
+    const block = md.match(/^---\n([\s\S]*?)\n---/);
+    if (!block) return "";
+    const m = block[1].match(new RegExp(`^${key}:\\s*"?(.*?)"?$`, "m"));
+    return m ? m[1] : "";
+  }
+  function bodyAfterFrontmatter(md) {
+    const m = md.match(/^---[\s\S]*?---\n([\s\S]*)$/);
+    return (m ? m[1] : md).trim();
+  }
+  const codexAgentPaths = [...generated.keys()].filter((k) => k.startsWith(join(".claude", "agents") + "/"));
+  for (const rel of codexAgentPaths) {
+    const name = rel.slice((join(".claude", "agents") + "/").length).replace(/\.md$/, "");
+    const md = generated.get(rel);
+    const description = frontmatterValue(md, "description").replace(/"/g, '\\"');
+    const body = bodyAfterFrontmatter(md).replace(/"""/g, '\\"\\"\\"');
+    generated.set(join(".codex", "agents", `${name}.toml`), `# ${name} — Codex agent
+# Generated by AI Maestro v${kitVersion} from .claude/agents/${name}.md — do not edit directly.
+# To disable, remove targets.codex from config.json and re-run sync.
+
+[agent]
+name        = "${name}"
+description = "${description}"
+model       = "inherit"
+
+[prompt]
+content = """
+${body}
+"""
+`);
+  }
+}
+
 // ── Lock file ────────────────────────────────────────────────────────────────
 const lock = {
   kitVersion,
+  configHash: sha256(readFileSync(configPath, "utf8")), // cheap "has config.json changed" probe
   generatedAt: null, // intentionally not timestamped (keeps the lock deterministic)
   files: {},
 };
@@ -228,11 +380,13 @@ if (priorLock?.files) {
   }
 }
 
-// Safety: never overwrite a CLAUDE.md we didn't generate (a project may already have its own
-// at the repo root). Skip it, warn, and keep it out of the lock so --check stays honest.
+// Safety: never overwrite a CLAUDE.md or AGENTS.md we didn't generate (a project may already
+// have its own at the repo root). Skip it, warn, and keep it out of the lock so --check stays
+// honest.
+const NEVER_CLOBBER = new Set(["CLAUDE.md", "AGENTS.md"]);
 const skip = new Set();
 for (const rel of generated.keys()) {
-  if (rel === "CLAUDE.md" && existsSync(join(OUT, rel)) && !priorLock?.files?.[rel]) skip.add(rel);
+  if (NEVER_CLOBBER.has(rel) && existsSync(join(OUT, rel)) && !priorLock?.files?.[rel]) skip.add(rel);
 }
 
 for (const [rel, content] of generated) {
@@ -249,7 +403,8 @@ writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 
 const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
 const skillCount = [...generated.keys()].filter((r) => r.endsWith("SKILL.md")).length;
+const codexCount = [...generated.keys()].filter((r) => r.startsWith(join(".codex", "agents"))).length;
 console.log(
   `✓ Rendered ${projectName} (kit v${kitVersion}): ` +
-    `${agentCount} agents, ${skillCount} skills, CLAUDE.md, .maestro.lock`
+    `${agentCount} agents, ${skillCount} skills, CLAUDE.md, AGENTS.md${codexCount ? `, ${codexCount} Codex agent(s)` : ""}, .maestro.lock`
 );

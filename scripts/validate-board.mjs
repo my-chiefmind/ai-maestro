@@ -26,6 +26,10 @@ const agentsDir = (() => {
   const i = args.indexOf("--agents");
   return i !== -1 ? args[i + 1] : join(KIT_ROOT, "agents");
 })();
+const configArg = (() => {
+  const i = args.indexOf("--config");
+  return i !== -1 ? args[i + 1] : null;
+})();
 
 function readJSON(p, fallback) {
   try { return JSON.parse(readFileSync(p, "utf8")); }
@@ -88,18 +92,31 @@ function main() {
     return finish([`Invalid JSON in ${archivePath}: ${archive.message}`], []);
   }
 
-  // config.json lives one level up from board/ (the project dir); used for model-floor checks.
-  const configPath = join(dirname(boardPath), "..", "config.json");
-  const config = existsSync(configPath) ? readJSON(configPath, null) : null;
+  // config.json lives one level up from board/ (the project dir) by default; used for
+  // model-floor and human-gate checks. --config overrides, for a board that keeps config
+  // elsewhere (or, per kit-075 §2a, under a different filename like lense.config.json).
+  const configPath = configArg ?? join(dirname(boardPath), "..", "config.json");
+  const configExists = existsSync(configPath);
+  const configRaw = configExists ? readJSON(configPath, null) : null;
+  const config = configRaw instanceof Error ? null : configRaw;
+
+  // A missing or unparsable config used to make the model-floor and human-gate checks a
+  // silent no-op — a green board that was actually running unchecked. Loud now: the checks
+  // still don't run (there's nothing to check them against), but the board says so.
+  const configWarning = !configExists
+    ? `No config.json at ${configPath} — model-floor and human-gate checks are skipped. Pass --config <path> if it lives elsewhere.`
+    : configRaw instanceof Error
+      ? `${configPath} is not valid JSON (${configRaw.message}) — model-floor and human-gate checks are skipped.`
+      : null;
 
   const { errors, warnings, eligibleCount } = validateBoard(board, {
     archived: archive.tickets ?? [],
     archivedEpics: archive.epics ?? [],
-    agentCodes: loadAgentCodes(config instanceof Error ? null : config),
-    config: config instanceof Error ? null : config,
+    agentCodes: loadAgentCodes(config),
+    config,
   });
 
-  finish(errors, warnings, eligibleCount);
+  finish(errors, configWarning ? [configWarning, ...warnings] : warnings, eligibleCount);
 }
 
 function finish(errors, warnings, eligibleCount) {

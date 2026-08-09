@@ -84,6 +84,30 @@ function validate(dir, extraArgs = []) {
   }
 }
 
+// kit-075 §2b: `frontend-developer` aliases to `frontend`, not the more obvious guess `fe` —
+// a near-miss should get a hint pointing at the real code.
+test("an unknown agent code close to a real one gets a 'did you mean' hint", () => {
+  const dir = project({ roster: FULL_ROSTER, plan: ["fe", "qa", "merge"] });
+  try {
+    const { ok, out } = validate(dir);
+    assert.equal(ok, false);
+    assert.match(out, /unknown agent "fe"\. Did you mean "pe"\?/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unknown agent code with no close match gets no hint", () => {
+  const dir = project({ roster: FULL_ROSTER, plan: ["completely-unrelated-code", "qa", "merge"] });
+  try {
+    const { ok, out } = validate(dir);
+    assert.equal(ok, false);
+    assert.match(out, /unknown agent "completely-unrelated-code"\.\n/, "no 'Did you mean' should be appended for a distant miss");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a plan routed to an agent the project dropped is rejected", () => {
   const dir = project({
     roster: FULL_ROSTER.filter((r) => r !== "devops"),
@@ -194,5 +218,39 @@ test("a board with no config beside it falls back to the kit's agents", () => {
     assert.equal(ok, true, `fallback path must still validate, got:\n${out}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// kit-075 §2a: a missing config.json used to make model-floor and human-gate checks a silent
+// no-op — a green board that was actually running unchecked, with nothing saying so.
+test("a missing config.json warns that model-floor/human-gate checks are skipped, not silent", () => {
+  const dir = mkdtempSync(join(tmpdir(), "maestro-noconfig-"));
+  mkdirSync(join(dir, "board"), { recursive: true });
+  writeFileSync(join(dir, "board", "data.json"), JSON.stringify({ epics: [], tickets: [] }));
+  try {
+    const { ok, out } = validate(dir);
+    assert.equal(ok, true);
+    assert.match(out, /No config\.json at .* — model-floor and human-gate checks are skipped/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--config points the validator at a config.json that isn't next to board/", () => {
+  const dir = project({ roster: FULL_ROSTER.filter((r) => r !== "devops"), plan: ["devops", "qa", "pd", "merge"] });
+  const elsewhere = mkdtempSync(join(tmpdir(), "maestro-config-"));
+  writeFileSync(
+    join(elsewhere, "config.json"),
+    JSON.stringify({ project: "t", roster: FULL_ROSTER, skills: [], model: {} }),
+  );
+  try {
+    const { ok: withoutConfig } = validate(dir);
+    assert.equal(withoutConfig, false, "devops should still be off-roster using the default config.json location");
+
+    const { ok, out } = validate(dir, ["--config", join(elsewhere, "config.json")]);
+    assert.equal(ok, true, `--config should override with a roster that includes devops, got:\n${out}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
   }
 });
