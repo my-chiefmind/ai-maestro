@@ -257,3 +257,40 @@ test("serves the long-form help guide, sandboxed and unable to escape the kit", 
   const bogus = await get("/api/help/guide?project=" + encodeURIComponent("../../etc"));
   assert.ok(bogus.status >= 400, `an unknown scope must not resolve (got ${bogus.status})`);
 });
+
+test("the guide follows the console's theme, not the OS", { skip: SKIP }, async () => {
+  // The frame is sandboxed with default-src 'none' and no script-src, so it can neither read
+  // the parent nor run a line of JS to ask. Left alone it followed prefers-color-scheme and
+  // ignored the console's toggle, so the two disagreed for anyone whose toggle differs from
+  // their system setting. The document already carries :root[data-theme=…] blocks that outrank
+  // its media query, so the served copy gets the attribute stamped on.
+  // Matched against the <html> tag specifically: the document's own stylesheet contains
+  // `:root[data-theme="dark"]` blocks, so a bare /data-theme/ would pass on the CSS alone and
+  // prove nothing about the attribute that actually selects them.
+  const htmlTag = (body) => /<html\b[^>]*>/i.exec(body)?.[0] ?? "";
+
+  assert.match(htmlTag(await (await get("/api/help/guide?theme=dark")).text()),
+    /\sdata-theme="dark"/, "dark must be stamped onto <html>");
+  assert.match(htmlTag(await (await get("/api/help/guide?theme=light")).text()),
+    /\sdata-theme="light"/);
+
+  // No theme asked for: served untouched, so a direct visit still honours the OS.
+  assert.doesNotMatch(htmlTag(await (await get("/api/help/guide")).text()), /data-theme/);
+
+  // The value reaches an HTML attribute, so it is whitelisted rather than escaped. Anything
+  // else must be ignored outright — not sanitised, not reflected.
+  for (const bad of ['"><script>x</script>', "dark' onload='x", "DARK", "", "purple"]) {
+    const body = await (await get("/api/help/guide?theme=" + encodeURIComponent(bad))).text();
+    assert.doesNotMatch(htmlTag(body), /data-theme/, `"${bad}" must not reach the <html> tag`);
+    assert.doesNotMatch(body, /<script>x<\/script>/, `"${bad}" must not inject markup anywhere`);
+    assert.doesNotMatch(body, /onload=/i);
+  }
+
+  // Repeated params arrive as an array, which is not a string and must not be trusted.
+  const arr = await (await get("/api/help/guide?theme=dark&theme=light")).text();
+  assert.doesNotMatch(htmlTag(arr), /data-theme/, "an array-valued theme must be ignored");
+
+  // A themed response varies by query, so it must not be cached as though it didn't.
+  const themed = await get("/api/help/guide?theme=dark");
+  assert.match(themed.headers.get("cache-control") ?? "", /no-store/);
+});

@@ -691,6 +691,30 @@ app.get("/api/reports/render", (req, res) => {
 // Scope-aware like every other read: a portfolio project's vendored maestro/ has its own copy
 // at the same relative path, so the help you read matches the kit version you are running.
 const HELP_DOC = join("docs", "help.html");
+// The guide is a fully sandboxed iframe with `default-src 'none'` and no `script-src`, so it
+// cannot read the parent and cannot run a line of JS to ask. Left alone it therefore follows
+// `prefers-color-scheme` — the OS — and ignores the console's own theme toggle, so the two
+// disagree for anyone whose toggle differs from their system setting, which is the entire
+// reason to have a toggle.
+//
+// The document already carries `:root[data-theme="dark"|"light"]` blocks that outrank its media
+// query, so the fix is to stamp that attribute onto the served copy. Doing it here rather than
+// in the client keeps the sandbox exactly as strict as it was.
+const THEMES = new Set(["dark", "light"]);
+
+/**
+ * Set data-theme on the document's <html>, replacing any the file already had.
+ * @param {string} html the document as served
+ * @param {string} theme one of THEMES — never raw request input
+ * @returns {string}
+ */
+function stampTheme(html, theme) {
+  return html.replace(/<html\b([^>]*)>/i, (/** @type {string} */ _m, /** @type {string} */ attrs) => {
+    const cleaned = attrs.replace(/\s*data-theme\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    return `<html${cleaned} data-theme="${theme}">`;
+  });
+}
+
 app.get("/api/help/guide", (req, res) => {
   const scope = scopeOf(req, res);
   if (!scope) return;
@@ -699,7 +723,14 @@ app.get("/api/help/guide", (req, res) => {
     return res.status(404).json({ error: `No ${HELP_DOC} in this kit.` });
   }
   res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
-  res.sendFile(abs);
+  // Whitelisted, never interpolated from the request: `theme` reaches an HTML attribute, and
+  // req.query values can be arrays or arbitrary strings. Anything else renders untouched.
+  const asked = req.query.theme;
+  const theme = typeof asked === "string" && THEMES.has(asked) ? asked : null;
+  if (!theme) return res.sendFile(abs);
+  // The response now varies by query, so it must not be cached as if it didn't.
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(stampTheme(readFileSync(abs, "utf8"), theme));
 });
 
 // Serve the built UI in production (dist/), if present.

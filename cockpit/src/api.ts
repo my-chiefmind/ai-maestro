@@ -130,8 +130,13 @@ export function reportFileUrl(name: string): string {
 
 // The long-form docs/help.html guide. Same treatment as an .html report: a sandboxed iframe
 // pointed at the route, never fetched and injected into our own document.
-export function helpGuideUrl(): string {
-  return `/api/help/guide${scopeQS()}`;
+//
+// `theme` is passed through the URL because the sandbox is opaque in both directions — we
+// cannot reach into the frame to set it, and with `default-src 'none'` the document cannot run
+// a script to ask. Without it the guide follows the OS rather than this console's toggle.
+export function helpGuideUrl(theme?: 'light' | 'dark'): string {
+  const scope = scopeQS();
+  return `/api/help/guide${scope}${theme ? `${scope ? '&' : '?'}theme=${theme}` : ''}`;
 }
 
 // Whether this kit actually ships the guide — an older vendored maestro/ may not, and the Help
