@@ -186,3 +186,22 @@ test("the cockpit lockfile is committed and ships in the published tarball", () 
   assert.ok(files.includes("cockpit/package-lock.json"), "cockpit/package-lock.json must be published");
   assert.ok(files.includes("scripts/cockpit-install.mjs"), "the installer must be published");
 });
+
+test("the published tarball never ships this repo's own real board data", () => {
+  // board/data.json and board/specs/*.md hold ai-maestro's OWN live tickets, not example
+  // content (see board/archive.json's T-001 entry) — publishing them would both leak internal
+  // planning to every npm consumer and (before the fix) get vendored straight into new
+  // projects' boards. The template files (schema, README) and the starter's placeholder board
+  // must still ship — this pins the exclusion without also silently breaking a fresh setup.
+  const out = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: KIT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const files = JSON.parse(out)[0].files.map((f) => f.path);
+  for (const forbidden of ["board/data.json", "board/archive.json"]) {
+    assert.ok(!files.includes(forbidden), `${forbidden} must not be published`);
+  }
+  assert.ok(!files.some((f) => f.startsWith("board/specs/")), "board/specs/ must not be published");
+  assert.ok(!files.some((f) => f.startsWith("board/reports/")), "board/reports/ must not be published");
+
+  assert.ok(files.includes("board/board.schema.json"), "the board schema must still be published");
+  assert.ok(files.includes("board/README.md"), "the board format doc must still be published");
+  assert.ok(files.includes("starters/orchestrated-project/board/data.json"), "the starter's placeholder board must still be published");
+});

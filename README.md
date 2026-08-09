@@ -66,13 +66,14 @@ same way of working.
 
 | Piece | What it is |
 | --- | --- |
-| [`board/`](./board/) | The board format (`board.schema.json`) + a runnable example board |
+| [`board/`](./board/) | The board format (`board.schema.json`) + this repo's own workboard. A runnable example board ships in [`starters/orchestrated-project/board/`](./starters/orchestrated-project/board/) instead — that's what `setup` seeds a new project from, never this one's. |
 | [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, technical-writer, qa, principal-delivery |
 | [`skills/`](./skills/) | Reusable skills — the `/project-plan` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
-| [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context |
+| [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
-| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` (questionnaire onboarding), `sync`, `validate`, `init` |
+| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` (questionnaire onboarding), `sync`, `validate`, `drift`, `init` |
+| [`scripts/registry.mjs`](./scripts/registry.mjs) | The shared registry format behind `maestro drift` and `sync --all` — see [Managing several projects](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
 
 ## Quickstart

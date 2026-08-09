@@ -780,6 +780,8 @@ function help() {
               'npx @mychiefmind/ai-maestro@latest update' (or 'npm run update' from maestro/).
               On a git clone of the kit it pulls the clone and re-renders instead.
   sync        Re-render .claude/ from config.json + context.md
+              --all --registry <file> renders every project in a registry (same format as
+              'drift', below), one subprocess each, so one broken project can't abort the rest.
   validate    Check the board's integrity
   drift       Report version + hand-edit drift across a registry of projects
               Needs a registry file (default ./maestro-registry.json): { "projects": [

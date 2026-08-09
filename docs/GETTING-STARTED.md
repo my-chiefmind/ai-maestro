@@ -124,6 +124,22 @@ Re-run `sync` after editing so the context reaches the agents.
   floor (a floor can raise a ticket, never lower it). `validate-board` warns on below-floor tickets.
 - **`humanGates`** — the allowed `human_gate` phrases; the validator warns on anything else.
 
+A few less common keys, for when you need them:
+
+```jsonc
+{
+  "roster": ["orchestrator", "principal-engineer", "backend-developer", "qa"],  // narrow the kit's agents to just these (by file basename, no ".md")
+  "skills": ["board-validate", "delivery-hygiene"],                            // same idea, for skills
+  "targets": { "codex": true }                                                 // also render .codex/agents/*.toml per agent, for the Codex CLI
+}
+```
+
+`roster`/`skills` default to everything the kit ships when omitted. A narrowed entry with a
+typo warns (`config.roster: "xyz" matches no agent — typo?`) rather than silently vanishing —
+check `sync`'s output after editing either. `targets.codex` is off by default; each generated
+`.codex/agents/<name>.toml` is derived from the matching `.claude/agents/<name>.md`, so it
+never drifts from it independently.
+
 ## The board — what a ticket needs
 
 `/project-plan` writes the board for you from your brief, and the cockpit edits it with validated
@@ -212,6 +228,34 @@ The same command covers the other install shapes:
 For a **shared clone** used by several repos, `update` pulls once and prints the re-render
 command to run per project. The cockpit UI's dependencies are removed with the old kit files
 and reinstall on the next `npm run board`.
+
+## Managing several projects
+
+Once you're running the kit in more than one repo, a **registry** file lets a few commands
+work across all of them at once instead of one `cd` at a time:
+
+```jsonc
+// maestro-registry.json — anywhere; pass its path explicitly or run from beside it
+{ "projects": [
+  { "name": "my-app",    "path": "~/code/my-app" },
+  { "name": "other-app", "path": "~/code/other-app" }
+] }
+```
+
+```bash
+maestro drift --registry maestro-registry.json          # version + hand-edit report per project
+node maestro/render/sync.mjs --all --registry maestro-registry.json --check   # re-render/--check all of them
+```
+
+`maestro drift` reports, per project: the installed kit version vs. the latest on npm
+(`--offline` skips that check), and whether its generated files still match what its own
+installed kit would render right now — a hand-edit is reported separately from being behind
+on the kit version, since they call for different follow-up. Its output is the worklist for
+promoting a local improvement upstream — see [CONTRIBUTING.md](../CONTRIBUTING.md#promoting-a-downstream-improvement).
+
+`sync.mjs --all` renders every registry project in its own subprocess, so one broken project's
+error doesn't abort the rest of the batch — useful for `--check` in a script that watches
+several repos at once.
 
 ---
 

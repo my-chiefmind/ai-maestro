@@ -94,15 +94,19 @@ design depends on it).
 
 ## 2. Runtime network surface
 
-> **The kit makes no outbound network calls.**
+> **The kit makes no outbound network calls, with one exception (below): `maestro drift`'s
+> npm version check, off by default in the sense that `--offline` skips it and a failed lookup
+> degrades to "unknown" rather than erroring.**
 
 The enumerated surface:
 
 | Component | Contacts | When |
 | --- | --- | --- |
-| `bin/cli.mjs`, `render/`, `scripts/` | Nothing. No HTTP client, no `fetch`, no sockets. | — |
+| `bin/cli.mjs`, `render/` | Nothing. No HTTP client, no `fetch`, no sockets. | — |
+| `scripts/`, all except `maestro-drift.mjs` | Nothing. | — |
+| `scripts/maestro-drift.mjs` (`maestro drift`) | Shells out to `npm view @mychiefmind/ai-maestro version` — your configured npm registry — to report whether each registry project is behind the latest release. `--offline` skips it; a failed/timed-out lookup reports "unknown" rather than failing the command. | Every `maestro drift` run, unless `--offline` |
 | Cockpit data service (`cockpit/server/index.mjs`) | Binds `127.0.0.1`, on 4600 or the next free port above it. Loopback either way; listens only, never dials out. | While the board runs |
-| Cockpit UI (`cockpit/src/`) | Same-origin relative paths only (`/api/board`, `/api/config`, `/api/roster`, `/api/docs`, `/api/spec/*`). No absolute URLs. | While the board is open |
+| Cockpit UI (`cockpit/src/`) | Same-origin relative paths only (`/api/board`, `/api/config`, `/api/roster`, `/api/docs`, `/api/spec/*`, `/api/portfolio/boards`, `/api/portfolio/today`). No absolute URLs. | While the board is open |
 | Your browser, rendering a doc | Whatever external image hosts that doc references. No shipped doc currently references any. | Only while the Docs tab shows such a doc |
 | Vite dev server | Serves `localhost:5273` (or the next free port), proxies `/api` → the data service's port. | Dev only |
 | `npm ci` for the cockpit | Your configured npm registry. | First `npm run board` only |
