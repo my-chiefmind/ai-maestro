@@ -75,6 +75,12 @@ jobs:
         run: |
           rm -rf /tmp/app && mkdir -p /tmp/app/src
           rsync -a --exclude .git --exclude node_modules ./ /tmp/app/maestro/
+          # Run FROM the project, the way the docs tell a clone user to. A cloned kit resolves
+          # its target as dirname(KIT_ROOT) — the script's own location, not cwd — so since
+          # kit-075 §2d it refuses to run from an unrelated directory rather than silently
+          # setting up whatever happens to sit next to the kit. Without this cd, that guard
+          # (correctly) rejects the invocation and the step exits 2.
+          cd /tmp/app
           # --no-board: `setup --yes` would otherwise start the blocking board dev server
           # (this hung the job for 6h once; the CLI also refuses to launch it without a TTY).
           node /tmp/app/maestro/bin/cli.mjs setup --yes --no-board --name ci-app --areas backend,web \
@@ -94,6 +100,7 @@ jobs:
         run: |
           rm -rf /tmp/app2 && mkdir -p /tmp/app2
           rsync -a --exclude .git --exclude node_modules ./ /tmp/app2/maestro/
+          cd /tmp/app2   # same reason as the step above: a cloned kit must be run from its project
           node /tmp/app2/maestro/bin/cli.mjs setup --yes --no-board --name ci-app2 --areas backend
           # Every skipped answer is recorded as an open question rather than a silent blank.
           grep -q "## Open questions" /tmp/app2/maestro/context.md
