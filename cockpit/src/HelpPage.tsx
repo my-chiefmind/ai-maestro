@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Box, Button, Card, Container, Tab, Tabs, Typography } from '@mui/material';
+import { Box, Button, Card, Container, Tab, Tabs, Typography, useTheme } from '@mui/material';
 import CheatSheet from './CheatSheet';
 import { helpGuideUrl, hasHelpGuide } from './api';
 
@@ -10,6 +10,9 @@ import { helpGuideUrl, hasHelpGuide } from './api';
 export default function HelpPage() {
   const [tab, setTab] = useState<'cheatsheet' | 'guide'>('cheatsheet');
   const [guide, setGuide] = useState<boolean | null>(null);
+  // The sandbox is opaque both ways, so the guide can't be told the theme after it loads —
+  // it rides in the URL, and toggling the console changes the src, which reloads the frame.
+  const mode = useTheme().palette.mode;
 
   // A kit vendored before the guide existed simply doesn't have it — show the cheat sheet
   // alone rather than a tab leading to an empty frame.
@@ -32,7 +35,7 @@ export default function HelpPage() {
             <Tab value="guide" label="How it works" sx={{ minHeight: 40, textTransform: 'none', fontWeight: 700 }} />
           </Tabs>
           {tab === 'guide' && (
-            <Button size="small" href={helpGuideUrl()} target="_blank" rel="noopener noreferrer"
+            <Button size="small" href={helpGuideUrl(mode)} target="_blank" rel="noopener noreferrer"
               sx={{ ml: 'auto', textTransform: 'none' }}>
               Open in a new tab
             </Button>
@@ -43,8 +46,12 @@ export default function HelpPage() {
       {tab === 'guide' && guide ? (
         <Card sx={{ p: 0, overflow: 'hidden' }}>
           {/* Sandboxed: no scripts, no same-origin. */}
-          <Box component="iframe" src={helpGuideUrl()} sandbox="" title="How AI Maestro works"
-            sx={{ display: 'block', width: '100%', height: 'calc(100vh - 200px)', border: 0, bgcolor: '#fff' }} />
+          {/* `key` forces a remount on toggle so the frame reloads at the new theme rather
+              than keeping the document it already parsed. bgcolor matches the guide's own
+              ground, or a hardcoded white flashes behind it on every dark-mode load. */}
+          <Box component="iframe" key={mode} src={helpGuideUrl(mode)} sandbox="" title="How AI Maestro works"
+            sx={{ display: 'block', width: '100%', height: 'calc(100vh - 200px)', border: 0,
+              bgcolor: mode === 'dark' ? '#141119' : '#f7f5fa' }} />
         </Card>
       ) : (
         <Card sx={{ p: { xs: 2.5, md: 4 } }}>
