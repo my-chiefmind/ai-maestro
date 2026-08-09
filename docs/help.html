@@ -404,7 +404,18 @@ npm run sync
 npx @mychiefmind/ai-maestro@latest update
 
 <span class="c"># check the board</span>
-maestro validate</pre>
+maestro validate
+
+<span class="c"># change the board — locked, validated, atomic. Never edit data.json by hand.</span>
+maestro ticket set-status T-010 in-progress
+maestro ticket archive   T-010 --evidence "merged abc123: suite green"</pre>
+      <p class="prose">
+        <strong>Why a command and not an editor:</strong> reading <code>data.json</code>, changing a
+        ticket and writing the file back destroys any change another writer made in between —
+        silently, with no conflict and no error, leaving valid JSON that passes validation.
+        <code>maestro ticket</code> applies the change to the file as it is at write time, under a
+        lock. Exit&nbsp;2 means someone beat you to it: run the same command again.
+      </p>
       <p class="prose">
         <strong>What an update touches:</strong> only the kit's own folders. Anything of yours it
         finds among them — an agent you added, or a kit file you hand-edited — is moved into

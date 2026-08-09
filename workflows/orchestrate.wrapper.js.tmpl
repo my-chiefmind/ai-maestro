@@ -20,6 +20,11 @@ const PROJECT_CONFIG = {
   WORKTREES:    {{WORKTREES_JSON}},
   RUNS:         {{RUNS_JSON}},
   VALIDATE_CMD: {{VALIDATE_CMD_JSON}},
+  // The guarded board writer — the ONLY thing that may change the board. Injected with the
+  // kit's real path (like VALIDATE_CMD) rather than derived from BOARD: in the capsule
+  // layout the kit lives outside the project, so deriving it would name a file that
+  // does not exist.
+  TICKET_CMD:   {{TICKET_CMD_JSON}},
 
   // "pr" = push branch + PR + squash-merge via gh (protected mains);
   // "local-push" = local --no-ff merge, then push main. Never local-only.

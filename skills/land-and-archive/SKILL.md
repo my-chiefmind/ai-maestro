@@ -21,8 +21,20 @@ gate is cleared.
      **before** the final push — never force-push over an unresolved conflict.
 3. **Capture evidence** on the ticket: the merge commit SHA and the test result. This is what
    `archive.json` preserves.
-4. **Archive the ticket.** Move it from `{{BOARD}}/data.json` to `{{BOARD}}/archive.json` with its
-   `evidence`, and set `status: done`. `data.json` should only ever show live work.
+4. **Archive the ticket** with the guarded writer — never by editing the files yourself:
+
+   ```sh
+   maestro ticket archive <id> --board {{BOARD}}/data.json --archive {{BOARD}}/archive.json \
+     --evidence "merged <sha>: <what was verified>" --done-at <YYYY-MM-DD>
+   ```
+
+   It moves the ticket out of `data.json` and into `archive.json` in one locked, validated,
+   atomic write — both files or neither. Reading the two files, editing them and writing them
+   back is how a concurrent writer's ticket disappears without an error, and how a ticket ends
+   up in both files or in neither. `data.json` should only ever show live work.
+
+   Exit 2 means another writer got there first — run the same command again. Exit 1 means the
+   request was wrong; fix it rather than retrying.
 5. **Clean up** the worktree and branch (see the `worktree-cleanup` skill).
 6. **Unblock dependents.** Any ticket whose `depends_on` is now fully `done` becomes eligible
    — the next orchestrator run will see it.
