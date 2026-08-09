@@ -30,7 +30,8 @@
     "git-branch",
     "worktree-cleanup",
     "land-and-archive",
-    "gc"
+    "gc",
+    "dev-report"
   ],
   "model": {
     "default": "sonnet",

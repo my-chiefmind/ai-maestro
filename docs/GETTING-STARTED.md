@@ -181,6 +181,8 @@ and 4600 are only the starting points, and the board prints the URL it settled o
 - After a ticket lands, the `worktree-cleanup` skill removes its worktree/branch.
 - Use the `gc` skill to catch a stale checkout up to `main`.
 - Use the `delivery-hygiene` skill when the board starts to feel noisy.
+- Use the `dev-report` skill for a read-only "where are we?" snapshot — every repo and
+  worktree's branches and uncommitted work, correlated against the board. It changes nothing.
 
 ## Updating the kit
 
