@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Maestro — how it works</title>
+<style>
+  :root{
+    --ground:#F7F5FA; --panel:#FFF; --panel-2:#EFEBF6; --panel-3:#F3F0F9;
+    --line:#DCD5E8; --line-soft:#E9E4F1;
+    --text:#1F1A2B; --text-soft:#57506B; --text-faint:#847B98;
+    --indigo:#6E4FA2; --pink:#C2358F; --green:#17804A;
+    --cyan:#0F7C86; --yellow:#8A6300; --red:#B32B2B;
+    --indigo-w:#EDE6F7; --pink-w:#FBE6F3; --green-w:#E0F3E8;
+    --cyan-w:#DDF1F2; --yellow-w:#F7EEDA; --red-w:#F9E5E5;
+    --r:5px;
+    --sans:"Inter var","Inter","Segoe UI",system-ui,-apple-system,"Helvetica Neue",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ground:#141119; --panel:#1C1826; --panel-2:#251F31; --panel-3:#201B2B;
+      --line:#332C42; --line-soft:#282234;
+      --text:#EFEAF7; --text-soft:#B2A8C4; --text-faint:#857B99;
+      --indigo:#B79BE8; --pink:#FF9AD8; --green:#5BD98F;
+      --cyan:#4FD6DC; --yellow:#F2C94C; --red:#FF8A8A;
+      --indigo-w:#2A2140; --pink-w:#3A1F33; --green-w:#16321F;
+      --cyan-w:#14313A; --yellow-w:#33280F; --red-w:#3A1E1E;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#141119; --panel:#1C1826; --panel-2:#251F31; --panel-3:#201B2B;
+    --line:#332C42; --line-soft:#282234;
+    --text:#EFEAF7; --text-soft:#B2A8C4; --text-faint:#857B99;
+    --indigo:#B79BE8; --pink:#FF9AD8; --green:#5BD98F;
+    --cyan:#4FD6DC; --yellow:#F2C94C; --red:#FF8A8A;
+    --indigo-w:#2A2140; --pink-w:#3A1F33; --green-w:#16321F;
+    --cyan-w:#14313A; --yellow-w:#33280F; --red-w:#3A1E1E;
+  }
+  :root[data-theme="light"]{
+    --ground:#F7F5FA; --panel:#FFF; --panel-2:#EFEBF6; --panel-3:#F3F0F9;
+    --line:#DCD5E8; --line-soft:#E9E4F1;
+    --text:#1F1A2B; --text-soft:#57506B; --text-faint:#847B98;
+    --indigo:#6E4FA2; --pink:#C2358F; --green:#17804A;
+    --cyan:#0F7C86; --yellow:#8A6300; --red:#B32B2B;
+    --indigo-w:#EDE6F7; --pink-w:#FBE6F3; --green-w:#E0F3E8;
+    --cyan-w:#DDF1F2; --yellow-w:#F7EEDA; --red-w:#F9E5E5;
+  }
+
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;scroll-padding-top:1.5rem;}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto;} *{animation:none!important;transition:none!important;}}
+  body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);
+       font-size:16px;line-height:1.72;-webkit-font-smoothing:antialiased;}
+
+  .shell{max-width:74rem;margin-inline:auto;padding:clamp(1.25rem,3vw,2.5rem) clamp(1rem,4vw,2rem) 6rem;
+         display:grid;gap:clamp(1.5rem,4vw,3rem);grid-template-columns:15rem minmax(0,1fr);align-items:start;}
+  @media (max-width:62rem){ .shell{grid-template-columns:1fr;} .nav{position:static;} }
+
+  /* nav */
+  .nav{position:sticky;top:1.5rem;display:flex;flex-direction:column;gap:.15rem;
+       border-inline-start:2px solid var(--line);padding-inline-start:.9rem;}
+  .nav .navtitle{font-size:.7rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+                 color:var(--text-faint);margin-bottom:.5rem;}
+  .nav a{color:var(--text-soft);text-decoration:none;font-size:.88rem;padding:.2rem 0;line-height:1.6;}
+  .nav a:hover{color:var(--indigo);}
+  .nav a:focus-visible{outline:2px solid var(--pink);outline-offset:2px;border-radius:2px;}
+
+  main{display:flex;flex-direction:column;gap:3.25rem;min-width:0;}
+  h1,h2,h3{margin:0;text-wrap:balance;font-weight:750;letter-spacing:-0.011em;}
+  h1{font-size:clamp(2rem,4.5vw,2.85rem);line-height:1.18;}
+  h2{font-size:clamp(1.3rem,2.6vw,1.65rem);line-height:1.3;}
+  h3{font-size:1.02rem;line-height:1.45;font-weight:700;}
+  p{margin:0;}
+  .lede{font-size:1.12rem;color:var(--text-soft);max-width:44rem;line-height:1.65;}
+  .prose{color:var(--text-soft);max-width:44rem;}
+  .prose strong{color:var(--text);font-weight:650;}
+  .eyebrow{font-size:.7rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--text-faint);}
+
+  section{display:flex;flex-direction:column;gap:1.1rem;scroll-margin-top:1.5rem;}
+  .sec-head{display:flex;flex-direction:column;gap:.3rem;border-bottom:1px solid var(--line);padding-bottom:.6rem;}
+
+  code{font-family:var(--mono);font-size:.85em;background:var(--panel-2);
+       border:1px solid var(--line-soft);border-radius:3px;padding:.08em .36em;color:var(--text);}
+  pre{margin:0;font-family:var(--mono);font-size:.79rem;line-height:1.85;overflow-x:auto;
+      background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+      padding:.9rem 1.1rem;color:var(--text-soft);}
+  pre b{color:var(--indigo);font-weight:700;}
+  pre .c{color:var(--text-faint);}
+  pre .g{color:var(--green);font-weight:700;}
+  pre .y{color:var(--yellow);font-weight:700;}
+
+  .rule{height:3px;border-radius:2px;background:linear-gradient(to right,
+    var(--indigo) 0 20%,var(--pink) 20% 40%,var(--cyan) 40% 60%,
+    var(--green) 60% 80%,var(--yellow) 80% 100%);}
+
+  /* pipeline */
+  .pipe{display:flex;flex-wrap:wrap;align-items:stretch;gap:.4rem;}
+  .stepbox{flex:1 1 8rem;min-width:7.5rem;border:1px solid var(--line);border-radius:var(--r);
+           background:var(--panel);padding:.7rem .8rem;display:flex;flex-direction:column;gap:.15rem;}
+  .stepbox .n{font-family:var(--mono);font-size:.68rem;font-weight:700;color:var(--text-faint);}
+  .stepbox b{font-size:.9rem;font-weight:700;}
+  .stepbox span{font-size:.8rem;color:var(--text-soft);line-height:1.55;}
+  .stepbox.s1 b{color:var(--indigo);} .stepbox.s2 b{color:var(--cyan);}
+  .stepbox.s3 b{color:var(--pink);}   .stepbox.s4 b{color:var(--yellow);}
+  .stepbox.s5 b{color:var(--green);}
+
+  /* two-col cards */
+  .grid2{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(17rem,1fr));}
+  .card{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);
+        padding:1.05rem 1.15rem;display:flex;flex-direction:column;gap:.55rem;}
+  .card h3{display:flex;align-items:center;gap:.5rem;}
+  .card p{font-size:.92rem;color:var(--text-soft);line-height:1.7;}
+  .tagdot{width:.5rem;height:.5rem;border-radius:50%;flex:none;}
+  .t-you{background:var(--green);} .t-gen{background:var(--indigo);}
+
+  /* tables */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);}
+  table{border-collapse:collapse;width:100%;background:var(--panel);font-size:.9rem;}
+  th,td{padding:.62rem .9rem;text-align:left;border-bottom:1px solid var(--line-soft);
+        line-height:1.6;vertical-align:top;}
+  th{background:var(--panel-2);font-weight:700;font-size:.78rem;letter-spacing:.03em;
+     text-transform:uppercase;color:var(--text-soft);white-space:nowrap;}
+  tr:last-child td{border-bottom:0;}
+  td.mono,th.mono{font-family:var(--mono);font-size:.81rem;white-space:nowrap;}
+  td.mono b{color:var(--indigo);font-weight:700;}
+  .req{font-size:.7rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;
+       background:var(--pink-w);color:var(--pink);white-space:nowrap;}
+
+  /* callouts */
+  .note{border:1px solid var(--line);border-radius:var(--r);padding:1rem 1.15rem;
+        display:flex;flex-direction:column;gap:.55rem;background:var(--panel-3);}
+  .note.warn{background:var(--yellow-w);border-color:color-mix(in srgb,var(--yellow) 38%,var(--line));}
+  .note.good{background:var(--green-w);border-color:color-mix(in srgb,var(--green) 32%,var(--line));}
+  .note h3{font-size:.95rem;}
+  .note.warn h3{color:var(--yellow);} .note.good h3{color:var(--green);}
+  .note p{font-size:.92rem;color:var(--text-soft);line-height:1.7;}
+  .note.warn p,.note.good p{color:var(--text);opacity:.9;}
+
+  ul.plain{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:.45rem;}
+  ul.plain li{display:flex;gap:.6rem;align-items:flex-start;color:var(--text-soft);font-size:.94rem;line-height:1.7;}
+  ul.plain li::before{content:"";flex:none;width:.4rem;height:.4rem;margin-top:.62rem;
+                      border-radius:50%;background:var(--indigo);}
+
+  footer{border-top:1px solid var(--line);padding-top:1.1rem;color:var(--text-faint);font-size:.85rem;max-width:44rem;}
+  a{color:var(--indigo);}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <nav class="nav">
+    <p class="navtitle">Contents</p>
+    <a href="#idea">The idea</a>
+    <a href="#flow">How a ticket runs</a>
+    <a href="#files">What you own</a>
+    <a href="#board">The board</a>
+    <a href="#agents">Agents</a>
+    <a href="#skills">Skills</a>
+    <a href="#custom">Customising</a>
+    <a href="#update">Install &amp; update</a>
+    <a href="#many">Many repos</a>
+    <a href="#trouble">Troubleshooting</a>
+  </nav>
+
+  <main>
+
+    <header style="display:flex;flex-direction:column;gap:1rem;">
+      <p class="eyebrow">@mychiefmind/ai-maestro</p>
+      <h1>How AI Maestro works</h1>
+      <div class="rule"></div>
+      <p class="lede">
+        AI Maestro conducts a roster of AI coding agents against a work board. You describe the
+        project once and keep a board of tickets; the orchestrator picks the next unblocked
+        ticket, runs it through a pipeline of specialised agents in an isolated git worktree,
+        gates it, and lands it.
+      </p>
+    </header>
+
+    <!-- ── idea ── -->
+    <section id="idea">
+      <div class="sec-head"><p class="eyebrow">The idea</p><h2>The board is the source of truth, not the chat</h2></div>
+      <p class="prose">
+        A conversation is lost on the next context reset. A board is not. Work lives in
+        <code>board/data.json</code>, so a run can be interrupted, resumed, handed to a different
+        model, or split across parallel sessions without losing where things stand. Every ticket
+        carries the information needed to execute it — which agents touch it, on which model tier,
+        and what must be true before it can start.
+      </p>
+      <div class="grid2">
+        <div class="card">
+          <h3><span class="tagdot t-you"></span>You maintain two files</h3>
+          <p><code>config.json</code> (roster, skills, areas, model policy) and <code>context.md</code>
+             (the brief every agent reads). Plus the board itself.</p>
+        </div>
+        <div class="card">
+          <h3><span class="tagdot t-gen"></span>Everything else is generated</h3>
+          <p><code>.claude/</code> and <code>CLAUDE.md</code> are rendered from those files plus the
+             kit. Never hand-edit them — change the source and re-render.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── flow ── -->
+    <section id="flow">
+      <div class="sec-head"><p class="eyebrow">How a ticket runs</p><h2>Plan once, then one ticket per run</h2></div>
+      <div class="pipe">
+        <div class="stepbox s1"><span class="n">SELECT</span><b>orchestrator</b><span>Picks the next ticket whose dependencies are all done and which carries no human gate.</span></div>
+        <div class="stepbox s2"><span class="n">PLAN</span><b>pe</b><span>Principal engineer turns the ticket into an implementation plan.</span></div>
+        <div class="stepbox s3"><span class="n">BUILD</span><b>backend / frontend / …</b><span>The implementer works in an isolated worktree and writes the tests that prove the change.</span></div>
+        <div class="stepbox s4"><span class="n">GATE</span><b>qa → pd</b><span>Independent review against the acceptance criteria, then the delivery gate.</span></div>
+        <div class="stepbox s5"><span class="n">LAND</span><b>merge</b><span>Merge, record evidence, move the ticket to <code>archive.json</code>, remove the worktree.</span></div>
+      </div>
+      <p class="prose">
+        A ticket names its own pipeline in <code>agent_plan</code>, e.g.
+        <code>["pe","backend","qa","merge"]</code>. You cannot skip review by omission: whatever you
+        write, <code>qa</code> and <code>merge</code> are always appended if absent, and
+        <code>pd</code> is added automatically when the ticket is <code>multi-agent</code> or carries
+        a <code>human_gate</code>.
+      </p>
+      <div class="note">
+        <h3>Two commands do almost everything</h3>
+        <p><code>/project-plan</code> turns your brief into epics and dependency-ordered tickets, then
+           stops for your review. <code>/orchestrator</code> runs one ticket. That is the loop.</p>
+      </div>
+    </section>
+
+    <!-- ── files ── -->
+    <section id="files">
+      <div class="sec-head"><p class="eyebrow">Layout</p><h2>What you own, and what is generated</h2></div>
+<pre>my-app/
+  src/ …                        <span class="c">your application code — never touched</span>
+  <b>maestro/</b>                      <span class="c">the kit + your settings</span>
+    <span class="g">config.json</span>                 <span class="c">roster, skills, areas, model policy</span>
+    <span class="g">context.md</span>                  <span class="c">the brief every agent reads</span>
+    <span class="g">board/</span>
+      data.json                 <span class="c">live epics + tickets</span>
+      archive.json              <span class="c">completed tickets + evidence</span>
+      specs/&lt;id&gt;.md             <span class="c">long-form spec for a ticket</span>
+      reports/                  <span class="c">generated reports, shown in the cockpit</span>
+    <span class="y">custom/</span>                     <span class="c">YOUR agents &amp; skills — never touched by an update</span>
+      agents/*.md
+      skills/&lt;name&gt;/SKILL.md
+    agents/ skills/ render/ …   <span class="c">kit files — replaced wholesale on update</span>
+  <b>.claude/</b>                      <span class="c">GENERATED — agents &amp; skills, do not hand-edit</span>
+  <b>CLAUDE.md</b>                     <span class="c">GENERATED — header + your context</span>
+  <b>.maestro.lock</b>                 <span class="c">content hashes of everything generated</span></pre>
+      <p class="prose">
+        The lock file is what makes the renderer safe: it records exactly which files this tool
+        produced, so it only ever removes its own. Anything else you keep under <code>.claude/</code>
+        is either adopted into <code>custom/</code> or left alone — never silently overwritten.
+      </p>
+    </section>
+
+    <!-- ── board ── -->
+    <section id="board">
+      <div class="sec-head"><p class="eyebrow">The board</p><h2>Anatomy of a ticket</h2></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th class="mono">Field</th><th>What it drives</th></tr></thead>
+          <tbody>
+            <tr><td class="mono"><b>id</b> <span class="req">required</span></td><td>Unique across <code>data.json</code> <em>and</em> <code>archive.json</code>.</td></tr>
+            <tr><td class="mono"><b>status</b> <span class="req">required</span></td><td><code>backlog → todo → in-progress → review → done</code>, plus <code>blocked</code>.</td></tr>
+            <tr><td class="mono">epicId</td><td>Groups the ticket under an epic.</td></tr>
+            <tr><td class="mono">desc</td><td>The short source of truth. Anything longer belongs in <code>board/specs/&lt;id&gt;.md</code>.</td></tr>
+            <tr><td class="mono">area</td><td>backend / frontend / infra / docs… Selects the area's model floor and test command.</td></tr>
+            <tr><td class="mono">depends_on</td><td>The ticket is eligible only when every id listed is done.</td></tr>
+            <tr><td class="mono">agent_plan</td><td>The ordered pipeline of agent codes. Terminal gates are appended if absent.</td></tr>
+            <tr><td class="mono">model</td><td><code>haiku</code> / <code>sonnet</code> / <code>opus</code>. The run uses the <em>stronger</em> of this and the area floor.</td></tr>
+            <tr><td class="mono">execution_mode</td><td><code>multi-agent</code> runs the full gated pipeline; <code>single-agent</code> a lighter path.</td></tr>
+            <tr><td class="mono">human_gate</td><td>When set, the orchestrator never auto-picks it — a person must clear it first.</td></tr>
+            <tr><td class="mono">testCmd</td><td>Overrides the area's default test command for this ticket only.</td></tr>
+            <tr><td class="mono">evidence</td><td>Recorded when the ticket lands: commit SHA, test output, what was verified.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="prose">
+        Check the board's integrity any time with <code>maestro validate</code>. It verifies the
+        schema, the dependency graph, agent codes against the roster, status consistency, and id
+        uniqueness across both files.
+      </p>
+    </section>
+
+    <!-- ── agents ── -->
+    <section id="agents">
+      <div class="sec-head"><p class="eyebrow">The roster</p><h2>Agents</h2></div>
+      <p class="prose">
+        Each agent is one role with one handoff contract. <code>agent_plan</code> routes by the
+        short <strong>code</strong>, which is not always the filename — that mapping is the one
+        thing worth memorising.
+      </p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th class="mono">Code</th><th class="mono">File</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td class="mono"><b>orchestrator</b></td><td class="mono">orchestrator.md</td><td>Runs the loop: reads the board, picks the next unblocked ticket, dispatches, gates, lands or files a blocker.</td></tr>
+            <tr><td class="mono"><b>pe</b></td><td class="mono">principal-engineer.md</td><td>The planning agent. Turns a ticket into an implementation plan.</td></tr>
+            <tr><td class="mono"><b>backend</b></td><td class="mono">backend-developer.md</td><td>Server-side, data-layer and API work, in an isolated worktree.</td></tr>
+            <tr><td class="mono"><b>frontend</b></td><td class="mono">frontend-developer.md</td><td>UI and client work.</td></tr>
+            <tr><td class="mono"><b>pipeline</b></td><td class="mono">pipeline-developer.md</td><td>Data-pipeline jobs, extraction schemas, scoring, migrations. Holds the idempotency invariant.</td></tr>
+            <tr><td class="mono"><b>devops</b></td><td class="mono">devops.md</td><td>Infrastructure, CI, build and release tooling.</td></tr>
+            <tr><td class="mono"><b>docs</b></td><td class="mono">technical-writer.md</td><td>User-facing documentation: guides, READMEs, references, runbooks.</td></tr>
+            <tr><td class="mono"><b>qa</b></td><td class="mono">qa.md</td><td>Independent review gate. Returns a pass or a specific list of defects — never rubber-stamps.</td></tr>
+            <tr><td class="mono"><b>pd</b></td><td class="mono">principal-delivery.md</td><td>Final delivery gate before a change lands.</td></tr>
+            <tr><td class="mono"><b>repo-audit</b></td><td class="mono">repo-audit.md</td><td>Audits one repo per run and writes a graded Security / Gaps / Improvements report. Not a pipeline stage.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note warn">
+        <h3>The code is board data</h3>
+        <p>Renaming an agent changes how every ticket routes. If a plan names a code with no agent
+           behind it, <code>maestro validate</code> rejects the board rather than letting the run
+           fail mid-dispatch.</p>
+      </div>
+    </section>
+
+    <!-- ── skills ── -->
+    <section id="skills">
+      <div class="sec-head"><p class="eyebrow">The toolkit</p><h2>Skills</h2></div>
+      <p class="prose">
+        Skills are procedures an agent (or you) invokes by name — several are also slash commands
+        in your coding tool. Agents are <em>who</em>; skills are <em>how</em>.
+      </p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th class="mono">Skill</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td class="mono"><b>project-plan</b></td><td>Turns a brief into 3–6 epics and 5–15 dependency-ordered tickets, validates them, then stops for review.</td></tr>
+            <tr><td class="mono"><b>orchestrator</b></td><td>Starts a board run: pre-flights the board and working tree, then hands off to the orchestrator agent.</td></tr>
+            <tr><td class="mono"><b>board-validate</b></td><td>Checks the board for structural and logical integrity.</td></tr>
+            <tr><td class="mono"><b>delivery-hygiene</b></td><td>Keeps the board small, clear, and close to the real delivery shape.</td></tr>
+            <tr><td class="mono"><b>release-gate</b></td><td>The gate a ticket must pass to land. Fails closed — a red or placeholder gate blocks.</td></tr>
+            <tr><td class="mono"><b>security-review</b></td><td>A focused security pass over a change, with concrete findings at file:line.</td></tr>
+            <tr><td class="mono"><b>test-coverage</b></td><td>Confirms the change is actually covered; blocks on untested critical paths.</td></tr>
+            <tr><td class="mono"><b>frontend-quality</b></td><td>Build + lint always; Lighthouse, accessibility and bundle budgets when the project declares them.</td></tr>
+            <tr><td class="mono"><b>pipeline-quality</b></td><td>Pipeline tests, stage idempotency, extraction fixtures, schema coverage, migration safety.</td></tr>
+            <tr><td class="mono"><b>git-branch</b></td><td>Branch conventions for ticket work.</td></tr>
+            <tr><td class="mono"><b>worktree-cleanup</b></td><td>Creates and tears down per-ticket worktrees so parallel work never collides.</td></tr>
+            <tr><td class="mono"><b>land-and-archive</b></td><td>Merge, record evidence, move the ticket to the archive, clean up.</td></tr>
+            <tr><td class="mono"><b>gc</b></td><td>Git catch-up — sync a stale checkout before trusting what it says.</td></tr>
+            <tr><td class="mono"><b>dev-setup</b></td><td>Bootstraps a repo for local development from a clean checkout.</td></tr>
+            <tr><td class="mono"><b>dev-report</b></td><td>Read-only status snapshot across repos and worktrees, correlated against the board.</td></tr>
+            <tr><td class="mono"><b>orchestration-health</b></td><td>Diagnoses a stuck run: phantom in-progress tickets, orphaned worktrees, unknown codes.</td></tr>
+            <tr><td class="mono"><b>repo-audit</b></td><td>Audits one repo and writes a graded report under the board.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── customising ── -->
+    <section id="custom">
+      <div class="sec-head"><p class="eyebrow">Making it yours</p><h2>Three ways to customise — and what each costs</h2></div>
+      <p class="prose">
+        Everything of your own lives in <code>maestro/custom/</code>. It is not a kit folder, so an
+        update cannot reach it. What differs between the three options is what happens to your work
+        the <em>next time the kit improves</em>.
+      </p>
+      <div class="grid2">
+        <div class="card">
+          <h3 style="color:var(--cyan)">Add your own</h3>
+          <p><code>custom/agents/my-agent.md</code></p>
+          <p>A name the kit doesn't ship. Renders alongside the kit roster, is never filtered by
+             <code>roster</code>, and nothing can collide with it. <strong>No cost.</strong></p>
+        </div>
+        <div class="card">
+          <h3 style="color:var(--green)">Extend a kit agent</h3>
+          <p><code>custom/agents/qa.overlay.md</code></p>
+          <p>Appended to the kit's agent under a <code>## Project overlay</code> heading. The kit's
+             half keeps updating; your half is never touched. <strong>No cost — prefer this.</strong></p>
+        </div>
+        <div class="card">
+          <h3 style="color:var(--pink)">Replace a kit agent</h3>
+          <p><code>custom/agents/qa.md</code></p>
+          <p>Your file wins entirely. Right when you genuinely want a different agent — but this
+             project then stops receiving kit improvements to that name.
+             <strong>Cost: a permanent fork.</strong></p>
+        </div>
+      </div>
+      <p class="prose">
+        <code>sync</code> reports these separately — <em>N added</em>, <em>N replacing a kit agent</em>,
+        <em>N extended</em> — and warns on each replacement, because a replacement is invisible in the
+        output afterwards: it looks exactly like a kit agent.
+      </p>
+      <div class="note good">
+        <h3>Already using Claude Code before installing?</h3>
+        <p>Your existing <code>.claude/agents</code> and <code>.claude/skills</code> are <strong>adopted,
+           not overwritten</strong>. On the first render they move into <code>maestro/custom/</code>,
+           which both preserves them and keeps them the thing that renders — so your setup behaves
+           after the install exactly as it did before. Your own <code>CLAUDE.md</code> is kept in
+           place untouched.</p>
+      </div>
+    </section>
+
+    <!-- ── update ── -->
+    <section id="update">
+      <div class="sec-head"><p class="eyebrow">Lifecycle</p><h2>Install, render, update</h2></div>
+<pre><span class="c"># set up in your repo — asks a short questionnaire, writes config + context, renders .claude/</span>
+npx @mychiefmind/ai-maestro setup
+
+<span class="c"># re-render after editing config.json or context.md (from the maestro/ folder)</span>
+npm run sync
+
+<span class="c"># bring the kit up to date; your config, context, board and custom/ are kept</span>
+npx @mychiefmind/ai-maestro@latest update
+
+<span class="c"># check the board</span>
+maestro validate</pre>
+      <p class="prose">
+        <strong>What an update touches:</strong> only the kit's own folders. Anything of yours it
+        finds among them — an agent you added, or a kit file you hand-edited — is moved into
+        <code>custom/</code> and named in the output before anything is replaced. Nothing is ever
+        deleted.
+      </p>
+      <div class="note">
+        <h3>Keeping generated files honest</h3>
+        <p><code>sync --check</code> exits non-zero if the committed <code>.claude/</code> no longer
+           matches what would be rendered. Useful in a pre-commit hook or CI so generated files
+           can't go stale.</p>
+      </div>
+    </section>
+
+    <!-- ── many repos ── -->
+    <section id="many">
+      <div class="sec-head"><p class="eyebrow">Scale</p><h2>Many repos, and groups of repos</h2></div>
+      <p class="prose">
+        A <strong>registry</strong> lists the projects that cross-project commands operate on. It
+        replaces "the repos that happen to sit in the same parent folder" with an explicit list —
+        and it is the allowlist: a tool may only touch a project named in it.
+      </p>
+<pre><span class="c">// maestro-registry.json</span>
+{ "projects": [
+  { "name": "my-app",   "path": "~/code/my-app" },
+  { "name": "platform", "path": "~/code/platform", "kind": "ops" },
+  { "name": "old-tool", "path": "~/code/old-tool", "status": "parked" },
+  { "registry": "./labs/maestro-registry.json" }        <span class="c">← a group of groups</span>
+] }</pre>
+      <ul class="plain">
+        <li><code>status: parked</code> keeps a repo on the list but out of every sweep — use it instead of deleting the entry, so "deliberately not being worked" stays recorded.</li>
+        <li><code>kind: ops</code> marks portfolio tooling that has no delivery pipeline of its own.</li>
+        <li>An entry with <code>registry</code> includes another registry, resolved relative to the file naming it. Names must be unique across the whole tree; cycles are reported with the chain that formed them.</li>
+      </ul>
+<pre>maestro drift  --registry maestro-registry.json        <span class="c">version + hand-edit report per project</span>
+maestro update --all --registry maestro-registry.json  <span class="c">update every project (--dry-run to preview)</span>
+node maestro/render/sync.mjs --all --registry maestro-registry.json --check</pre>
+      <p class="prose">
+        Each project runs in its own subprocess, so one broken project reports and the batch
+        continues. A repo that hasn't adopted the kit is skipped, not counted as a failure.
+      </p>
+    </section>
+
+    <!-- ── troubleshooting ── -->
+    <section id="trouble">
+      <div class="sec-head"><p class="eyebrow">When something looks wrong</p><h2>Troubleshooting</h2></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Symptom</th><th>Cause &amp; fix</th></tr></thead>
+          <tbody>
+            <tr><td>Orchestrator reports idle</td><td>No ticket is eligible: every <code>todo</code> ticket has an unmet <code>depends_on</code> or a <code>human_gate</code>. Run <code>maestro validate</code> — it prints the eligible count.</td></tr>
+            <tr><td>A ticket routes nowhere</td><td>Its <code>agent_plan</code> names a code with no agent behind it. Check the code table above — the code is not always the filename.</td></tr>
+            <tr><td>My agent isn't rendering</td><td>If it's a kit agent, add it to <code>roster</code> in <code>config.json</code>. Your own agents in <code>custom/</code> are never roster-filtered and always render.</td></tr>
+            <tr><td>An edit to <code>.claude/</code> disappeared</td><td>That folder is generated. Put the change in <code>maestro/custom/</code> — as an <code>.overlay.md</code> if you only wanted to add rules — and re-render.</td></tr>
+            <tr><td><code>sync --check</code> reports drift</td><td>A generated file was edited, or <code>config.json</code>/<code>context.md</code> changed without re-rendering. Run <code>sync</code> without <code>--check</code>.</td></tr>
+            <tr><td>An agent stopped improving with the kit</td><td>You have a full replacement for it in <code>custom/</code>. <code>sync</code> names these under "replacing a kit agent". Convert it to an <code>.overlay.md</code> to get updates back.</td></tr>
+            <tr><td>A stuck or suspicious run</td><td>Use the <code>orchestration-health</code> skill — it finds phantom in-progress tickets, orphaned worktrees and unresolved dependencies.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        Further reading in this repo: <code>docs/GETTING-STARTED.md</code> for the full handbook,
+        <code>docs/METHOD.md</code> for why the method is shaped this way,
+        <code>docs/MODEL-ROUTING.md</code> for model tiers, and <code>render/README.md</code> for the
+        renderer's exact contract.
+      </p>
+    </footer>
+
+  </main>
+</div>
+</body>
+</html>

@@ -127,3 +127,19 @@ export async function getReportHtml(name: string): Promise<string> {
 export function reportFileUrl(name: string): string {
   return `/api/reports/render?name=${encodeURIComponent(name)}${scopeQS(false)}`;
 }
+
+// The long-form docs/help.html guide. Same treatment as an .html report: a sandboxed iframe
+// pointed at the route, never fetched and injected into our own document.
+export function helpGuideUrl(): string {
+  return `/api/help/guide${scopeQS()}`;
+}
+
+// Whether this kit actually ships the guide — an older vendored maestro/ may not, and the Help
+// tab should then show the cheat sheet alone rather than an empty frame.
+export async function hasHelpGuide(): Promise<boolean> {
+  try {
+    return (await fetch(helpGuideUrl(), { method: 'HEAD', cache: 'no-store' })).ok;
+  } catch {
+    return false;
+  }
+}

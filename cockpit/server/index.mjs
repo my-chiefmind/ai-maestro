@@ -682,6 +682,26 @@ app.get("/api/reports/render", (req, res) => {
   res.sendFile(abs);
 });
 
+// ── The long-form help page ──────────────────────────────────────────────────
+// docs/help.html is the "how this all works" guide. It is HTML, and the docs browser above
+// renders Markdown only (path-allowlisted, .md), so it had nowhere to be reached from and
+// shipped unreferenced. Served here on its own route, under the same sandbox the .html
+// reports use — it is a document, not an app, and nothing in it should run in our origin.
+//
+// Scope-aware like every other read: a portfolio project's vendored maestro/ has its own copy
+// at the same relative path, so the help you read matches the kit version you are running.
+const HELP_DOC = join("docs", "help.html");
+app.get("/api/help/guide", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const abs = join(scope.root, HELP_DOC);
+  if (!isInside(scope.root, abs) || !existsSync(abs)) {
+    return res.status(404).json({ error: `No ${HELP_DOC} in this kit.` });
+  }
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+  res.sendFile(abs);
+});
+
 // Serve the built UI in production (dist/), if present.
 const DIST = join(COCKPIT, "dist");
 if (existsSync(DIST)) {
