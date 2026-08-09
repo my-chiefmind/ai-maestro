@@ -21,7 +21,7 @@
  */
 
 import {
-  readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, statSync,
+  readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, statSync, cpSync,
 } from "fs";
 import { createHash } from "crypto";
 import { resolve, dirname, join, relative } from "path";
@@ -129,15 +129,104 @@ const context = existsSync(join(PROJECT, "context.md"))
 
 const projectName = config.project?.name ?? "project";
 
-// ── Which agents / skills to include ──────────────────────────────────────────
-const projAgentsDir = join(PROJECT, "agents");
-const projAgentNames = existsSync(projAgentsDir)
-  ? readdirSync(projAgentsDir).filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""))
-  : [];
-const projSkillsDir = join(PROJECT, "skills");
-const projSkillNames = existsSync(projSkillsDir)
-  ? readdirSync(projSkillsDir).filter((d) => existsSync(join(projSkillsDir, d, "SKILL.md")))
-  : [];
+// ── Where a project's OWN agents / skills live ────────────────────────────────
+// `<project>/custom/` is the update-safe home: `maestro update` replaces whole kit folders
+// (agents/, skills/, render/…) and custom/ is not one of them, so nothing there can be
+// caught in the sweep.
+//
+// `<project>/agents` + `<project>/skills` are the older location, and they are only the
+// PROJECT's own when the project and the kit are different directories (the `init` capsule
+// flow). Under `setup` the kit is vendored INTO the project — PROJECT === KIT — so those two
+// paths ARE the kit's own agents/ and skills/. Reading them as an overlay there re-added
+// every kit file unconditionally, which silently defeated config.roster / config.skills
+// (a roster of one still rendered all nine agents). Hence the isSelfKit guard. See T-011.
+const isSelfKit = PROJECT === KIT;
+
+// `<name>.overlay.md` extends the kit's `<name>.md` rather than replacing it (see below), so
+// it is never itself an agent.
+const OVERLAY_SUFFIX = ".overlay.md";
+const isOverride = (f) => f.endsWith(".md") && !f.endsWith(OVERLAY_SUFFIX);
+
+const mdNames = (dir) =>
+  existsSync(dir) ? readdirSync(dir).filter(isOverride).map((f) => f.replace(/\.md$/, "")) : [];
+const skillNames = (dir) =>
+  existsSync(dir) ? readdirSync(dir).filter((d) => existsSync(join(dir, d, "SKILL.md"))) : [];
+
+// ── Adopt a team's existing .claude/ instead of overwriting it (T-018) ─────────
+// A repo that already used Claude Code has its own agents and skills in .claude/. The renderer
+// writes there, so on the FIRST render every one of them whose name the kit also ships was
+// overwritten — silently, before any update, with no way back: qa, devops, orchestrator, gc,
+// security-review are all names a team plausibly already used.
+//
+// The guard for this already existed but was scoped to two filenames (CLAUDE.md, AGENTS.md).
+// The rule behind it — never overwrite a file we did not generate — applies to everything the
+// renderer writes. The prior lock is what distinguishes "ours from last time" from "theirs",
+// exactly as it does for CLAUDE.md.
+//
+// Where a custom/ slot exists (agents, skills) the file is MOVED there: it is then preserved
+// AND still what renders, because custom/ overrides the kit file of the same name — so the
+// team's setup behaves after the install exactly as it did before. CLAUDE.md and AGENTS.md
+// have no custom/ slot (they are generated from config + context, not from a roster), so for
+// those the rule is still "keep theirs in place", handled further down.
+//
+// This runs BEFORE the overlay directories are scanned, so a rescued file is picked up in the
+// SAME render. Doing it afterwards would render the kit's version once and only self-correct
+// on the next sync — the same bug with an extra step.
+const lockPath = join(OUT, ".maestro.lock");
+const priorLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : null;
+const adopted = [];
+
+function adoptPreexisting() {
+  if (checkMode) return; // --check must never write; the drift it reports here is real
+  const targets = [
+    {
+      kind: "agents",
+      from: join(OUT, ".claude", "agents"),
+      to: join(PROJECT, "custom", "agents"),
+      items: (dir) => (existsSync(dir) ? readdirSync(dir).filter(isOverride) : []),
+      rel: (f) => join(".claude", "agents", f),
+    },
+    {
+      kind: "skills",
+      from: join(OUT, ".claude", "skills"),
+      to: join(PROJECT, "custom", "skills"),
+      items: (dir) => (existsSync(dir) ? readdirSync(dir).filter((d) => existsSync(join(dir, d, "SKILL.md"))) : []),
+      rel: (d) => join(".claude", "skills", d, "SKILL.md"),
+    },
+  ];
+
+  for (const t of targets) {
+    for (const item of t.items(t.from)) {
+      if (priorLock?.files?.[t.rel(item)]) continue; // we generated this last time — ours to replace
+      const src = join(t.from, item);
+      const dest = join(t.to, item);
+      if (existsSync(dest)) {
+        // custom/ already owns this name and already wins, so the .claude/ copy has been having
+        // no effect. Say so rather than appearing to lose it.
+        adopted.push({ item, kind: t.kind, stale: true });
+        continue;
+      }
+      mkdirSync(dirname(dest), { recursive: true });
+      cpSync(src, dest, { recursive: true });
+      rmSync(src, { recursive: true, force: true });
+      adopted.push({ item, kind: t.kind, stale: false });
+    }
+  }
+}
+adoptPreexisting();
+
+// Later entries win, so custom/ overrides the legacy location for the same name.
+const agentOverlayDirs = [
+  ...(isSelfKit ? [] : [join(PROJECT, "agents")]),
+  join(PROJECT, "custom", "agents"),
+].filter(existsSync);
+const skillOverlayDirs = [
+  ...(isSelfKit ? [] : [join(PROJECT, "skills")]),
+  join(PROJECT, "custom", "skills"),
+].filter(existsSync);
+
+const projAgentNames = [...new Set(agentOverlayDirs.flatMap(mdNames))];
+const projSkillNames = [...new Set(skillOverlayDirs.flatMap(skillNames))];
 
 const allAgentFiles = readdirSync(join(KIT, "agents")).filter((f) => f.endsWith(".md"));
 const roster = config.roster; // array of file basenames without .md, or undefined = all
@@ -213,18 +302,145 @@ for (const s of skills) {
 }
 
 // ── Project overlay: the project's own agents/skills win over the kit's ─────────
-// A project can keep custom or customised agents in `<project>/agents/*.md` and skills in
-// `<project>/skills/<name>/SKILL.md`. These are merged in (overriding a kit file of the same
-// name) so a team keeps everything in one place — and, unlike hand-editing `.claude/`, they
-// survive the next render.
-if (existsSync(projAgentsDir)) {
-  for (const f of readdirSync(projAgentsDir).filter((f) => f.endsWith(".md"))) {
-    generated.set(join(".claude", "agents", f), substitute(readFileSync(join(projAgentsDir, f), "utf8")));
+// A project keeps its own agents in `<project>/custom/agents/*.md` and skills in
+// `<project>/custom/skills/<name>/SKILL.md`. These are merged in (overriding a kit file of
+// the same name) so a team keeps everything in one place — and, unlike hand-editing
+// `.claude/`, they survive both the next render and the next `maestro update`.
+//
+// A project overlay is deliberately NOT filtered by config.roster / config.skills: naming
+// your own agent in the roster as well would be a second place to keep the same fact in
+// step. Kit files are opt-in; your own are opt-out by deleting them.
+// A project file that shares a name with one the kit ships REPLACES it — that is how you fork
+// a kit agent, and the rescue paths in `update`/adoptPreexisting depend on it. But it is a very
+// different act from adding an agent of your own, and reporting the two as one number hid the
+// only case that needs attention: from "3 overridden (legacy, mine, qa)" you cannot tell that
+// just one of them silently cut this project off from kit updates.
+const added = { agents: [], skills: [] };
+const replaced = { agents: [], skills: [] };
+const kitAgentNames = new Set(allAgentFiles.map((f) => f.replace(/\.md$/, "")));
+const kitSkillNames = new Set(allSkills);
+
+const claimed = (kind, name) =>
+  (kind === "agents" ? kitAgentNames : kitSkillNames).has(name) ? replaced[kind] : added[kind];
+
+for (const dir of agentOverlayDirs) {
+  for (const f of readdirSync(dir).filter(isOverride)) {
+    generated.set(join(".claude", "agents", f), substitute(readFileSync(join(dir, f), "utf8")));
+    claimed("agents", f.replace(/\.md$/, "")).push(f.replace(/\.md$/, ""));
   }
 }
-if (existsSync(projSkillsDir)) {
-  for (const s of projSkillNames) {
-    generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(readFileSync(join(projSkillsDir, s, "SKILL.md"), "utf8")));
+for (const dir of skillOverlayDirs) {
+  for (const s of skillNames(dir)) {
+    generated.set(join(".claude", "skills", s, "SKILL.md"), substitute(readFileSync(join(dir, s, "SKILL.md"), "utf8")));
+    claimed("skills", s).push(s);
+  }
+}
+
+// One name may only be customised one way, so `overridden` still means "there is a full
+// override for this name" for the overlay conflict check below.
+const overridden = {
+  agents: [...added.agents, ...replaced.agents],
+  skills: [...added.skills, ...replaced.skills],
+};
+
+// ── Extend, rather than replace ────────────────────────────────────────────────
+// Copying a whole kit agent to change three lines of it means the copy stops receiving every
+// later improvement, and the divergence only grows — the umbrella this kit was extracted from
+// ended up 133-182 diff lines per agent that way. So a project can APPEND to a kit file
+// instead: `custom/agents/<name>.overlay.md` and `custom/skills/<name>/OVERLAY.md` are added
+// under a `## Project overlay` heading, and the kit's half keeps updating underneath.
+//
+// Overriding and extending the same name is contradictory, not a precedence puzzle — it is an
+// error rather than a silent winner.
+const extended = { agents: [], skills: [] };
+const overlayErrors = [];
+
+function applyOverlay(kind, name, generatedPath, overlaySrc) {
+  if (overridden[kind].includes(name)) {
+    overlayErrors.push(
+      `${kind}: "${name}" has BOTH a full override and an ${kind === "agents" ? OVERLAY_SUFFIX : "OVERLAY.md"} — ` +
+        `pick one (an override already contains whatever you want it to say).`
+    );
+    return;
+  }
+  if (!generated.has(generatedPath)) {
+    // The overlay names something this project doesn't render — usually a roster omission or
+    // a typo. Silently dropping it would look like the extension simply had no effect.
+    console.warn(
+      `  ⚠ ${kind}: overlay for "${name}" has nothing to extend — ` +
+        `the kit ${kind === "agents" ? "agent" : "skill"} isn't rendered here (check config.${kind === "agents" ? "roster" : "skills"}).`
+    );
+    return;
+  }
+  const base = generated.get(generatedPath);
+  generated.set(generatedPath, `${base.trimEnd()}\n\n## Project overlay\n\n${substitute(overlaySrc).trim()}\n`);
+  extended[kind].push(name);
+}
+
+for (const dir of agentOverlayDirs) {
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(OVERLAY_SUFFIX))) {
+    const name = f.slice(0, -OVERLAY_SUFFIX.length);
+    applyOverlay("agents", name, join(".claude", "agents", `${name}.md`), readFileSync(join(dir, f), "utf8"));
+  }
+}
+for (const dir of skillOverlayDirs) {
+  if (!existsSync(dir)) continue;
+  for (const s of readdirSync(dir).filter((d) => existsSync(join(dir, d, "OVERLAY.md")))) {
+    applyOverlay("skills", s, join(".claude", "skills", s, "SKILL.md"), readFileSync(join(dir, s, "OVERLAY.md"), "utf8"));
+  }
+}
+
+if (overlayErrors.length) {
+  for (const e of overlayErrors) console.error(`  ✗ ${e}`);
+  process.exit(2);
+}
+
+/**
+ * Say what this project has changed about the kit's roster. Worth printing on every run: an
+ * override is invisible in the generated output (it looks like a kit agent) and is the thing
+ * most likely to be quietly holding back an upstream improvement.
+ */
+function reportCustomisations() {
+  // What was moved out of .claude/ on this run, before anything else — it is a change to the
+  // project's own files, so it must not be buried under the customisation summary.
+  if (adopted.length) {
+    const moved = adopted.filter((a) => !a.stale);
+    const stale = adopted.filter((a) => a.stale);
+    if (moved.length) {
+      console.log(
+        `  ↪ adopted ${moved.length} file(s) that were already in .claude/ — moved into ` +
+          `${posix(relative(OUT, join(PROJECT, "custom")))}/ so this render could not overwrite them:`
+      );
+      for (const a of moved) console.log(`     .claude/${a.kind}/${a.item}  →  custom/${a.kind}/${a.item}`);
+    }
+    for (const a of stale) {
+      console.log(`  ⚠ .claude/${a.kind}/${a.item} was a stale copy — custom/${a.kind}/${a.item} already replaces it, and is what renders.`);
+    }
+  }
+
+  const line = (label, kind) => {
+    const a = added[kind], r = replaced[kind], e = extended[kind];
+    if (!a.length && !r.length && !e.length) return null;
+    const parts = [];
+    if (a.length) parts.push(`${a.length} added (${a.join(", ")})`);
+    if (r.length) parts.push(`${r.length} replacing a kit ${label.replace(/s$/, "")} (${r.join(", ")})`);
+    if (e.length) parts.push(`${e.length} extended (${e.join(", ")})`);
+    return `  · ${label}: ${parts.join("; ")}`;
+  };
+  const lines = [line("agents", "agents"), line("skills", "skills")].filter(Boolean);
+  if (lines.length) console.log(["  your customisations:", ...lines].join("\n"));
+
+  // The consequence of a replacement, stated once, with the cheaper alternative. Adding your
+  // own agent costs nothing; replacing a kit one silently opts this project out of every future
+  // improvement to it, and people reach for it when all they wanted was to add a rule.
+  for (const kind of ["agents", "skills"]) {
+    for (const name of replaced[kind]) {
+      const alt = kind === "agents" ? `${name}.overlay.md` : `${name}/OVERLAY.md`;
+      console.log(
+        `  ⚠ your ${kind.replace(/s$/, "")} "${name}" replaces the kit's — kit updates to it will ` +
+          `not reach this project. If you only meant to add rules, use custom/${kind}/${alt} instead.`
+      );
+    }
   }
 }
 
@@ -400,6 +616,21 @@ if (config.targets?.workflow) {
   }));
 }
 
+// ── What we may not overwrite ─────────────────────────────────────────────────
+// Never clobber a CLAUDE.md or AGENTS.md we didn't generate (a project may already have its
+// own at the repo root). Decided HERE, before the lock is built, because both modes need the
+// same answer: write mode skips these files, and check mode must not then report them — or
+// their absence from the lock — as drift. Deciding it inside write mode only meant `--check`
+// failed forever in exactly the projects the rule exists to protect.
+// CLAUDE.md and AGENTS.md are the two generated files with no custom/ slot to be adopted into
+// — they come from config + context, not from a roster — so for them the rule stays "keep the
+// project's own in place". Everything else the renderer writes is handled by adoptPreexisting().
+const NEVER_CLOBBER = new Set(["CLAUDE.md", "AGENTS.md"]);
+const skip = new Set();
+for (const rel of generated.keys()) {
+  if (NEVER_CLOBBER.has(rel) && existsSync(join(OUT, rel)) && !priorLock?.files?.[rel]) skip.add(rel);
+}
+
 // ── Lock file ────────────────────────────────────────────────────────────────
 const lock = {
   kitVersion,
@@ -408,6 +639,7 @@ const lock = {
   files: {},
 };
 for (const [rel, content] of [...generated].sort()) {
+  if (skip.has(rel)) continue;
   lock.files[rel] = sha256(content);
 }
 const lockContent = JSON.stringify(lock, null, 2) + "\n";
@@ -416,17 +648,22 @@ const lockContent = JSON.stringify(lock, null, 2) + "\n";
 if (checkMode) {
   let drift = 0;
   for (const [rel, content] of generated) {
+    if (skip.has(rel)) continue; // the project's own file, deliberately not ours to match
     const abs = join(OUT, rel);
     if (!existsSync(abs) || readFileSync(abs, "utf8") !== content) {
       console.log(`  ✗ drift: ${rel}`);
       drift++;
     }
   }
-  const lockPath = join(OUT, ".maestro.lock");
+  // `lockPath` is the one resolved above, for the prior lock — not re-declared here.
   if (!existsSync(lockPath) || readFileSync(lockPath, "utf8") !== lockContent) {
     console.log("  ✗ drift: .maestro.lock");
     drift++;
   }
+  // Reported before the verdict, either way: an override is the most likely reason a generated
+  // file doesn't match, so suppressing it on the drift path withheld the explanation exactly
+  // when someone was looking for one.
+  reportCustomisations();
   if (drift) {
     console.log(`\n✗ ${drift} file(s) out of date. Run sync.mjs to regenerate.`);
     process.exit(1);
@@ -439,8 +676,6 @@ if (checkMode) {
 // Prune only files THIS tool generated last time (recorded in the prior lock) and no longer
 // generates — so a removed roster entry disappears, but anything else a user placed under
 // .claude/ is never touched. This is the safety fix: sync never deletes files it didn't create.
-const lockPath = join(OUT, ".maestro.lock");
-const priorLock = existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, "utf8")) : null;
 if (priorLock?.files) {
   for (const rel of Object.keys(priorLock.files)) {
     if (generated.has(rel)) continue;
@@ -457,15 +692,6 @@ if (priorLock?.files) {
   }
 }
 
-// Safety: never overwrite a CLAUDE.md or AGENTS.md we didn't generate (a project may already
-// have its own at the repo root). Skip it, warn, and keep it out of the lock so --check stays
-// honest.
-const NEVER_CLOBBER = new Set(["CLAUDE.md", "AGENTS.md"]);
-const skip = new Set();
-for (const rel of generated.keys()) {
-  if (NEVER_CLOBBER.has(rel) && existsSync(join(OUT, rel)) && !priorLock?.files?.[rel]) skip.add(rel);
-}
-
 for (const [rel, content] of generated) {
   if (skip.has(rel)) {
     console.log(`  ⚠ kept your existing ${rel} at ${OUT} (not overwritten). Add your project context to config/context.md and reference it there if you like.`);
@@ -475,8 +701,9 @@ for (const [rel, content] of generated) {
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, content);
 }
-for (const rel of skip) delete lock.files[rel];
-writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
+// `skip` was already applied when lock.files was built, so what check mode compares against
+// and what write mode records are the same bytes by construction.
+writeFileSync(lockPath, lockContent);
 
 const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
 const skillCount = [...generated.keys()].filter((r) => r.endsWith("SKILL.md")).length;
@@ -486,3 +713,4 @@ console.log(
   `✓ Rendered ${projectName} (kit v${kitVersion}): ` +
     `${agentCount} agents, ${skillCount} skills, CLAUDE.md, AGENTS.md${codexCount ? `, ${codexCount} Codex agent(s)` : ""}${hasWorkflow ? ", orchestrate workflow" : ""}, .maestro.lock`
 );
+reportCustomisations();

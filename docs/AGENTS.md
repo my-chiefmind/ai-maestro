@@ -16,6 +16,13 @@ receives and what it produces. The orchestrator wires them together per the tick
 | `qa` | [qa](../agents/qa.md) | Independent review of the diff vs. acceptance criteria. | A branch + the ticket | Pass, or a specific list of defects |
 | `pd` | [principal-delivery](../agents/principal-delivery.md) | Final delivery validation and landing decision. | A reviewed branch | Merge, or a blocker with a reason |
 
+One agent sits outside the pipeline — it answers a question about a repo rather than advancing
+a ticket, so it takes no `agent_plan` slot:
+
+| Code | Agent | Role | Receives | Produces |
+| --- | --- | --- | --- | --- |
+| `repo-audit` | [repo-audit](../agents/repo-audit.md) | Audits exactly one repo — security findings, gaps, a ranked improvement plan. Read-only against code. | A repo | A graded report under the board's `reports/` |
+
 ## Agent-plan shorthand
 
 A ticket's `agent_plan` is an ordered list of these codes:
@@ -32,6 +39,13 @@ A ticket's `agent_plan` is an ordered list of these codes:
 
 ## Extending the roster
 
-Add a new agent by dropping `agents/<code>.md` in the kit with `name` + `description`
+In a **project**, add an agent as `maestro/custom/agents/<code>.md` with `name` + `description`
 frontmatter and a crisp role/handoff definition, then reference its code in `agent_plan`.
-Keep roles **non-overlapping** — if two agents could each do a task, the handoff is unclear.
+`custom/` is the one folder `maestro update` never touches, and it needs no `roster` entry —
+`roster` selects which *kit* agents you take; your own are always rendered. To change a kit
+agent rather than add one, prefer `custom/agents/<code>.overlay.md`, which appends to it and
+keeps the kit's half updating; a full `custom/agents/<code>.md` replaces it and opts the project
+out of every later improvement to it.
+
+In the **kit** itself, the same file goes in `agents/`. Either way, keep roles
+**non-overlapping** — if two agents could each do a task, the handoff is unclear.

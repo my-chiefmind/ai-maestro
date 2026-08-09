@@ -77,3 +77,29 @@ test("a --force re-run never touches the project's own board", () => {
   run(["setup", "--yes", "--no-board", "--force"]);
   assert.equal(readFileSync(dataPath, "utf8"), liveBoard, "the project's live board must survive a --force re-run");
 });
+
+test("setup creates the custom/ folder the docs tell people to use", () => {
+  // README and docs/AGENTS.md name custom/agents/ as where your own agents go, but nothing
+  // created it — it only appeared when `update` or the renderer rescued a file into it. A
+  // documented path that isn't there on a fresh install reads as "not really how this works",
+  // and sends people back to hand-editing .claude/, which the renderer overwrites.
+  const { projDir, run } = packagedCli();
+  run(["setup", "--yes", "--no-board"]);
+
+  const custom = join(projDir, "maestro", "custom");
+  assert.ok(existsSync(join(custom, "agents")), "custom/agents/ must exist");
+  assert.ok(existsSync(join(custom, "skills")), "custom/skills/ must exist");
+  assert.match(readFileSync(join(custom, "README.md"), "utf8"), /custom\/agents\/<name>\.overlay\.md/);
+
+  // An agent dropped in renders without any config.json change, which is what the README promises.
+  writeFileSync(join(custom, "agents", "house.md"), "---\nname: house\ndescription: ours\n---\n# House\n");
+  run(["sync", "--project", join(projDir, "maestro")]);
+  assert.ok(existsSync(join(projDir, ".claude", "agents", "house.md")));
+
+  // A --force re-run must not overwrite an edited README or eat the agent.
+  const edited = "# mine\n";
+  writeFileSync(join(custom, "README.md"), edited);
+  run(["setup", "--yes", "--no-board", "--force"]);
+  assert.equal(readFileSync(join(custom, "README.md"), "utf8"), edited);
+  assert.ok(existsSync(join(custom, "agents", "house.md")));
+});

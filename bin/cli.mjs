@@ -14,12 +14,13 @@
  * No third-party dependencies.
  */
 
-import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync, statSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync, statSync, realpathSync } from "fs";
 import { resolve, dirname, join, relative, basename, sep, isAbsolute } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createInterface } from "readline";
 import { createHash } from "crypto";
+import { readRegistry, findKitDir } from "../scripts/registry.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -68,6 +69,50 @@ const BOARD_NEVER_VENDOR = new Set(["specs", "reports"]);
 const VENDOR_LOCK_FILE = ".maestro-vendor.lock";
 const sha256 = (data) => "sha256:" + createHash("sha256").update(data).digest("hex");
 
+/** Two paths naming the same directory. Compared through symlinks, since process.cwd() resolves
+ * them and a --kit argument does not — on macOS that alone makes /var and /private/var differ. */
+function samePath(a, b) {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+}
+
+// Where a project's OWN agents/skills live, safe from every sweep below because `custom` is
+// not a VENDORED entry. render/sync.mjs merges it over the kit's roster.
+const CUSTOM_DIR = "custom";
+
+// Vendored folders that mix kit files with files the project may have added itself. Handled
+// like board/ rather than by the blind remove-and-recopy the other entries get: that swept
+// away any agent or skill a project had added, silently, on every single update — while the
+// docs told people to put them exactly there (T-011). `file` entries are `<name>.md`,
+// `dir` entries are `<name>/SKILL.md`.
+const OVERLAY_ENTRIES = { agents: "file", skills: "dir" };
+
+/** Identity of one overlay item, for the vendor lock: its content, or its SKILL.md's. */
+function overlayItemHash(abs, kind) {
+  if (kind === "file") return sha256(readFileSync(abs));
+  const skill = join(abs, "SKILL.md");
+  return existsSync(skill) ? sha256(readFileSync(skill)) : "dir";
+}
+
+/** The items of an overlay-style folder, keyed by name. Ignores anything of the wrong shape. */
+function overlayItems(dir, kind) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((f) => {
+    if (VENDOR_SKIP.has(f) || f === VENDOR_LOCK_FILE) return false;
+    const abs = join(dir, f);
+    return kind === "file" ? f.endsWith(".md") && statSync(abs).isFile() : statSync(abs).isDirectory();
+  });
+}
+
+function overlayVendorHashes(dir, kind) {
+  const hashes = {};
+  for (const f of overlayItems(dir, kind)) hashes[f] = overlayItemHash(join(dir, f), kind);
+  return hashes;
+}
+
 function readVendorLock(dest) {
   const p = join(dest, VENDOR_LOCK_FILE);
   if (!existsSync(p)) return null;
@@ -103,6 +148,50 @@ function writeVendorPackageJson(dest) {
   writeFileSync(join(dest, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
 }
 
+/**
+ * Create `custom/` at setup, with the empty folders and a README.
+ *
+ * The docs name `custom/agents/` and `custom/skills/<name>/SKILL.md` as where your own agents
+ * go, but nothing created either — the folder only ever appeared when `update` or the renderer
+ * rescued a file into it. So the documented path didn't exist in a fresh install, which reads
+ * as "that isn't really how this works" and sends people back to hand-editing `.claude/` —
+ * the one place the renderer overwrites.
+ *
+ * Never overwrites: on a `--force` re-run the README may have been edited, and any agent
+ * already there is the whole point of the folder.
+ */
+function seedCustomDir(kit) {
+  const dir = join(kit, CUSTOM_DIR);
+  for (const sub of Object.keys(OVERLAY_ENTRIES)) mkdirSync(join(dir, sub), { recursive: true });
+  const readme = join(dir, "README.md");
+  if (existsSync(readme)) return;
+  writeFileSync(
+    readme,
+    `# Your agents and skills
+
+This folder is yours. \`maestro update\` replaces the kit's folders wholesale and never touches
+this one, so anything here survives every upgrade — unlike hand-editing \`.claude/\`, which the
+renderer regenerates.
+
+| You want to | Put it in |
+| --- | --- |
+| Add an agent of your own | \`custom/agents/<name>.md\` |
+| Add a skill of your own | \`custom/skills/<name>/SKILL.md\` |
+| Add rules to a kit agent | \`custom/agents/<name>.overlay.md\` |
+| Add rules to a kit skill | \`custom/skills/<name>/OVERLAY.md\` |
+| Replace a kit agent outright | \`custom/agents/<name>.md\` (same name as the kit's) |
+
+Prefer an **overlay** over a replacement: an overlay is appended under a \`## Project overlay\`
+heading and the kit's half keeps improving underneath, while a replacement opts this project out
+of every future update to that file. \`sync\` reports which you have.
+
+Your own agents and skills need no \`config.json\` entry — \`roster\` and \`skills\` select which
+*kit* files you take; everything here is always rendered. Run \`npm run sync\` after changing
+anything in this folder.
+`
+  );
+}
+
 function vendorKit(dest) {
   mkdirSync(dest, { recursive: true });
   const filter = (src) => !VENDOR_SKIP.has(basename(src));
@@ -112,7 +201,11 @@ function vendorKit(dest) {
     if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter: entry === "board" ? boardFilter : filter });
   }
   writeVendorPackageJson(dest);
-  writeVendorLock(dest, { board: boardVendorHashes(join(dest, "board")) });
+  const lock = { board: boardVendorHashes(join(dest, "board")) };
+  for (const [entry, kind] of Object.entries(OVERLAY_ENTRIES)) {
+    lock[entry] = overlayVendorHashes(join(dest, entry), kind);
+  }
+  writeVendorLock(dest, lock);
 }
 
 // Hashes what vendorKit's initial copy just wrote under board/, for the vendor lock. Only
@@ -140,7 +233,10 @@ function boardVendorHashes(destBoard) {
 // upstream" and deleted it right along with actual removals.
 function refreshVendoredKit(dest) {
   const filter = (src) => !VENDOR_SKIP.has(basename(src));
-  const priorBoard = readVendorLock(dest)?.board ?? {};
+  const priorLock = readVendorLock(dest) ?? {};
+  const priorBoard = priorLock.board ?? {};
+  const newLock = {};
+  const rescued = []; // project-owned files moved to custom/ — reported by update()
   for (const entry of VENDORED) {
     const src = join(KIT_ROOT, entry);
     if (!existsSync(src)) continue;
@@ -177,13 +273,67 @@ function refreshVendoredKit(dest) {
         cpSync(srcAbs, destAbs, { recursive: true, filter });
         newBoardLock[f] = srcHash;
       }
-      writeVendorLock(dest, { board: newBoardLock });
+      newLock.board = newBoardLock;
+    } else if (entry in OVERLAY_ENTRIES) {
+      newLock[entry] = refreshOverlayEntry(dest, entry, OVERLAY_ENTRIES[entry], priorLock[entry], rescued);
     } else {
       rmSync(join(dest, entry), { recursive: true, force: true });
       cpSync(src, join(dest, entry), { recursive: true, filter });
     }
   }
+  writeVendorLock(dest, newLock);
   writeVendorPackageJson(dest);
+  return rescued;
+}
+
+/**
+ * Refresh one overlay-style folder (agents/, skills/), moving anything the project owns into
+ * `custom/` FIRST so the remove-and-recopy below cannot take it. Two things get rescued:
+ *
+ *   - items this release doesn't ship — the project added them;
+ *   - items it does ship, whose content no longer matches what we vendored — the project
+ *     hand-edited a kit file, i.e. forked it. Moving the fork to custom/ preserves both the
+ *     edit AND its effect, since custom/ overrides the kit file of the same name.
+ *
+ * The hand-edit case needs a prior lock entry to detect, so it only works from the second
+ * update after this landed. The unshipped case needs no history and works immediately —
+ * which is the one that was destroying people's work.
+ *
+ * Nothing here deletes: without a lock we cannot tell "the project added this" from "the kit
+ * removed it two versions ago", and rescuing a stale kit file into custom/ is a nuisance
+ * while deleting someone's agent is not recoverable.
+ */
+function refreshOverlayEntry(dest, entry, kind, prior, rescued) {
+  const filter = (src) => !VENDOR_SKIP.has(basename(src));
+  const src = join(KIT_ROOT, entry);
+  const destDir = join(dest, entry);
+  const customDir = join(dest, CUSTOM_DIR, entry);
+  const shipped = new Set(overlayItems(src, kind));
+
+  for (const f of overlayItems(destDir, kind)) {
+    const abs = join(destDir, f);
+    const why = !shipped.has(f)
+      ? "not shipped by this release"
+      : prior?.[f] && prior[f] !== overlayItemHash(abs, kind)
+        ? "hand-edited kit file"
+        : null;
+    if (!why) continue;
+
+    const target = join(customDir, f);
+    if (existsSync(target)) {
+      // custom/ already holds this name, and custom/ is what renders — the copy here is a
+      // stale duplicate that has been having no effect. Say so rather than silently dropping it.
+      rescued.push({ from: join(entry, f), to: join(CUSTOM_DIR, entry, f), why: "duplicate of custom/ — custom/ kept" });
+      continue;
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(abs, target, { recursive: true, filter });
+    rescued.push({ from: join(entry, f), to: join(CUSTOM_DIR, entry, f), why });
+  }
+
+  rmSync(destDir, { recursive: true, force: true });
+  cpSync(src, destDir, { recursive: true, filter });
+  return overlayVendorHashes(destDir, kind);
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -591,6 +741,8 @@ async function setup(args) {
     }
   }
 
+  seedCustomDir(kit);
+
   // Write the brief from the answers. An existing context.md is the user's own work (only a
   // `--force` re-run gets here with one) — keep it rather than overwrite their edits.
   const contextPath = join(kit, "context.md");
@@ -694,8 +846,83 @@ function isKitClone() {
  * From a clone of the kit repo: `git pull --ff-only`, then re-render (or, for a shared kit
  * with no config.json of its own, print the per-project re-render command).
  */
+/**
+ * update --all — bring every project in a registry to this CLI's version.
+ *
+ * With a portfolio of repos, the recurring cost of a kit release is a manual pass over every
+ * one of them, which is how installs quietly drift versions apart. Each project runs in its own
+ * subprocess (the isolation `sync --all` already uses) so one broken project reports and the
+ * batch continues, and `--dry-run` shows what would change before anything is touched.
+ *
+ * Parked projects are excluded by readRegistry itself — that is what parked means.
+ */
+async function updateAll(args) {
+  const registryPath = resolve(flag(args, "registry") || "maestro-registry.json");
+  const dryRun = has(args, "dry-run");
+  let projects;
+  try {
+    ({ projects } = readRegistry(registryPath));
+  } catch (e) {
+    console.error(`✗ ${e.message}`);
+    process.exit(2);
+  }
+  if (!projects.length) {
+    console.error(`✗ ${registryPath} lists no active projects.`);
+    process.exit(2);
+  }
+
+  const target = readKitVersion(KIT_ROOT);
+  console.log(`\n🎼  Updating ${projects.length} project(s) to v${target}${dryRun ? "  (dry run — nothing will be written)" : ""}\n`);
+
+  // Passed through to each project so a batch behaves like the single-project command.
+  const passthrough = ["force"].filter((f) => has(args, f)).map((f) => `--${f}`);
+
+  let failures = 0, skipped = 0, changed = 0;
+  for (const { name, path: projectPath } of projects) {
+    const kitDir = existsSync(projectPath) ? findKitDir(projectPath) : null;
+    if (!kitDir) {
+      // Not a failure: a registry legitimately lists repos that haven't adopted the kit yet.
+      console.log(`  ${C.dim("–")} ${name}: not set up — skipped`);
+      skipped++;
+      continue;
+    }
+    const current = readKitVersion(kitDir);
+    if (dryRun) {
+      const verdict = current === target ? "already up to date" : `v${current} → v${target}`;
+      console.log(`  ${current === target ? C.dim("·") : C.cyan("→")} ${name}: ${verdict}`);
+      if (current !== target) changed++;
+      continue;
+    }
+    const r = spawnSync(NODE, [join(KIT_ROOT, "bin", "cli.mjs"), "update", "--kit", kitDir, ...passthrough], {
+      encoding: "utf8",
+    });
+    process.stdout.write(r.stdout || "");
+    process.stderr.write(r.stderr || "");
+    if (r.status !== 0) {
+      console.error(`✗ ${name}: update failed (exit ${r.status})`);
+      failures++;
+    } else if (current !== target) {
+      changed++;
+    }
+  }
+
+  const summary = [`${projects.length - failures - skipped}/${projects.length} ok`];
+  if (changed) summary.push(`${changed} ${dryRun ? "would change" : "updated"}`);
+  if (skipped) summary.push(`${skipped} not set up`);
+  if (failures) summary.push(`${failures} failed`);
+  console.log(`\n${failures ? "✗" : "✓"} ${summary.join(", ")}.`);
+  process.exit(failures ? 1 : 0);
+}
+
 async function update(args) {
-  if (!IS_PACKAGED) {
+  if (has(args, "all")) return updateAll(args);
+  // `--kit <dir>` names a vendored kit to refresh — a different job from bringing THIS copy of
+  // the kit up to date, so it wins over the clone branch below. It used to be read only after
+  // that branch, which meant `update --all` run from a git clone of the kit sent every project
+  // through `git pull` on the shared clone, ignored --kit, updated nothing, and still exited 0
+  // — a batch that reported "n/n ok" having done none of the work.
+  const explicitKit = flag(args, "kit");
+  if (!IS_PACKAGED && !explicitKit) {
     if (!isKitClone()) {
       console.error(`✗ This kit copy has no update channel of its own — it was vendored by 'setup'.
   Update it from the registry instead (from your repo root):
@@ -723,11 +950,19 @@ async function update(args) {
     return;
   }
 
-  // Packaged: find the vendored kit. `--kit` wins; then a kit at the cwd (npm run update from
+  // Find the vendored kit to refresh. `--kit` wins; then a kit at the cwd (npm run update from
   // inside maestro/); then the default vendoring spot, <cwd>/maestro.
   const cwdIsKit = existsSync(join(process.cwd(), "config.json")) && existsSync(join(process.cwd(), "render", "sync.mjs"));
-  const kit = resolve(flag(args, "kit") || (cwdIsKit ? process.cwd() : join(process.cwd(), "maestro")));
+  const kit = resolve(explicitKit || (cwdIsKit ? process.cwd() : join(process.cwd(), "maestro")));
   const kitRel = relative(process.cwd(), kit) || ".";
+  // Refreshing a kit INTO itself would have refreshVendoredKit delete each vendored folder and
+  // then copy it from the path it just deleted. Reachable via `--kit .` from a clone, or a
+  // registry entry pointing at the kit itself, and it damages the kit rather than failing.
+  if (samePath(kit, KIT_ROOT)) {
+    console.error(`✗ ${kitRel}/ is this kit itself — 'update' refreshes a kit vendored into a project.
+  From a clone of the kit, run 'maestro update' with no --kit to pull it instead.`);
+    process.exit(2);
+  }
   if (!existsSync(join(kit, "config.json"))) {
     console.error(`✗ No set-up kit at ${kitRel}/ — nothing to update.
   Run 'npx @mychiefmind/ai-maestro setup' first, or point at the kit folder with --kit <dir>.`);
@@ -747,8 +982,15 @@ async function update(args) {
   }
 
   console.log(`→ Updating ${kitRel}/ v${before} → v${target} …`);
-  refreshVendoredKit(kit);
+  const rescued = refreshVendoredKit(kit);
   console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
+  // Name what moved. The line above used to be the whole report, which read as an all-clear
+  // even on updates that had just deleted a project's own agents and skills (T-011).
+  if (rescued.length) {
+    console.log(`\n  ${C.yellow("↪")} moved ${rescued.length} file(s) of your own into ${kitRel}/${CUSTOM_DIR}/ — they're safe there, and every future update leaves them alone:`);
+    for (const r of rescued) console.log(`     ${r.from}  →  ${r.to}   ${C.dim(`(${r.why})`)}`);
+    console.log(C.dim(`     custom/ overrides the kit file of the same name, so they keep working as before.`));
+  }
 
   console.log("\n→ Re-rendering agents & skills…");
   if (run("render/sync.mjs", ["--project", kit], kit) !== 0) {
@@ -776,9 +1018,11 @@ function help() {
               --constraints, --run, --test  (anything omitted defaults to "propose one")
   update      Bring a set-up kit to this CLI's version
               Refreshes the kit files in maestro/ and re-renders .claude/; your config.json,
-              context.md, and board data are kept. Run it through the latest package:
-              'npx @mychiefmind/ai-maestro@latest update' (or 'npm run update' from maestro/).
-              On a git clone of the kit it pulls the clone and re-renders instead.
+              context.md, board data, and anything in maestro/custom/ are kept. Run it through
+              the latest package: 'npx @mychiefmind/ai-maestro@latest update' (or 'npm run
+              update' from maestro/). On a git clone of the kit it pulls and re-renders instead.
+              --all --registry <file> updates every project in a registry, each isolated so one
+              failure doesn't stop the batch; --dry-run reports what would change.
   sync        Re-render .claude/ from config.json + context.md
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.

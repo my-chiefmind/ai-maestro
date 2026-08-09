@@ -200,8 +200,9 @@ my-app/
 │   ├── config.json            ← project name, areas, models   (setup writes this)
 │   ├── context.md             ← the brief every agent reads    (setup writes it from your answers)
 │   ├── board/data.json        ← epics + tickets (edit here or in the cockpit)
-│   ├── agents/*.md            ← optional: your own custom agents (merged in, kept on re-render)
-│   └── skills/*/SKILL.md      ← optional: your own custom skills
+│   └── custom/                ← optional: YOUR agents & skills (never touched by an update)
+│       ├── agents/*.md
+│       └── skills/*/SKILL.md
 ├── .claude/                   ← GENERATED — agents & skills (don't hand-edit)
 └── CLAUDE.md                  ← GENERATED — project brief
 ```
@@ -211,10 +212,12 @@ my-app/
 the [Quickstart](#quickstart) — then, from your coding tool at the repo root, run
 **`/project-plan`**, approve the plan, and run **`/orchestrator`**.
 
-> **Keep your own agents/skills in one place.** Drop custom agents in `maestro/agents/` and
-> skills in `maestro/skills/<name>/SKILL.md`. `sync` merges them into `.claude/` (overriding a
-> kit file of the same name) and — unlike hand-editing `.claude/` — they survive every
-> re-render. List them in `config.json`'s `roster` so tickets can route to them.
+> **Keep your own agents/skills in one place.** Drop custom agents in `maestro/custom/agents/`
+> and skills in `maestro/custom/skills/<name>/SKILL.md`. `sync` merges them into `.claude/` (overriding a
+> kit file of the same name), and `maestro/custom/` is the one folder an update never touches —
+> so unlike hand-editing `.claude/`, or keeping them among the kit's own files, they survive
+> both re-renders and kit upgrades. They don't need listing in `config.json`: `roster`/`skills`
+> selects which *kit* agents you take; your own are always included.
 
 > **Keep the kit out of your project's git?** `npx setup` vendors a plain folder — commit it or
 > ignore it. A cloned kit brings its own `.git`, so either `rm -rf maestro/.git` or gitignore

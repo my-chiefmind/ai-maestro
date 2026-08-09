@@ -57,8 +57,10 @@ If the change includes a database migration:
 
 Read the project's `context.md` for pipeline-specific quality rules — QA/confidence
 thresholds, fixture conventions, entity-specific invariants — and apply them alongside the
-common contract. A project that needs a fundamentally different contract can override this
-skill entirely via the project overlay (`<project>/skills/pipeline-quality/SKILL.md`).
+common contract. A project that only needs to *add* rules should append them in
+`custom/skills/pipeline-quality/OVERLAY.md`, which keeps this skill updating underneath; a
+project that needs a fundamentally different contract can replace it outright with
+`custom/skills/pipeline-quality/SKILL.md`.
 
 ## Output
 
