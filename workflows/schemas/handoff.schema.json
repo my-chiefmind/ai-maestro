@@ -15,7 +15,7 @@
     "summary":               { "type": "string" },
     "filesChanged":          { "type": "array", "items": { "type": "string" } },
     "testsRun":              { "type": "array", "items": { "type": "string" } },
-    "commit":                { "type": ["string", "null"] },
+    "commit":                { "type": ["string", "null"], "description": "REQUIRED (non-null) for a writer stage's status=done — the engine audits the worktree and rejects an uncommitted handoff (T-008). Readers may return null." },
     "decisions":             { "type": "array", "items": { "type": "string" } },
     "risks":                 { "type": "array", "items": { "type": "string" } },
     "recommendedNextAgent":  { "type": ["string", "null"] },

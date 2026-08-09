@@ -126,6 +126,29 @@ const HANDOFF_SCHEMA = {
   },
 };
 
+// T-008 AC1: a writer's "done" is only credible with a commit. Same shape as
+// HANDOFF_SCHEMA but `commit` is REQUIRED and must be a non-empty string — an uncommitted
+// worktree is not a valid handoff state (a concurrent reset would destroy the work, and
+// once did, 60 seconds shy of unrecoverable). Readers keep the base schema: they don't commit.
+const WRITER_HANDOFF_SCHEMA = {
+  ...HANDOFF_SCHEMA,
+  required: [...HANDOFF_SCHEMA.required, "commit"],
+  properties: {
+    ...HANDOFF_SCHEMA.properties,
+    commit: { type: ["string", "null"], description: "REQUIRED for status=done: the SHA of the commit holding this stage's work." },
+  },
+};
+
+const WORKTREE_VERIFICATION_SCHEMA = {
+  type: "object",
+  required: ["clean", "newCommits", "commitExists"],
+  properties: {
+    clean:        { type: "boolean" },
+    newCommits:   { type: "integer" },
+    commitExists: { type: "boolean" },
+  },
+};
+
 const RUN_RECORD_SCHEMA = {
   type: "object",
   required: ["schemaVersion", "ticket", "branch", "worktree", "status", "stage",
@@ -318,6 +341,42 @@ function lastSummary(record) {
   return h ? h.summary : "";
 }
 
+// ── Writer-lease enforcement (T-008) ──────────────────────────────────────────
+// The lease convention was documented and modelled but nothing enforced it; a live
+// two-writer collision produced a false `blocked` verdict on green work. These two pure
+// rules are the enforcement core — the engine applies them, tests pin them.
+
+// T-008 AC1: reject a writer's "done" handoff unless the work is actually, verifiably
+// committed. `verification` comes from a read-only git check of the worktree (see
+// verifyWriterState). Returns a human-readable rejection reason, or null to accept.
+function writerHandoffRejection(handoff, verification) {
+  if (!handoff || handoff.status !== "done") return null; // blocked/error take other paths
+  if (!handoff.commit) {
+    return "handoff has no commit SHA — an uncommitted worktree is not a valid handoff state";
+  }
+  if (!verification.commitExists) {
+    return `handoff names commit ${handoff.commit} but the worktree branch does not contain it`;
+  }
+  if (!verification.clean) {
+    return "worktree has uncommitted changes after the handoff — commit everything before handing off";
+  }
+  if (verification.newCommits < 1) {
+    return "worktree branch has no new commits vs its base — nothing was actually handed off";
+  }
+  return null;
+}
+
+// T-008 AC2/AC3: a process may only touch a worktree whose lease is free or its own.
+// `record` is the run record as read FRESH from disk (not from memory — the whole point is
+// catching a concurrent process), `expectedHolder` is who is asking (null = a reader/gate,
+// which requires the lease to be fully free). Returns a conflict reason, or null.
+function leaseConflict(record, expectedHolder) {
+  const holder = record && record.writerLease && record.writerLease.holder;
+  if (!holder) return null;
+  if (expectedHolder && holder === expectedHolder) return null;
+  return `writer lease is held by "${holder}" — do not run anything in this worktree until the lease is released`;
+}
+
 // The reviewer gate verdicts must be POSITIVE before a merge is allowed. The qa stage owns
 // the security-review gate (record.gates.securityReview) and the pd stage owns the release
 // gate (record.gates.releaseGate). Reviewers can return status="ship" overall while still
@@ -479,6 +538,28 @@ ${BOARD_EPILOGUE}
   );
 }
 
+// T-008 AC1: read-only git audit of a writer's handoff claim. Never trusts the handoff —
+// checks the worktree itself. Every command here is non-mutating on purpose: this runs in
+// a worktree the engine does not hold the lease on (the writer just released it).
+async function verifyWriterState(record, handoff) {
+  return await agent(
+    `Verify the state of the worktree at ${record.worktree} after a writer handoff. Run ONLY these read-only commands (do NOT run anything that writes — no checkout, reset, clean, fix, or formatters):
+       git -C ${record.worktree} status --porcelain          # clean = empty output
+       git -C ${record.worktree} rev-list --count origin/main..HEAD   # newCommits
+       ${handoff.commit ? `git -C ${record.worktree} merge-base --is-ancestor ${handoff.commit} HEAD && echo COMMIT_OK || echo COMMIT_MISSING` : `echo COMMIT_MISSING   # the handoff named no commit`}
+     Return: clean (boolean — status output was empty), newCommits (the count), commitExists (boolean — COMMIT_OK).`,
+    { label: `verify-handoff-${record.ticket}`, schema: WORKTREE_VERIFICATION_SCHEMA }
+  );
+}
+
+// T-008 AC2: the on-disk run record is the shared lease state across processes. Re-read it
+// and refuse to touch the worktree while another writer holds the lease — the in-memory
+// copy can't see a concurrent orchestrator or a live developer agent.
+async function preflightLease(ticketId, expectedHolder) {
+  const onDisk = await readRecord(ticketId);
+  return leaseConflict(onDisk, expectedHolder);
+}
+
 async function confirmTicket(ticket, repoPath, agentType, branch) {
   return await agent(
     `Confirm this ticket selection for the orchestrate workflow:
@@ -582,6 +663,17 @@ async function blockTicket(record, board, desc, tag, blockerArea, blockerAgent) 
   const outcome = await agent(
     `Ticket ${record.ticket} is blocked (${tag}): ${desc}
 
+    VERIFY BEFORE FILING (T-008 AC4) — run these read-only commands first and include their
+    output as evidence in the blocker desc. An agent must never declare work lost, destroyed,
+    or missing without checking git:
+       git -C ${record.repoPath} branch --list ${record.branch}
+       git -C ${record.repoPath} log -5 --oneline ${record.branch} --  2>/dev/null || true
+       git -C ${record.worktree} status --porcelain  2>/dev/null || echo WORKTREE_GONE
+       git -C ${record.repoPath} reflog --date=iso -10  2>/dev/null | head -10
+    If this blocker claims work was lost/destroyed but the branch shows the commits, DO NOT
+    file it as written — report the discrepancy as the finding instead (the work exists; the
+    coordination failed).
+
     Update the board file at ${BOARD}, preserving every other field/ticket exactly:
     1. Set ticket ${record.ticket} status to "blocked"
     2. Add a new blocker ticket: id="${blockerId}", name="BLOCKER: ${record.ticket} ${tag}", desc="${desc}", epicId="${record.epicId}", area="${area}", priority="P0", swag="S", status="blocked", depends_on=[]
@@ -631,7 +723,8 @@ async function runStage(record, code) {
   const priorHandoffs = JSON.stringify(record.handoffs.slice(-6));
   const leaseLine = writer
     ? `You HOLD THE WRITER LEASE for this task. You are the ONLY agent that may edit files right now.`
-    : `You are a READ-ONLY reviewer (no writer lease). Do NOT edit any files — inspect the worktree diff and report only.`;
+    : `You are a READ-ONLY reviewer (no writer lease). Do NOT edit any files — inspect the worktree diff and report only.
+  READ-ONLY means read-only (T-008): never run a mutating command in this worktree — no git reset/clean/checkout/commit, no --fix, no formatters. Run linters in check mode. If the test command itself mutates state, say so in risks[] rather than working around it.`;
 
   const workBlock = writer
     ? `Implement/fix your part of the ticket fully. Every file you Write/Edit MUST live under ${record.worktree}.
@@ -657,7 +750,7 @@ async function runStage(record, code) {
        4. status="ship" to approve the merge, or "block" with issues in findings[].
        5. REQUIRED gate verdict — set releaseGate="go" to approve release or "no-go" to hold. A merge cannot proceed without releaseGate="go".`;
 
-  let attempt = 0, handoff;
+  let attempt = 0, handoff, retryNote = "";
   while (attempt < MAX_STAGE_ATTEMPTS) {
     attempt++;
     handoff = await agent(
@@ -669,7 +762,7 @@ async function runStage(record, code) {
   WORKTREE (do ALL work here; NEVER the primary checkout at ${record.repoPath}): ${record.worktree}
   Test command (run from the worktree root): ${record.testCmd}${isPlaceholderTestCmd(record.testCmd) ? `
   ⚠ PLACEHOLDER test command — no real tests are configured for this ticket. Gate stages (qa, pd) MUST status="block" and require a real test command (set a ticket-level testCmd or configure the area) unless this ticket genuinely has no testable surface.` : ""}
-  ${leaseLine}
+  ${leaseLine}${retryNote}
 
   Prior handoffs (most recent last; [] if you are first): ${priorHandoffs}
 
@@ -677,12 +770,26 @@ async function runStage(record, code) {
 
   Do NOT push to remote. Do NOT merge to main. Do NOT edit anything outside ${record.worktree}.
 
-  Return the STRUCTURED HANDOFF: status, agentCode="${code}", summary, filesChanged[], testsRun[], commit (SHA or null), decisions[], risks[], recommendedNextAgent (an agent code or null), findings[] (for a block), blockerDesc (if blocked), leasedTs (the %ct value from your commit, or null)${code === "qa" ? ", securityReview (REQUIRED: \"ship\" | \"block\" | \"n/a\")" : code === "pd" ? ", releaseGate (REQUIRED: \"go\" | \"no-go\")" : ""}.`,
-      { label: `${code}-${record.ticket}-a${attempt}`, schema: HANDOFF_SCHEMA }
+  Return the STRUCTURED HANDOFF: status, agentCode="${code}", summary, filesChanged[], testsRun[], commit (${writer ? "REQUIRED SHA for status=\"done\" — an uncommitted worktree is not a valid handoff" : "SHA or null"}), decisions[], risks[], recommendedNextAgent (an agent code or null), findings[] (for a block), blockerDesc (if blocked), leasedTs (the %ct value from your commit, or null)${code === "qa" ? ", securityReview (REQUIRED: \"ship\" | \"block\" | \"n/a\")" : code === "pd" ? ", releaseGate (REQUIRED: \"go\" | \"no-go\")" : ""}.`,
+      { label: `${code}-${record.ticket}-a${attempt}`, schema: writer ? WRITER_HANDOFF_SCHEMA : HANDOFF_SCHEMA }
     );
     if (handoff.status === "error" && attempt < MAX_STAGE_ATTEMPTS) {
       log(`${type} errored (attempt ${attempt}/${MAX_STAGE_ATTEMPTS}) — retrying, worktree kept`);
       continue;
+    }
+    // T-008 AC1: never trust a writer's "done" — audit the worktree read-only and reject a
+    // handoff whose work isn't committed. One retry with the reason spelled out, then block.
+    if (writer && handoff.status === "done") {
+      const verification = await verifyWriterState(record, handoff);
+      const rejection = writerHandoffRejection(handoff, verification);
+      if (rejection) {
+        log(`✗ ${type} handoff rejected: ${rejection}`);
+        if (attempt < MAX_STAGE_ATTEMPTS) {
+          retryNote = `\n  ⚠ YOUR PREVIOUS HANDOFF WAS REJECTED BY THE ENGINE: ${rejection}. Fix that — commit ALL work in the worktree and return the real commit SHA.`;
+          continue;
+        }
+        handoff = { ...handoff, status: "blocked", blockerDesc: `writer handoff rejected after ${MAX_STAGE_ATTEMPTS} attempts: ${rejection}` };
+      }
     }
     break;
   }
@@ -722,9 +829,22 @@ async function runPlan(record, board) {
       await writeRecord(record);
     }
 
+    const writer = isWriter(code);
+
+    // T-008 AC2/AC3: check the lease ON DISK before touching the worktree — the in-memory
+    // copy cannot see a concurrent orchestrator or a live developer agent. A writer stage
+    // may proceed when the lease is free or already its own; a reader/gate stage (and the
+    // merge) requires it fully free. A conflict fails loudly instead of running mutating
+    // commands in someone else's leased worktree — the tl-213 incident, structurally closed.
+    const conflict = await preflightLease(record.ticket, writer && code !== "merge" ? stageAgentType(code) : null);
+    if (conflict) {
+      return await blockTicket(record, board,
+        `${conflict} (stage ${code} refused to run; if the holder is a crashed run, resume or abort it first)`,
+        "lease-conflict");
+    }
+
     if (code === "merge") { return await doMerge(record, board); }
 
-    const writer = isWriter(code);
     if (writer) {
       leaseAcquire(record, code);
       record.nextAgent = record.plan[record.stage + 1] || "";
