@@ -3,7 +3,7 @@
  * maestro — the one command a newcomer runs.
  *
  *   maestro init [--dir <repo>] [--name <name>] [--areas a,b,c] [--starter orchestrated|lightweight] [--yes]
- *   maestro update [--kit <dir>] [--force]   (bring a set-up kit to this CLI's version)
+ *   maestro update [--kit <dir>] [--force] [--offline]   (bring a set-up kit to this CLI's version)
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *
@@ -816,6 +816,30 @@ ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or t
 const readKitVersion = (dir) =>
   existsSync(join(dir, "VERSION")) ? readFileSync(join(dir, "VERSION"), "utf8").trim() : "0.0.0";
 
+const PKG_NAME = "@mychiefmind/ai-maestro";
+
+/**
+ * The newest version published to npm, or null when the lookup can't be made — offline, npm
+ * missing, package unpublished. Same contract as the one in scripts/maestro-drift.mjs: a
+ * failure is "unknown", never an error, because updating must not require the network.
+ */
+function latestPublishedVersion() {
+  const r = spawnSync("npm", ["view", PKG_NAME, "version"], { encoding: "utf8", timeout: 5000 });
+  return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
+
+/**
+ * Is this CLI itself out of date? `npx <pkg>` with no `@latest` reuses whatever the npx cache
+ * already holds, so a months-old CLI can run against a months-old project and find them in
+ * perfect agreement. Returns the newer published version, or null when the CLI is current /
+ * the lookup didn't happen. Only meaningful for a packaged copy — a clone updates via git.
+ */
+function newerPublishedThan(version, args) {
+  if (!IS_PACKAGED || has(args, "offline")) return null;
+  const latest = latestPublishedVersion();
+  return latest && cmpSemver(latest, version) > 0 ? latest : null;
+}
+
 function cmpSemver(a, b) {
   const pa = a.split(/[.+-]/, 3).map(Number);
   const pb = b.split(/[.+-]/, 3).map(Number);
@@ -873,10 +897,20 @@ async function updateAll(args) {
   }
 
   const target = readKitVersion(KIT_ROOT);
+  // Asked once for the whole batch, not once per project: walking a registry and moving every
+  // project onto a version that is itself out of date is the one outcome nobody wants here.
+  const stale = newerPublishedThan(target, args);
+  if (stale) {
+    console.error(`✗ This CLI ships v${target}, but v${stale} is published — refusing to move ${projects.length} project(s) onto a stale version.
+  Re-run: npx ${PKG_NAME}@latest update --all`);
+    process.exit(2);
+  }
   console.log(`\n🎼  Updating ${projects.length} project(s) to v${target}${dryRun ? "  (dry run — nothing will be written)" : ""}\n`);
 
   // Passed through to each project so a batch behaves like the single-project command.
-  const passthrough = ["force"].filter((f) => has(args, f)).map((f) => `--${f}`);
+  // --offline goes with it unconditionally: the staleness check above already covered the
+  // batch, and without it every project would repeat the same registry lookup.
+  const passthrough = [...["force"].filter((f) => has(args, f)).map((f) => `--${f}`), "--offline"];
 
   let failures = 0, skipped = 0, changed = 0;
   for (const { name, path: projectPath } of projects) {
@@ -973,6 +1007,18 @@ async function update(args) {
   const before = readKitVersion(kit);
   const target = readKitVersion(KIT_ROOT);
   if (before === target && !has(args, "force")) {
+    // "The project matches this CLI" only means "up to date" if the CLI is itself current. A
+    // stale npx cache makes those two agree at any age, and this branch then reported a project
+    // several releases behind as current — wrong, and reassuring, which is the worst pairing.
+    // The neighbouring downgrade branch already told people to run @latest; this one didn't.
+    const latest = newerPublishedThan(target, args);
+    if (latest) {
+      console.error(`✗ ${kitRel}/ is at v${before} and so is this CLI — but v${latest} is published.
+  npx reuses whatever it has cached unless you name a version, so this ran an old copy. Re-run:
+
+    npx ${PKG_NAME}@latest update${explicitKit ? ` --kit ${kitRel}` : ""}`);
+      process.exit(2);
+    }
     console.log(`✓ Already up to date (v${target}).`);
     return;
   }
@@ -1024,6 +1070,9 @@ function help() {
               update' from maestro/). On a git clone of the kit it pulls and re-renders instead.
               --all --registry <file> updates every project in a registry, each isolated so one
               failure doesn't stop the batch; --dry-run reports what would change.
+              If the project already matches this CLI, it checks that the CLI is itself current
+              before saying so — npx runs a cached copy unless you name a version, and a stale
+              one would otherwise call a months-old project up to date. --offline skips it.
   sync        Re-render .claude/ from config.json + context.md
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.
