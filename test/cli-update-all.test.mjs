@@ -26,8 +26,12 @@ const PKG_ENTRIES = ["agents", "skills", "render", "scripts", "board", "starters
 let tmp, pkgDir, cliPath, registryPath;
 const proj = (name) => join(tmp, name);
 
+// --offline on every update: the command now asks npm whether this CLI is itself stale, and a
+// suite that reached the network would start failing the day the next version is published —
+// the checked-in VERSION is by definition behind the registry between release and merge. The
+// check has its own test, against a stubbed npm, in cli-update.test.mjs.
 const run = (args) => {
-  const r = spawnSync(process.execPath, [cliPath, ...args], {
+  const r = spawnSync(process.execPath, [cliPath, ...(args[0] === "update" ? [...args, "--offline"] : args)], {
     cwd: tmp,
     encoding: "utf8",
     env: { ...process.env, NO_COLOR: "1" },

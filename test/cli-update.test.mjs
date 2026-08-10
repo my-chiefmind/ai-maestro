@@ -15,7 +15,7 @@
  */
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { cpSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -27,8 +27,11 @@ const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_ENTRIES = ["agents", "skills", "render", "scripts", "board", "starters", "bin", "VERSION"];
 
 let tmp, pkgDir, projDir, kitDir;
+// --offline by default on `update`: the command asks npm whether this CLI is itself stale, and
+// a suite that reached the network would go red the day the next version is published. The
+// check gets its own test below, against a stubbed npm rather than the real registry.
 const cli = (args, opts = {}) =>
-  execFileSync(process.execPath, [join(pkgDir, "bin", "cli.mjs"), ...args], {
+  execFileSync(process.execPath, [join(pkgDir, "bin", "cli.mjs"), ...(args[0] === "update" ? [...args, "--offline"] : args)], {
     cwd: projDir,
     encoding: "utf8",
     env: { ...process.env, NO_COLOR: "1" },
@@ -85,6 +88,39 @@ test("update refreshes kit files, keeps user files, re-renders", () => {
 test("update is idempotent — a second run reports up to date", () => {
   const out = cli(["update"]);
   assert.match(out, /Already up to date \(v9\.9\.9\)/);
+});
+
+test("update won't call a project up to date when the CLI itself is stale", () => {
+  // The npx-cache trap: `npx <pkg>` with no @latest reuses whatever is cached, so the CLI and
+  // the project can agree at v9.9.9 while the registry has long moved past it. The old code
+  // compared only those two and printed a confident "up to date" — the failure this pins.
+  // A fake `npm` first on PATH stands in for the registry, so no network is involved.
+  const stubBin = join(tmp, "stub-bin");
+  mkdirSync(stubBin, { recursive: true });
+  const npmStub = join(stubBin, "npm");
+  writeFileSync(npmStub, '#!/bin/sh\n[ "$1" = view ] && echo 9.9.10\n');
+  chmodSync(npmStub, 0o755);
+  const withStub = { env: { ...process.env, NO_COLOR: "1", PATH: `${stubBin}:${process.env.PATH}` } };
+  // Bypasses the helper's default --offline on purpose — this is the online path.
+  const online = (args, opts = {}) =>
+    execFileSync(process.execPath, [join(pkgDir, "bin", "cli.mjs"), ...args], {
+      cwd: projDir, encoding: "utf8", ...withStub, ...opts,
+    });
+
+  assert.throws(() => online(["update"], { stdio: "pipe" }), /v9\.9\.10 is published/);
+  // And it names the way out rather than just refusing.
+  assert.throws(() => online(["update"], { stdio: "pipe" }), /@latest update/);
+
+  // --offline opts back out: no lookup, the plain message, exit 0.
+  assert.match(online(["update", "--offline"]), /Already up to date \(v9\.9\.9\)/);
+
+  // A CLI that is current says so — same stub, but nothing newer than what it ships.
+  writeFileSync(npmStub, '#!/bin/sh\n[ "$1" = view ] && echo 9.9.9\n');
+  assert.match(online(["update"]), /Already up to date \(v9\.9\.9\)/);
+
+  // npm unreachable is "unknown", never a failure — updating must not require the network.
+  writeFileSync(npmStub, "#!/bin/sh\nexit 1\n");
+  assert.match(online(["update"]), /Already up to date \(v9\.9\.9\)/);
 });
 
 test("update refuses to downgrade without --force", () => {
