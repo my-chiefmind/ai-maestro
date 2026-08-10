@@ -35,6 +35,8 @@
 
 [![The AI Maestro new-project demo: an arcade-style walkthrough titled "You're the Maestro" — install, answer a few questions, review the plan, then build one ticket at a time](./cockpit/asset/ai-maestro-hero-poster.jpg)](https://mychiefmind.com/ai-maestro/demo)
 
+👉 **[Try the step-by-step demo](https://mychiefmind.com/ai-maestro/demo)** — a click-through walkthrough of setting up a new project, no install required.
+
 AI Maestro runs software delivery as an *orchestra* of AI agents instead of a single chat
 session. The idea in three sentences:
 
@@ -61,6 +63,26 @@ same way of working.
 | **Pipelines, not heroics.** | Every ticket flows through its configured agent pipeline, followed by the required review and delivery gates. Those gates are structural, not something you remember to do. |
 | **Isolated by construction.** | Each ticket runs in its own git worktree, so parallel work never collides and a bad branch never dirties `main`. |
 | **Reusable skills.** | Git branch conventions, worktree cleanup, landing a change, catching up a stale checkout, validating the board — packaged once, used everywhere. |
+
+### The Agile advantage
+
+AI Maestro is an **Agile delivery process adapted for a solo operator** — one human
+conducting AI agents across one or many projects. The delivery principles map directly:
+
+| Agile principle | How AI Maestro delivers it |
+| --- | --- |
+| **Deliver working software frequently** | A ticket is one independently shippable outcome, and the orchestrator lands exactly one per run — continuous small increments, not big-bang merges. |
+| **Working software is the measure of progress** | A ticket isn't done until it passes an independent QA gate and is archived *with verification evidence*. The board never claims progress the code can't back up. |
+| **Continuous attention to technical excellence** | Review and delivery gates are structural pipeline stages, not rituals you have to remember. |
+| **Simplicity — maximize the work not done** | Delivery-hygiene rules keep the board to shippable outcomes; specs exist only when a ticket needs more than its description. |
+| **Welcome changing priorities** | Kanban-style pull, no sprint to protect: reorder or re-scope the backlog any time, and the next run simply picks the new top eligible ticket. |
+| **Transparency and sustainable pace** | A glance at the board always shows the true state, and the one-ticket-per-run loop puts a human checkpoint between every increment. |
+
+The team ceremonies that assume a room full of people — stand-ups, sprint planning,
+sprint reviews — are deliberately replaced by that **between-ticket checkpoint**: you
+review each landed increment before conducting the next. See
+[docs/METHOD.md](./docs/METHOD.md#8-the-agile-lineage--adapted-for-a-solo-operator) for
+the full mapping.
 
 ## What's in the box
 
