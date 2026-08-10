@@ -90,8 +90,37 @@ irreversible, spending real money, touching customer data. Those carry an explic
 
 Autonomy inside the guardrails; a hard stop at the guardrails.
 
+## 8. The Agile lineage — adapted for a solo operator
+
+This method is Agile delivery, re-fitted for its actual team shape: **one human
+conducting AI agents**. It is not a Jira clone or a generic ticketing system — the board
+exists to drive *incremental, testable, gated delivery*, not to catalogue work.
+
+What carries over from Agile directly:
+
+- **Small shippable increments.** The ticket definition — one independently shippable
+  outcome — *is* the Agile increment. One lands per run.
+- **Working software as the measure of progress.** Done means passed QA and archived with
+  verification evidence, never "I think it's finished."
+- **Built-in quality.** QA and delivery gates are pipeline structure, not discipline you
+  have to summon.
+- **Flow over timeboxes.** Kanban-style pull: the orchestrator takes the next unblocked
+  ticket by priority. Reprioritizing costs nothing because there is no sprint commitment
+  to protect.
+- **Simplicity.** The hygiene rules (§6) are "maximize the work not done" made concrete.
+
+What is deliberately adapted, because the ceremonies assume a team:
+
+- **Stand-ups, sprint planning, sprint reviews** collapse into the **between-ticket
+  checkpoint** — the orchestrator stops after every landed increment and you review
+  before starting the next.
+- **Self-organizing team** becomes **self-routing tickets**: the who/how/cost decision is
+  made once, when you write the ticket, instead of re-negotiated in meetings.
+- **Customer collaboration** is you — the solo operator is also the product owner, so
+  epics group tickets into the outcomes you'd otherwise demo to a stakeholder.
+
 ---
 
 That's the whole method: **a durable board, self-routing tickets, pipeline delivery,
-isolated worktrees, a gated prod track, and honest hygiene.** AI Maestro is just the scaffolding
-that makes it easy to run.
+isolated worktrees, a gated prod track, honest hygiene, and Agile increments at solo
+scale.** AI Maestro is just the scaffolding that makes it easy to run.
