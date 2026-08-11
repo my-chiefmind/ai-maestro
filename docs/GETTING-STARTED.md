@@ -222,6 +222,8 @@ and 4600 are only the starting points, and the board prints the URL it settled o
 - Use the `delivery-hygiene` skill when the board starts to feel noisy.
 - Use the `dev-report` skill for a read-only "where are we?" snapshot — every repo and
   worktree's branches and uncommitted work, correlated against the board. It changes nothing.
+- Use the `atomic-report` skill for a terser, ten-second version of the same idea: flat
+  bullets for what landed in the last 24h, what's open, what's next, and open branches.
 
 ## Updating the kit
 
