@@ -34,6 +34,7 @@
     "land-and-archive",
     "gc",
     "dev-report",
+    "atomic-report",
     "frontend-quality",
     "pipeline-quality",
     "orchestration-health",
