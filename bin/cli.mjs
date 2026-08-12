@@ -949,6 +949,88 @@ async function updateAll(args) {
   process.exit(failures ? 1 : 0);
 }
 
+/**
+ * After the kit is refreshed, tell the project what the new kit ships that its config doesn't
+ * name — and offer to adopt it.
+ *
+ * WHY: `config.roster` / `config.skills` select which KIT agents and skills a project takes, and
+ * `update` never edits a project's config. So a roster stays frozen at whatever the starter
+ * shipped the day the project was set up, and everything added to the kit afterwards is simply
+ * absent: not rendered, not mentioned, no error. Until 0.1.27 those filters were a no-op in the
+ * vendored layout, which hid the drift completely — then the fix made the filters real and the
+ * accumulated omissions surfaced all at once as deletions.
+ *
+ * Two lists, because they answer different questions:
+ *   - "new in this release" comes from the vendor lock, which records what we vendored last
+ *     time. Precise, and the common case.
+ *   - "unlisted" is everything the kit ships that the config omits, which also catches drift
+ *     that accumulated silently over many releases — the case that actually bit.
+ *
+ * Never adopted silently: `roster` is also how a project deliberately drops an agent it doesn't
+ * want, and a command that quietly re-adds it makes the list untrustworthy. So: report always,
+ * ask when there's a terminal, and require an explicit flag otherwise.
+ */
+async function reconcileRoster(kit, kitRel, args, preRefreshLock) {
+  const configPath = join(kit, "config.json");
+  if (!existsSync(configPath)) return;
+  let config;
+  try {
+    config = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return; // a broken config is the renderer's error to report, with a better message
+  }
+  // No roster/skills key at all means "take everything" — nothing can be missing.
+  if (!Array.isArray(config.roster) && !Array.isArray(config.skills)) return;
+
+  const kitAgents = existsSync(join(kit, "agents"))
+    ? readdirSync(join(kit, "agents")).filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""))
+    : [];
+  const kitSkills = existsSync(join(kit, "skills"))
+    ? readdirSync(join(kit, "skills")).filter((d) => existsSync(join(kit, "skills", d, "SKILL.md")))
+    : [];
+
+  const unlistedAgents = Array.isArray(config.roster) ? kitAgents.filter((a) => !config.roster.includes(a)) : [];
+  const unlistedSkills = Array.isArray(config.skills) ? kitSkills.filter((s) => !config.skills.includes(s)) : [];
+  if (!unlistedAgents.length && !unlistedSkills.length) return;
+
+  // What THIS release added, from the lock written before the refresh overwrote it.
+  const priorAgents = new Set(Object.keys(preRefreshLock?.agents ?? {}).map((f) => f.replace(/\.md$/, "")));
+  const priorSkills = new Set(Object.keys(preRefreshLock?.skills ?? {}));
+  const isNew = (name, prior) => prior.size > 0 && !prior.has(name);
+  const newAgents = unlistedAgents.filter((a) => isNew(a, priorAgents));
+  const newSkills = unlistedSkills.filter((s) => isNew(s, priorSkills));
+
+  const line = (label, all, fresh) =>
+    all.length
+      ? `     ${label}: ${all.map((n) => (fresh.includes(n) ? `${n} ${C.green("(new)")}` : n)).join(", ")}`
+      : null;
+
+  console.log(`\n  ${C.yellow("⚠")} this kit ships ${unlistedAgents.length + unlistedSkills.length} item(s) your config.json doesn't list, so they are NOT rendered:`);
+  for (const l of [line("agents", unlistedAgents, newAgents), line("skills", unlistedSkills, newSkills)]) {
+    if (l) console.log(l);
+  }
+  if (newAgents.length || newSkills.length) {
+    console.log(C.dim(`     ${C.green("(new)")} = added by this release; the rest have been unlisted for longer.`));
+  }
+
+  const adopt = has(args, "adopt-new")
+    ? true
+    : has(args, "no-adopt") || has(args, "yes") || !process.stdin.isTTY
+      ? false
+      : await askYesNo("  Add them to config.json so they render?", true);
+  closePrompts();
+
+  if (!adopt) {
+    console.log(C.dim(`     Left as-is. Add them to "roster"/"skills" in ${kitRel}/config.json, or re-run with --adopt-new.`));
+    return;
+  }
+
+  if (Array.isArray(config.roster)) config.roster = [...config.roster, ...unlistedAgents];
+  if (Array.isArray(config.skills)) config.skills = [...config.skills, ...unlistedSkills];
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  console.log(`  ${C.green("✓")} added ${unlistedAgents.length + unlistedSkills.length} entry(ies) to ${kitRel}/config.json`);
+}
+
 async function update(args) {
   if (has(args, "all")) return updateAll(args);
   // `--kit <dir>` names a vendored kit to refresh — a different job from bringing THIS copy of
@@ -1029,6 +1111,10 @@ async function update(args) {
   }
 
   console.log(`→ Updating ${kitRel}/ v${before} → v${target} …`);
+  // Read BEFORE the refresh overwrites it: this is the only record of what the previous
+  // version shipped, and it's what makes "new in this release" distinguishable from
+  // "unlisted for the last six releases".
+  const preRefreshLock = readVendorLock(kit);
   const rescued = refreshVendoredKit(kit);
   console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
   // Name what moved. The line above used to be the whole report, which read as an all-clear
@@ -1038,6 +1124,8 @@ async function update(args) {
     for (const r of rescued) console.log(`     ${r.from}  →  ${r.to}   ${C.dim(`(${r.why})`)}`);
     console.log(C.dim(`     custom/ overrides the kit file of the same name, so they keep working as before.`));
   }
+
+  await reconcileRoster(kit, kitRel, args, preRefreshLock);
 
   console.log("\n→ Re-rendering agents & skills…");
   if (run("render/sync.mjs", ["--project", kit], kit) !== 0) {
@@ -1070,6 +1158,9 @@ function help() {
               update' from maestro/). On a git clone of the kit it pulls and re-renders instead.
               --all --registry <file> updates every project in a registry, each isolated so one
               failure doesn't stop the batch; --dry-run reports what would change.
+              Lists any agent/skill the kit ships that your config.json doesn't name (those are
+              not rendered) and offers to add them: --adopt-new adds without asking, --no-adopt
+              reports and leaves them out.
               If the project already matches this CLI, it checks that the CLI is itself current
               before saying so — npx runs a cached copy unless you name a version, and a stale
               one would otherwise call a months-old project up to date. --offline skips it.

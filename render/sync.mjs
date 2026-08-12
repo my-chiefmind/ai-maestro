@@ -256,6 +256,34 @@ if (config.skills) {
   }
 }
 
+// ── The other direction: the kit ships it, this config doesn't name it ─────────
+// Both warnings above fire when config names something that doesn't exist. Nothing fired for
+// the reverse, and that is the one that loses you things: a project's roster is frozen at
+// whatever the starter shipped the day it was set up, so every agent or skill added to the kit
+// afterwards is simply absent — not rendered, not mentioned, no error. A project set up before
+// `orchestrator` and `project-plan` existed silently never had them.
+//
+// It stayed invisible for a second reason: until 0.1.27 these filters were a no-op in the
+// vendored layout, so the list could drift for months with no effect at all. The moment the
+// filter started working, the accumulated drift surfaced as deletions.
+//
+// Reported, never auto-added: `roster` is also how you deliberately drop an agent you don't
+// want, and a renderer that quietly re-adds it makes the list untrustworthy in the other
+// direction. `maestro update` offers to adopt them; this only makes the gap visible.
+const unlistedAgents = roster
+  ? allAgentFiles.map((f) => f.replace(/\.md$/, "")).filter((a) => !roster.includes(a))
+  : [];
+const unlistedSkills = config.skills ? allSkills.filter((s) => !config.skills.includes(s)) : [];
+if (unlistedAgents.length || unlistedSkills.length) {
+  const parts = [];
+  if (unlistedAgents.length) parts.push(`${unlistedAgents.length} agent(s): ${unlistedAgents.join(", ")}`);
+  if (unlistedSkills.length) parts.push(`${unlistedSkills.length} skill(s): ${unlistedSkills.join(", ")}`);
+  console.warn(
+    `  ⚠ the kit ships ${parts.join("; ")} that config.json doesn't list, so they aren't rendered.\n` +
+    `    Add them to "roster"/"skills", or run \`maestro update --adopt-new\` to add them for you.`
+  );
+}
+
 // ── Template substitution ──────────────────────────────────────────────────────
 // Paths the generated agents/skills reference, expressed relative to OUT (where .claude/ and
 // CLAUDE.md live — i.e. where the coding tool runs). This keeps every board/script reference
