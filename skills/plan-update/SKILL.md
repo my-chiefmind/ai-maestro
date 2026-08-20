@@ -84,11 +84,43 @@ re-run the same command. Exit **1** means the request was wrong; retrying won't 
 | **Use cases** | An actor and what they're trying to get done. If you can't name who does it, it isn't one. |
 | **Functional** | One behaviour per entry — an entry with "and" in it is usually two. Each needs a `--verify`: a test command, a manual check, a metric. Without one, the release gate has nothing to check. |
 | **Non-functional** | A measurable bar, not an adjective: `p95 < 300ms`, `WCAG 2.2 AA`, `99.9% monthly`, `no PII in logs`. An NFR with no `--budget` can't be gated and the plan will say so. |
+| **Invariants** | For any rule that must **never** be violated, add `--enforce "<command>"`. See below — this is the difference between a rule the agents are asked to honour and one they cannot break. |
 | **Milestones** | Only if they mean something. An invented three-phase roadmap is noise. |
 | **Risks** | What could sink this, and what's being assumed without having been checked. |
 
 Don't pad. Six real requirements beat twenty generated ones, and every entry you invent is
 something a ticket may later be gated against.
+
+## Rules that must never break — `--enforce`
+
+`--verify` describes how a human would check a requirement. `--enforce` is a **command that
+runs** and must exit 0:
+
+```sh
+maestro plan add nonFunctional --text "Every patient query is clinic-scoped" \
+  --budget "zero unscoped queries" --enforce "npm run check:tenant-scope"
+maestro plan edit FR-3 --enforce "npm run lint:no-raw-sql"
+maestro plan check                    # runs them all — belongs in CI
+```
+
+Why it matters: an instruction in a brief is something a confident model can talk itself past.
+A command that exits non-zero is a fact about the repository, and it holds for human commits
+too. The release gate runs the invariants a ticket traces to, and a failure is a **hard
+no-go** — never weighed against how good the change looks.
+
+When to propose one — ask for it whenever a requirement is:
+
+- a **security or privacy** rule (tenant scoping, no secrets in logs, encryption at rest);
+- a **data-integrity** rule (no destructive migration without a backup step);
+- a **budget** you already stated a number for (bundle size, p95, coverage floor);
+- anything the user describes with "must never" or "always".
+
+If no check exists yet, say so plainly and offer to file a ticket that writes one, rather than
+inventing a command that doesn't run. An `--enforce` pointing at a script that isn't there is
+worse than none: it fails for the wrong reason and teaches people to ignore it.
+
+Don't push for one everywhere. Most requirements are fine checked by judgment, and the plan
+reports which those are without treating it as a defect.
 
 ## Triaging gaps
 

@@ -17,6 +17,8 @@ import { fileURLToPath } from "url";
 import { validateBoard, agentFileToCode } from "./board-core.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planCompleteness, planIsGating, planCoverage } from "./plan-core.mjs";
+import { assignLanes, parallelismLostToVagueness, laneCount } from "./lane-core.mjs";
+import { eligibleTickets } from "./board-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -129,10 +131,10 @@ function main() {
   if (configWarning) pre.push(configWarning);
   if (planError) pre.push(`${planError} — the scope gate is skipped until it parses.`);
 
-  finish(errors, [...pre, ...warnings], eligibleCount, plan, board, archive);
+  finish(errors, [...pre, ...warnings], eligibleCount, plan, board, archive, config);
 }
 
-function finish(errors, warnings, eligibleCount, plan, board, archive) {
+function finish(errors, warnings, eligibleCount, plan, board, archive, config) {
   for (const w of warnings) console.log(`  ⚠  ${w}`);
   for (const e of errors) console.log(`  ✗  ${e}`);
   if (errors.length === 0) {
@@ -150,6 +152,19 @@ function finish(errors, warnings, eligibleCount, plan, board, archive) {
         if (uncovered.length) {
           console.log(`  ${uncovered.length} plan item(s) with no ticket: ${uncovered.map((r) => r.id).join(", ")}`);
         }
+      }
+    }
+
+    // Parallelism is a property of the board, so it belongs in the board's report — but it is
+    // never a warning: a board where nothing can run in parallel is correct, just slower.
+    if (board && config) {
+      const ready = eligibleTickets(board, archive?.tickets ?? [], { plan });
+      if (ready.length > 1) {
+        const { lanes } = assignLanes(ready, config);
+        const startable = lanes.filter((l) => !l.exclusive).length;
+        const lost = parallelismLostToVagueness(ready, config);
+        console.log(`  ${startable} of ${laneCount(config)} lane(s) would start in parallel.` +
+          (lost.length ? ` ${lost.length} pair(s) held back only by undeclared \`touches\` — see 'maestro lanes plan'.` : ""));
       }
     }
     process.exit(0);

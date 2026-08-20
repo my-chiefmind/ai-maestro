@@ -118,22 +118,28 @@ For single tickets afterwards, use `maestro ticket add` / `add-epic`.
    > `desc` — not `description`. The board schema, the validator, and the cockpit all read
    > `desc`; a ticket written with `description` validates clean and then shows up blank
    > everywhere, which is worse than an error.
-4. **`traces_to` is not optional.** Every ticket names at least one plan item id (`D-`, `UC-`,
+4. **Declare `touches`** — the glob patterns each ticket is expected to change, e.g.
+   `["src/api/cart/**"]`. This is what lets tickets run in parallel lanes: two tickets with
+   disjoint declared scopes can run at once, while anything undeclared falls back to "same epic
+   or same area → same lane". Guess honestly and broadly rather than precisely and wrongly — an
+   over-broad scope costs some parallelism, an under-broad one costs a merge conflict. Put
+   migrations, lockfiles and generated schema in their own tickets: they run alone by design.
+5. **`traces_to` is not optional.** Every ticket names at least one plan item id (`D-`, `UC-`,
    `FR-`, `NFR-`, `M-`). A ticket that traces to nothing is out of scope by definition and the
    orchestrator will refuse to pick it. If you find yourself wanting a ticket the plan doesn't
    cover, that is the plan being incomplete — go back and add the requirement, don't invent a
    trace.
-5. Use only the `areas`, agent codes, and model names `config.json` allows.
-6. Every ticket starts at `status: "todo"`.
-7. Build an **acyclic** `depends_on` graph: foundations first, then user-visible vertical
+6. Use only the `areas`, agent codes, and model names `config.json` allows.
+7. Every ticket starts at `status: "todo"`.
+8. Build an **acyclic** `depends_on` graph: foundations first, then user-visible vertical
    slices as early as they can safely land. Leave at least one ticket with an empty
    `depends_on` so the first run has something eligible.
-8. Include tests, docs, security, accessibility, deployment, or observability **only where the
+9. Include tests, docs, security, accessibility, deployment, or observability **only where the
    plan makes them relevant** — and when the plan does, trace those tickets to the NFR that
    demands them. Put the required verification in each ticket's acceptance criteria rather than
    filing vague cleanup tickets.
-9. Reserve `P0` for work that blocks the whole MVP; prefer `P1`/`P2`.
-10. Keep prod/release and human-gated steps as separate tickets with a `human_gate` from
+10. Reserve `P0` for work that blocks the whole MVP; prefer `P1`/`P2`.
+11. Keep prod/release and human-gated steps as separate tickets with a `human_gate` from
     `config.humanGates` — never as a dependency of ordinary development work.
 
 ## Cover the plan

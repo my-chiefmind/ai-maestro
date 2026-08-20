@@ -134,6 +134,25 @@ milestone list — and placeholder text (`TBD`, `propose one`) never counts as f
 **required** gaps are added to the denominator, so a report finding a hole in the plan visibly
 lowers the number until someone accepts or declines it.
 
+### Invariants — rules agents cannot violate
+
+`verify` on a plan item says how a human would check it. **`enforce`** is a command that runs:
+
+```bash
+maestro plan add nonFunctional --text "No record written unencrypted" \
+  --budget "zero plaintext writes" --enforce "npm run check:encryption"
+
+maestro plan check          # runs every enforce command — put this in CI
+maestro plan check --json   # exit 1 and machine-readable output on any violation
+```
+
+The release gate runs the invariants a ticket traces to, and a non-zero exit is a hard no-go —
+not weighed against how good the change looks. This is the difference between a rule stated in
+a brief (which a confident model can talk itself past) and a rule that fails the build.
+
+The kit ships the mechanism and none of the rules: what must never be violated belongs to your
+product, not to this framework.
+
 ### The scope gate
 
 Every ticket carries `traces_to`: the plan item ids it serves. That is what makes the plan more
@@ -156,6 +175,41 @@ A brand-new project isn't refused everything.
 node maestro/scripts/plan-write.mjs status   --board maestro/board/data.json
 node maestro/scripts/plan-write.mjs coverage --board maestro/board/data.json  # which FRs no ticket covers
 ```
+
+## Running work in parallel — lanes
+
+By default one ticket runs at a time. Set `orchestration.maxWorktrees` to opt into **lanes**:
+
+```jsonc
+"orchestration": {
+  "maxWorktrees": 3,                        // pool size; hard ceiling is 5
+  "serialFiles": ["infra/terraform/**"]     // added to the built-in serial patterns
+}
+```
+
+A lane is a worktree that runs a *queue* of tickets, landing each before starting the next — so
+the number of live branches is the number of lanes, never the number of tickets. That is what
+keeps merges tractable; a worktree per ticket is the arrangement lanes exist to avoid.
+
+Two tickets get different lanes only when nothing suggests they share files. Declaring
+**`touches`** on a ticket is what unlocks parallelism:
+
+```jsonc
+{ "id": "T-014", "area": "backend", "touches": ["src/api/cart/**"] }
+```
+
+Without it the scheduler falls back to epic, then area, and puts anything it can't prove
+independent in one lane. A ticket touching a **serial-only** file — migrations, lockfiles,
+generated schema — runs alone with the pool drained first.
+
+```bash
+maestro lanes plan               # the schedule, and why each decision was made
+maestro lanes next               # exactly what may start now
+maestro lanes check T-004 T-007  # would these two conflict? (exit 1 if yes)
+```
+
+`maestro lanes plan` also lists the pairs held back **only** because their file scope is
+undeclared — the one thing you can fix to get more parallelism.
 
 ## Tuning areas & models — `maestro/config.json`
 

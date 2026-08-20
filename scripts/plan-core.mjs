@@ -87,7 +87,7 @@ export const PLAN_SECTIONS = [
     kind: "list",
     prefix: "FR",
     weight: 3,
-    fields: ["verify"],
+    fields: ["verify", "enforce"],
     heading: "Functional requirements",
     blurb: "Behaviours the system must have. One per entry — an entry containing \"and\" is usually two.",
     ask: "What must the system DO? One behaviour at a time.",
@@ -100,11 +100,11 @@ export const PLAN_SECTIONS = [
     kind: "list",
     prefix: "NFR",
     weight: 2,
-    fields: ["budget", "verify"],
+    fields: ["budget", "verify", "enforce"],
     heading: "Non-functional requirements",
     blurb: "Quality attributes with measurable bars: performance, security, availability, accessibility, compliance, operability.",
     ask: "What quality bars must it hold — speed, uptime, security posture, accessibility, compliance, cost?",
-    followUp: "Give each a number or a named standard. An NFR with no budget can't be gated on.",
+    followUp: "Give each a number or a named standard, and where the rule must never be violated, an `enforce` command that fails the build — an instruction to an agent is not a guarantee.",
   },
   {
     key: "milestones",
@@ -332,7 +332,9 @@ function sectionDetail(plan, s) {
   }
   if (s.key === "nonFunctional") {
     const noBudget = v.filter((i) => hasText(i.text) && !hasText(i.budget)).map((i) => i.id);
-    return noBudget.length ? `No measurable budget on ${noBudget.join(", ")} — can't be gated.` : "";
+    if (noBudget.length) return `No measurable budget on ${noBudget.join(", ")} — can't be gated.`;
+    const described = v.filter((i) => hasText(i.text) && !hasText(i.enforce)).map((i) => i.id);
+    return described.length ? `${described.join(", ")} are checked by judgment, not by a command (no \`enforce\`).` : "";
   }
   if (s.key === "gaps") {
     const open = v.filter((g) => (g.status ?? "open") === "open");
@@ -606,6 +608,32 @@ export function planCoverage(planRaw, tickets = [], archived = []) {
   return [...byId.values()];
 }
 
+/**
+ * Every plan item that carries an `enforce` command.
+ *
+ * This is the difference between a requirement the agents are ASKED to honour and one they
+ * CANNOT violate. "Always include the clinic id" given to a model is a wish; the same rule as a
+ * command that exits non-zero is a fact about the repository. `verify` says how a human would
+ * check the bar; `enforce` is the check itself, and the release gate runs it rather than
+ * judging it.
+ *
+ * @param {any} planRaw
+ * @param {string[]|null} [ids] restrict to these plan ids (a ticket's traces_to), or all
+ * @returns {Array<{id:string, section:string, text:string, enforce:string, budget?:string}>}
+ */
+export function enforceableItems(planRaw, ids = null) {
+  const plan = normalisePlan(planRaw);
+  const out = [];
+  for (const key of ["functional", "nonFunctional"]) {
+    for (const item of plan.sections[key]) {
+      if (!hasText(item.enforce)) continue;
+      if (ids && !ids.includes(item.id)) continue;
+      out.push({ id: item.id, section: key, text: item.text, enforce: item.enforce.trim(), budget: item.budget });
+    }
+  }
+  return out;
+}
+
 // ── The Markdown mirror ─────────────────────────────────────────────────────────
 
 const mdEscape = (s) => String(s ?? "").replace(/\r?\n/g, " ").trim();
@@ -714,5 +742,5 @@ export function renderPlanMd(planRaw, projectName = "Project") {
 }
 
 function fieldLabel(f) {
-  return { verify: "Verified by", budget: "Budget", actor: "Actor", target: "Target", mitigation: "Mitigation" }[f] ?? f;
+  return { verify: "Verified by", budget: "Budget", actor: "Actor", target: "Target", mitigation: "Mitigation", enforce: "Enforced by" }[f] ?? f;
 }

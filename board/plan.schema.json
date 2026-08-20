@@ -85,6 +85,7 @@
         "id":     { "type": "string", "pattern": "^FR-[0-9]+$" },
         "text":   { "type": "string", "description": "One behaviour the system must have. One requirement per entry — an entry with 'and' in it is usually two." },
         "verify": { "type": "string", "description": "How it is demonstrated: a test command, a manual check, a metric. The release gate reads this." },
+        "enforce": { "type": "string", "minLength": 1, "description": "A command that MUST exit 0. The difference between a rule agents are asked to honour and one they cannot violate: `verify` is read and judged, `enforce` is executed. `maestro plan check` runs every one of these (wire it into CI); the release gate runs those a ticket traces to, and a non-zero exit is a hard no-go, never a judgment call." },
         "notes":  { "type": "string" }
       },
       "additionalProperties": false
@@ -97,6 +98,7 @@
         "text":   { "type": "string", "description": "The quality attribute: performance, security, availability, accessibility, compliance, operability." },
         "budget": { "type": "string", "description": "The measurable bar — 'p95 < 300ms', 'WCAG 2.2 AA', '99.9% monthly'. An NFR with no budget cannot be gated." },
         "verify": { "type": "string", "description": "How the budget is measured. The release gate requires evidence against this for any ticket tracing here." },
+        "enforce": { "type": "string", "minLength": 1, "description": "A command that MUST exit 0, encoding this quality bar as a check rather than an instruction — a forbidden-pattern grep, a lint rule, a budget assertion, a privacy invariant. Run by `maestro plan check` and by the release gate for any ticket tracing here." },
         "notes":  { "type": "string" }
       },
       "additionalProperties": false

@@ -96,6 +96,7 @@ agent cannot disagree about whether the board changed underneath them.
 | `depends_on` | Eligibility ordering |
 | `human_gate` | Whether the orchestrator may auto-pick it |
 | `traces_to` | Whether the ticket is in the plan's scope at all |
+| `touches` | Whether it can run in a lane parallel to another ticket |
 
 ## Plan and scope
 

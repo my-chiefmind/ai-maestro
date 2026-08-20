@@ -337,6 +337,7 @@
           <thead><tr><th class="mono">Skill</th><th>What it does</th></tr></thead>
           <tbody>
             <tr><td class="mono"><b>project-plan</b></td><td>Writes the project plan from a brief (goal, scope, deliverables, use cases, functional and non-functional requirements), then turns it into 3–6 epics and 5–15 dependency-ordered tickets that each trace to a plan item. Stops for review at each step.</td></tr>
+            <tr><td class="mono"><b>release-gate</b> <i>(invariants)</i></td><td>Runs the <code>enforce</code> command of every plan item the ticket traces to. A non-zero exit is a hard no-go — the difference between a rule agents are asked to honour and one they cannot violate.</td></tr>
             <tr><td class="mono"><b>plan-update</b></td><td>Fills in the project plan section by section as a conversation, and triages the gaps other skills raised. Raises the plan's completeness percentage.</td></tr>
             <tr><td class="mono"><b>orchestrator</b></td><td>Starts a board run: pre-flights the board and working tree, then hands off to the orchestrator agent.</td></tr>
             <tr><td class="mono"><b>board-validate</b></td><td>Checks the board for structural and logical integrity.</td></tr>

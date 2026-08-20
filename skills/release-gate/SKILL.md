@@ -22,6 +22,12 @@ a pass.
    nothing verifiable to gate against. Send it back to get ACs written first.
 4. **The plan's bar is met.** Read the ticket's `traces_to` against `{{BOARD}}/plan.json`
    (`maestro plan show --board {{BOARD}}/data.json`):
+   - **Run the invariants.** `maestro plan check --traces <the ticket's traces_to> --board
+     {{BOARD}}/data.json`. Every `enforce` command the ticket's plan items declare must exit 0.
+     A non-zero exit is a **hard no-go** — not a judgment, not something to weigh against how
+     good the change looks, and never something to "fix" by editing the check. That is the
+     entire reason the field exists: a rule stated in prose is one an agent can talk itself
+     past; a rule that exits non-zero is one it cannot.
    - Every `FR-` it traces to has its `verify` method actually run, and the result recorded.
    - Every `NFR-` it traces to has evidence **against that NFR's stated budget** — the measured
      number, not an assurance. "Should be fast" does not clear `p95 < 300ms`; a p95 you
@@ -62,6 +68,7 @@ Tests:                PASS / FAIL
 Scope:                PASS / FAIL
 Acceptance criteria:  PASS / FAIL   (<n met> / <total>; 0 total = automatic NO-GO)
 Plan (traces_to):     PASS / FAIL   (<ids>; FR verify run: <result>; NFR budget: <measured vs bar>)
+Plan invariants:      PASS / FAIL   (maestro plan check --traces <ids>: <n> ran, <n> failed)
 Upstream verdicts:    PASS / FAIL   (qa: <verdict>; security-review: <verdict or N/A>)
 Mergeable:            PASS / FAIL   (conflicts / open deps / debug leftovers)
 Warnings/errors:      PASS / FAIL

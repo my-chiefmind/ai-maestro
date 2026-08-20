@@ -227,3 +227,68 @@ test("a malformed traces_to or an empty scope_exception is a hard error", () => 
   assert.ok(r.errors.some((e) => /T-1.*traces_to/.test(e)), r.errors.join("; "));
   assert.ok(r.errors.some((e) => /T-2.*scope_exception/.test(e)), r.errors.join("; "));
 });
+
+// ── Enforceable invariants ──────────────────────────────────────────────────────
+// The distinction the whole field exists for: `verify` describes how a human would check a
+// rule; `enforce` is a command that runs. A rule stated in prose is one an agent can talk
+// itself past — "always include the clinic id" is a wish. The same rule as a non-zero exit is
+// a fact about the repository, and it holds for human commits too.
+
+test("plan check runs every enforce command and fails on any non-zero exit", () => {
+  const p = project();
+  p.plan(["add", "functional", "--text", "A holds", "--verify", "by hand", "--enforce", "true"]);
+  p.plan(["add", "nonFunctional", "--text", "B holds", "--budget", "always", "--enforce", "false"]);
+
+  let code = 0, out = "";
+  try { out = p.plan(["check"], { stdio: "pipe" }); } catch (e) { code = e.status; out = String(e.stdout); }
+  assert.equal(code, 1, "a violated invariant must fail the command, not warn");
+  assert.match(out, /FR-1/);
+  assert.match(out, /NFR-1/);
+});
+
+test("plan check passes when every invariant holds", () => {
+  const p = project();
+  p.plan(["add", "functional", "--text", "A holds", "--enforce", "true"]);
+  const out = p.plan(["check"]);
+  assert.match(out, /all 1 plan invariant\(s\) hold/);
+});
+
+test("--traces narrows to one ticket's plan items — how the release gate uses it", () => {
+  const p = project();
+  p.plan(["add", "functional", "--text", "A holds", "--enforce", "true"]);
+  p.plan(["add", "functional", "--text", "B is broken", "--enforce", "false"]);
+
+  // The ticket traces only to FR-1, so only FR-1's invariant is its problem.
+  const scoped = p.planJson(["check", "--traces", "FR-1"]);
+  assert.equal(scoped.ok, true);
+  assert.equal(scoped.ran, 1);
+
+  let code = 0;
+  try { p.plan(["check", "--traces", "FR-2"], { stdio: "pipe" }); } catch (e) { code = e.status; }
+  assert.equal(code, 1);
+});
+
+test("a plan with no enforce commands is not a failure — it's just unenforced", () => {
+  const p = project();
+  p.plan(["add", "functional", "--text", "Checked by judgment only", "--verify", "code review"]);
+  const out = p.plan(["check"]);
+  assert.match(out, /No plan item declares an `enforce` command/);
+});
+
+test("enforce commands run at the repo root, not the board directory", () => {
+  // A plan invariant is a project-level claim ("no plaintext write reaches the DB"), so it has
+  // to run where a developer would run it by hand. Running it in board/ would make every
+  // path-based check silently pass.
+  const p = project();
+  writeFileSync(join(p.root, "marker.txt"), "at the repo root\n");
+  p.plan(["add", "functional", "--text", "marker exists", "--enforce", "test -f marker.txt"]);
+  const out = p.plan(["check"]);
+  assert.match(out, /all 1 plan invariant\(s\) hold/);
+});
+
+test("status calls out requirements that are measurable but unenforced", () => {
+  const p = project();
+  p.plan(["add", "nonFunctional", "--text", "Fast", "--budget", "p95 < 300ms"]);
+  const detail = p.planJson(["status"]).sections.find((s) => s.key === "nonFunctional").detail;
+  assert.match(detail, /judgment/, "an NFR with a budget but no enforce should say so");
+});

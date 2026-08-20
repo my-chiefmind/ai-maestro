@@ -143,6 +143,7 @@ function writeVendorPackageJson(dest) {
       validate: "node scripts/validate-board.mjs board/data.json",
       ticket: "node scripts/board-write.mjs",
       plan: "node scripts/plan-write.mjs",
+      lanes: "node scripts/lane-plan.mjs",
       update: "npx @mychiefmind/ai-maestro@latest update --kit .",
       preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
@@ -1227,6 +1228,10 @@ function help() {
               writers can't silently overwrite each other. 'import' bulk-adds a whole planned
               board in one write and only ever ADDS — an existing id is an error, never an
               overwrite. Run 'maestro ticket --help' for the full list.
+  lanes       What can safely run in parallel — plan | next | check
+              A lane is a worktree running a QUEUE of tickets one at a time. Two tickets go in
+              different lanes only when nothing suggests they touch the same files. Pool size
+              is config.orchestration.maxWorktrees (default 3, ceiling 5).
   plan        The project plan every ticket is scoped against — status | questions | add | ...
               'maestro plan status' prints how complete the plan is and what's still thin;
               'coverage' shows which requirements no ticket is working. Written under the same
@@ -1262,6 +1267,7 @@ const COMMANDS = [
   { key: "validate", label: "Check the board's integrity" },
   { key: "ticket", label: "Change the board safely (add | import | set-status | archive)" },
   { key: "plan", label: "The project plan and its completeness (status | questions | add)" },
+  { key: "lanes", label: "What can safely run in parallel (plan | next | check)" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
 ];
@@ -1275,6 +1281,7 @@ async function dispatch(command, args) {
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
     case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
+    case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }

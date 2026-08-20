@@ -29,18 +29,19 @@
  */
 
 import { existsSync, readFileSync } from "fs";
+import { spawnSync } from "child_process";
 import { resolve, join } from "path";
 import {
   PLAN_SECTIONS, SECTION_BY_KEY, SECTION_KEYS, QUESTION_SECTIONS, GAP_NEEDS, GAP_STATUSES,
-  planCompleteness, planCoverage, planItems, planIsGating, nextId, nextOutId, sectionForId,
-  validatePlan, isPlaceholder, TRACEABLE_PREFIXES,
+  planCompleteness, planCoverage, planItems, planIsGating, enforceableItems, nextId, nextOutId,
+  sectionForId, validatePlan, isPlaceholder, TRACEABLE_PREFIXES,
 } from "./plan-core.mjs";
 import { planPaths, readPlan, planVersion, mutatePlan } from "./plan-io.mjs";
 import { BoardConflictError, BoardLockError } from "./board-io.mjs";
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
-  "init", "show", "status", "questions", "coverage", "gate",
+  "init", "show", "status", "questions", "coverage", "gate", "check",
   "set-goal", "scope", "add", "edit", "remove",
   "gap-add", "gap-set", "render", "version",
 ]);
@@ -88,6 +89,7 @@ function usage() {
     maestro plan show [--section <key>]     print the plan
     maestro plan coverage                   plan items vs the tickets working them
     maestro plan gate --json                the scope boundary, for machine callers
+    maestro plan check [--traces FR-1,NFR-2] run the plan's enforce commands (CI-friendly)
 
     maestro plan init                       create an empty plan
     maestro plan set-goal --text <t> [--metric <m>]...
@@ -101,8 +103,12 @@ function usage() {
     maestro plan version
 
   Sections: ${PLAN_SECTIONS.filter((s) => s.kind === "list").map((s) => s.key).join(", ")}
-  Field flags: --text --verify --budget --actor --target --mitigation --notes
+  Field flags: --text --verify --budget --enforce --actor --target --mitigation --notes
+               --enforce <cmd> is a command that MUST exit 0 — a rule agents cannot violate,
+               as opposed to --verify, which describes how a human would check it.
   Common:      --board --plan --expect-version --json --dry-run
+  check:       --traces <ids>  narrow to one ticket's plan items
+               --cwd <dir>     where enforce commands run (default: the repo root)
 
   Exit 2 means the plan moved or the lock was busy — re-read and retry. Exit 1 means the
   request itself was wrong; retrying will not help.
@@ -117,6 +123,23 @@ const paths = planPaths(boardArg);
 const PLAN_PATH = resolve(flag("plan") ?? paths.plan);
 const DATA_PATH = resolve(paths.data);
 
+/**
+ * The repo root — where an `enforce` command runs, and the only sane cwd for one: these are
+ * project-level checks ("no plaintext write reaches the DB"), not board-level ones.
+ *
+ * Resolved exactly as render/sync.mjs resolves its output dir, so `enforce` runs where
+ * `.claude/` lives and where a developer would run the same command by hand. `--cwd` overrides
+ * for layouts the default gets wrong.
+ */
+function repoRoot() {
+  const projectDir = resolve(paths.boardDir, "..");
+  try {
+    const cfg = JSON.parse(readFileSync(join(projectDir, "config.json"), "utf8"));
+    if (cfg?.outDir) return resolve(projectDir, cfg.outDir);
+  } catch { /* no config, or not ours to read */ }
+  return projectDir;
+}
+
 /** Project name for the rendered plan.md — from config.json beside the board dir, if any. */
 function projectName() {
   for (const p of [join(paths.boardDir, "..", "config.json"), join(paths.boardDir, "config.json")]) {
@@ -129,7 +152,7 @@ function projectName() {
 }
 
 // ── Per-item field flags ────────────────────────────────────────────────────────
-const ITEM_FIELDS = ["text", "verify", "budget", "actor", "target", "mitigation", "notes"];
+const ITEM_FIELDS = ["text", "verify", "budget", "enforce", "actor", "target", "mitigation", "notes"];
 
 /** Collect the field flags the caller actually passed (absent ≠ empty — absent leaves it alone). */
 function itemPatch(section) {
@@ -288,6 +311,71 @@ function renderCoverage(plan) {
   process.exit(0);
 }
 
+/**
+ * Run every `enforce` command the plan declares, and fail if any does.
+ *
+ * This is the whole point of the field. A rule stated as a requirement is something agents are
+ * asked to honour; the same rule as a command that exits non-zero is something they cannot
+ * violate — the check runs whether or not anyone remembered it, and no amount of confident
+ * prose gets past it. Wire this into CI and it holds for human commits too.
+ *
+ * `--traces` narrows to one ticket's plan items, which is how the release gate uses it.
+ */
+function runEnforceChecks(plan) {
+  const only = flag("traces");
+  const items = enforceableItems(plan, only ? only.split(",").map((s2) => s2.trim()).filter(Boolean) : null);
+
+  if (!items.length) {
+    const msg = only
+      ? `No enforce command on ${only} — nothing to run.`
+      : "No plan item declares an `enforce` command. Rules that must never be violated should carry one: `maestro plan edit FR-3 --enforce \"npm run check:x\"`.";
+    if (JSON_OUT) return ok({ ran: 0, failed: [], results: [] });
+    out(`\n  ${msg}\n`);
+    process.exit(0);
+  }
+
+  const cwd = resolve(flag("cwd") ?? repoRoot());
+  const results = [];
+  for (const item of items) {
+    // shell: true so a project can declare a real command line ("npm run x && npm run y"),
+    // which is what people actually put in these.
+    const r = spawnSync(item.enforce, { cwd, shell: true, encoding: "utf8" });
+    const status = r.status ?? (r.error ? 127 : 1);
+    results.push({
+      id: item.id,
+      enforce: item.enforce,
+      ok: status === 0,
+      status,
+      output: [r.stdout, r.stderr].filter(Boolean).join("").trim().slice(-2000),
+    });
+    if (!JSON_OUT) {
+      out(`  ${status === 0 ? "✓" : "✗"} ${item.id.padEnd(7)} ${item.enforce}`);
+      if (status !== 0) {
+        const tail = results[results.length - 1].output.split("\n").slice(-12);
+        for (const line of tail) out(`      ${line}`);
+      }
+    }
+  }
+
+  const failed = results.filter((r) => !r.ok);
+  if (JSON_OUT) {
+    if (failed.length) {
+      process.stdout.write(JSON.stringify({ ok: false, ran: results.length, failed: failed.map((f) => f.id), results }) + "\n");
+      process.exit(1);
+    }
+    return ok({ ran: results.length, failed: [], results });
+  }
+  out("");
+  if (failed.length) {
+    out(`  ✗ ${failed.length} of ${results.length} plan invariant(s) violated: ${failed.map((f) => f.id).join(", ")}`);
+    out("");
+    process.exit(1);
+  }
+  out(`  ✓ all ${results.length} plan invariant(s) hold.`);
+  out("");
+  process.exit(0);
+}
+
 // ── Dispatch ────────────────────────────────────────────────────────────────────
 main();
 
@@ -316,6 +404,11 @@ switch (op) {
   case "coverage":
     renderCoverage(plan);
     break;
+
+  case "check": {
+    runEnforceChecks(plan);
+    break;
+  }
 
   case "gate": {
     // The scope boundary as data, for callers that must apply it themselves — the orchestrate
