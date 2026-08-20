@@ -292,3 +292,63 @@ test("status calls out requirements that are measurable but unenforced", () => {
   const detail = p.planJson(["status"]).sections.find((s) => s.key === "nonFunctional").detail;
   assert.match(detail, /judgment/, "an NFR with a budget but no enforce should say so");
 });
+
+// ── `maestro lanes` keeps scope-blocked distinct from idle ──────────────────────
+// The distinction this pins: a board with nothing left to do and a board whose every ready
+// ticket is out of the plan's scope look identical unless the report says so — and only one of
+// them is fixed by /plan-update. Every other surface (the orchestrator, the validator, the
+// portfolio survey) keeps them apart; this one shipped in 0.2.0 conflating them.
+
+const LANES_CLI = join(KIT, "scripts", "lane-plan.mjs");
+
+/** Run `maestro lanes` against a project fixture. */
+function lanes(p, args) {
+  return execFileSync(process.execPath, [LANES_CLI, ...args, "--board", join(p.boardDir, "data.json")], {
+    encoding: "utf8", env: { ...process.env, NO_COLOR: "1" },
+  });
+}
+
+test("lanes names the scope-blocked tickets instead of reporting an empty board", () => {
+  const p = project();
+  seedGatingPlan(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({
+    epics: [],
+    tickets: [{ id: "T-1", name: "untraced work", status: "todo", depends_on: [] }],
+  }));
+
+  const out = lanes(p, ["plan"]);
+  assert.match(out, /outside the project plan's scope/);
+  assert.match(out, /T-1/);
+  assert.match(out, /plan-update/, "must point at the fix, not just state the problem");
+  assert.doesNotMatch(out, /Nothing is eligible to run/, "that message is for a genuinely empty board");
+
+  const next = JSON.parse(lanes(p, ["next", "--json"]));
+  assert.deepEqual(next.scopeBlocked, ["T-1"]);
+  assert.deepEqual(next.start, []);
+});
+
+test("a genuinely empty board still reads as idle, not as a scope problem", () => {
+  const p = project();
+  seedGatingPlan(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({
+    epics: [], tickets: [{ id: "T-1", name: "done", status: "done", depends_on: [], traces_to: ["FR-1"] }],
+  }));
+  const out = lanes(p, ["plan"]);
+  assert.match(out, /Nothing is eligible to run/);
+  assert.doesNotMatch(out, /outside the project plan's scope/);
+});
+
+test("a scheduled board still reports what the plan is holding back", () => {
+  const p = project();
+  seedGatingPlan(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({
+    epics: [],
+    tickets: [
+      { id: "T-1", name: "in scope", status: "todo", depends_on: [], area: "backend", traces_to: ["FR-1"] },
+      { id: "T-2", name: "untraced", status: "todo", depends_on: [], area: "frontend" },
+    ],
+  }));
+  const out = lanes(p, ["plan"]);
+  assert.match(out, /Starting now: T-1/);
+  assert.match(out, /never scheduled: T-2/);
+});
