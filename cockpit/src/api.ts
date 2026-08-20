@@ -1,4 +1,4 @@
-import type { Board, BoardEpic, BoardTicket, ProjectConfig, Roster, DocSection, PortfolioToday, ReportInfo } from './types';
+import type { Board, BoardEpic, BoardTicket, ProjectConfig, Roster, DocSection, PortfolioToday, ReportInfo, PlanResponse, PlanCompleteness, Plan } from './types';
 
 // ── Portfolio scope ─────────────────────────────────────────────────────────────
 // Which registry project every call below addresses. Null (the default) means the single
@@ -97,6 +97,63 @@ export async function putSpec(id: string, content: string): Promise<void> {
     const e = await r.json().catch(() => ({}));
     throw new Error(e.error || `spec save failed (${r.status})`);
   }
+}
+
+// ── Project plan (board/plan.json) ──────────────────────────────────────────────
+// Edits are section-scoped: the tab sends one section's value, never the whole plan, so an
+// agent writing a different section at the same moment isn't a conflict.
+
+// Thrown when a plan write is rejected because the plan changed on disk since it was loaded.
+export class PlanConflict extends Error {
+  current: { plan: Plan; version: string; completeness: PlanCompleteness };
+  constructor(message: string, current: { plan: Plan; version: string; completeness: PlanCompleteness }) {
+    super(message);
+    this.name = 'PlanConflict';
+    this.current = current;
+  }
+}
+
+export async function getPlan(): Promise<PlanResponse> {
+  const r = await fetch(`/api/plan${scopeQS()}`, { cache: 'no-store' });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `plan load failed (${r.status})`);
+  }
+  return r.json();
+}
+
+/** Replace one section. Items with no `id` get one assigned server-side, inside the lock. */
+export async function putPlanSection(
+  key: string,
+  value: unknown,
+  version: string,
+): Promise<PlanResponse> {
+  const r = await fetch(`/api/plan/section/${encodeURIComponent(key)}${scopeQS()}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ value, version }),
+  });
+  const data = await r.json().catch(() => ({} as Record<string, unknown>));
+  if (r.status === 409) throw new PlanConflict(String(data.error || 'conflict'), data.current as PlanConflict['current']);
+  if (!r.ok) throw new Error(String(data.error || `plan save failed (${r.status})`));
+  return data as unknown as PlanResponse;
+}
+
+/** Triage one gap: accept it (pointing at the item it became), decline it, or reclassify it. */
+export async function putPlanGap(
+  id: string,
+  patch: { status?: string; need?: string; resolvedAs?: string },
+  version: string,
+): Promise<{ plan: Plan; version: string; completeness: PlanCompleteness }> {
+  const r = await fetch(`/api/plan/gap/${encodeURIComponent(id)}${scopeQS()}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...patch, version }),
+  });
+  const data = await r.json().catch(() => ({} as Record<string, unknown>));
+  if (r.status === 409) throw new PlanConflict(String(data.error || 'conflict'), data.current as PlanConflict['current']);
+  if (!r.ok) throw new Error(String(data.error || `gap update failed (${r.status})`));
+  return data as unknown as { plan: Plan; version: string; completeness: PlanCompleteness };
 }
 
 // ── Portfolio ("today" survey) — 404 means portfolio mode isn't configured ──────

@@ -18,8 +18,21 @@ function setUpProject(root, name, board) {
   writeFileSync(join(dir, "config.json"), "{}");
   writeFileSync(join(dir, "board", "data.json"), JSON.stringify(board.data ?? { epics: [], tickets: [] }));
   writeFileSync(join(dir, "board", "archive.json"), JSON.stringify(board.archive ?? { epics: [], tickets: [] }));
+  if (board.plan) writeFileSync(join(dir, "board", "plan.json"), JSON.stringify(board.plan));
   return dir;
 }
+
+/** A plan that gates: one requirement, one thing explicitly excluded. */
+const GATING_PLAN = {
+  planVersion: 1,
+  sections: {
+    goal: { text: "Ship it.", metrics: [] },
+    scope: { in: ["the app"], out: [{ id: "OUT-1", text: "mobile apps" }] },
+    deliverables: [], useCases: [],
+    functional: [{ id: "FR-1", text: "Users can log in", verify: "npm test" }],
+    nonFunctional: [], milestones: [], risks: [], gaps: [], openQuestions: [],
+  },
+};
 
 test("loadPortfolio returns null when no registry file exists — the single-board default", () => {
   assert.equal(loadPortfolio("/does/not/exist/registry.json"), null);
@@ -122,4 +135,44 @@ test("survey handles a project that was never set up without crashing the rest",
 test("isoWeek is stable and deterministic for a known date", () => {
   assert.equal(isoWeek(new Date(Date.UTC(2026, 0, 1))), isoWeek(new Date(Date.UTC(2026, 0, 1))));
   assert.equal(isoWeek(new Date(Date.UTC(2026, 5, 15))), "2026-W25");
+});
+
+test("survey applies the scope gate, and counts what it held back separately", () => {
+  // The parity this pins: a ticket listed as "ready" here is exactly one the orchestrator
+  // would actually start. Before the gate reached this path, the portfolio counted tickets
+  // that every other view — and the run itself — would refuse.
+  const tmp = mkdtempSync(join(tmpdir(), "portfolio-"));
+  try {
+    const dir = setUpProject(tmp, "a", {
+      plan: GATING_PLAN,
+      data: {
+        epics: [],
+        tickets: [
+          { id: "T-1", status: "todo", depends_on: [], traces_to: ["FR-1"] },      // in scope
+          { id: "T-2", status: "todo", depends_on: [] },                            // untraced
+          { id: "T-3", status: "todo", depends_on: [], traces_to: ["OUT-1"] },      // excluded
+          { id: "T-4", status: "todo", depends_on: [], scope_exception: "owner ok" },
+        ],
+      },
+    });
+    const [p] = survey([{ name: "a", path: dir, kitDir: dir }], new Date("2026-08-19T00:00:00Z")).projects;
+    assert.deepEqual(p.ready.map((t) => t.id), ["T-1", "T-4"]);
+    assert.equal(p.outOfScope, 2, "held-back tickets are counted, never folded into ready");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("a project with no plan is surveyed exactly as before the gate existed", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "portfolio-"));
+  try {
+    const dir = setUpProject(tmp, "a", {
+      data: { epics: [], tickets: [{ id: "T-1", status: "todo", depends_on: [] }] },
+    });
+    const [p] = survey([{ name: "a", path: dir, kitDir: dir }], new Date("2026-08-19T00:00:00Z")).projects;
+    assert.deepEqual(p.ready.map((t) => t.id), ["T-1"]);
+    assert.equal(p.outOfScope, 0);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

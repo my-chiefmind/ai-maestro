@@ -14,6 +14,7 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { readRegistry, findKitDir } from "../../scripts/registry.mjs";
 import { eligibleTickets } from "../../scripts/board-core.mjs";
+import { readPlan } from "../../scripts/plan-io.mjs";
 import { boardVersion } from "../../scripts/board-io.mjs";
 
 function readJSON(p, fallback) {
@@ -64,6 +65,11 @@ export function readPortfolioBoard(entry) {
     // second way is a second concurrency rule, and a client that loads a board here and
     // PUTs it back would compare tokens the two paths could disagree about.
     version: boardVersion(join(boardDir, "data.json")),
+    // The project's own plan, so "ready" here means the same thing it means on that project's
+    // board. Without it the portfolio counts tickets the orchestrator will refuse — two views
+    // of one board disagreeing about what is runnable, which is worse than no count at all.
+    // An unreadable plan reads as no plan: the gate goes off, never on.
+    plan: (() => { try { return readPlan(join(boardDir, "plan.json")); } catch { return null; } })(),
   };
 }
 
@@ -83,8 +89,9 @@ export function isoWeek(date = new Date()) {
 
 /**
  * "What's ready to run this week", across every board in the portfolio. Ready = the same
- * `eligibleTickets` rule the single-board validator uses for its eligibleCount, so a ticket
- * that's eligible on its own board's `npm run validate` is exactly the one that shows up here.
+ * `eligibleTickets` rule the single-board validator uses for its eligibleCount, **including
+ * the scope gate**, so a ticket listed here is exactly one the orchestrator would actually
+ * start. `outOfScope` counts the ones held back by the plan.
  * @param {ReturnType<typeof loadPortfolio>} portfolio
  * @param {Date} [now]
  */
@@ -93,9 +100,14 @@ export function survey(portfolio, now) {
     if (!b.setUp) return { name: b.name, setUp: false, total: 0, ready: [], byStatus: {} };
     const byStatus = {};
     for (const t of b.tickets) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
-    const ready = eligibleTickets({ tickets: b.tickets }, b.archived)
+    const ready = eligibleTickets({ tickets: b.tickets }, b.archived, { plan: b.plan })
       .map((t) => ({ id: t.id, name: t.name, priority: t.priority, epicId: t.epicId, area: t.area }));
-    return { name: b.name, setUp: true, total: b.tickets.length, ready, byStatus };
+    // Reported separately rather than folded into `ready`: a project with five scope-blocked
+    // tickets and a project with nothing to do are not the same situation, and only one of
+    // them is fixed by /plan-update.
+    const outOfScope = eligibleTickets({ tickets: b.tickets }, b.archived)
+      .filter((t) => !ready.some((r) => r.id === t.id)).length;
+    return { name: b.name, setUp: true, total: b.tickets.length, ready, outOfScope, byStatus };
   });
   return { week: isoWeek(now), projects };
 }

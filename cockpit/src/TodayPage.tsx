@@ -50,7 +50,19 @@ export default function TodayPage({ onOpenProject }: { onOpenProject: (name: str
                   Ready to run ({p.ready.length})
                 </Typography>
                 {p.ready.length === 0 && (
-                  <Typography sx={{ color: 'text.secondary', fontSize: 13 }}>Nothing eligible — everything is blocked, gated, or in flight.</Typography>
+                  <Typography sx={{ color: 'text.secondary', fontSize: 13 }}>
+                    {p.outOfScope
+                      ? 'Nothing eligible — everything otherwise ready is outside the project plan.'
+                      : 'Nothing eligible — everything is blocked, gated, or in flight.'}
+                  </Typography>
+                )}
+                {/* Counted separately, never folded into "ready": a project held up by its plan
+                    and one with nothing to do look identical otherwise, and only one of them is
+                    fixed by /plan-update. */}
+                {p.outOfScope > 0 && (
+                  <Typography sx={{ color: 'warning.main', fontSize: 12.5, mt: 0.4 }}>
+                    ⚠ {p.outOfScope} ticket{p.outOfScope === 1 ? '' : 's'} held back by the project plan — run /plan-update.
+                  </Typography>
                 )}
                 {p.ready.map((t) => (
                   <Box key={t.id} sx={{ display: 'flex', gap: 1, alignItems: 'baseline', py: 0.4 }}>

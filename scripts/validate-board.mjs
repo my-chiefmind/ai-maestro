@@ -15,6 +15,8 @@ import { readFileSync, existsSync, readdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { validateBoard, agentFileToCode } from "./board-core.mjs";
+import { readPlanForBoard } from "./plan-io.mjs";
+import { planCompleteness, planIsGating, planCoverage } from "./plan-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -109,22 +111,47 @@ function main() {
       ? `${configPath} is not valid JSON (${configRaw.message}) — model-floor and human-gate checks are skipped.`
       : null;
 
+  // The plan sits beside the board. A missing one reads as an empty plan, which turns the scope
+  // gate off rather than failing the board — a project that hasn't planned yet is a normal state.
+  let plan = null;
+  let planError = null;
+  try { plan = readPlanForBoard(boardPath); } catch (e) { planError = e.message; }
+
   const { errors, warnings, eligibleCount } = validateBoard(board, {
     archived: archive.tickets ?? [],
     archivedEpics: archive.epics ?? [],
     agentCodes: loadAgentCodes(config),
     config,
+    plan,
   });
 
-  finish(errors, configWarning ? [configWarning, ...warnings] : warnings, eligibleCount);
+  const pre = [];
+  if (configWarning) pre.push(configWarning);
+  if (planError) pre.push(`${planError} — the scope gate is skipped until it parses.`);
+
+  finish(errors, [...pre, ...warnings], eligibleCount, plan, board, archive);
 }
 
-function finish(errors, warnings, eligibleCount) {
+function finish(errors, warnings, eligibleCount, plan, board, archive) {
   for (const w of warnings) console.log(`  ⚠  ${w}`);
   for (const e of errors) console.log(`  ✗  ${e}`);
   if (errors.length === 0) {
     console.log(`\n✓ Board valid. ${warnings.length} warning(s).`);
     if (eligibleCount != null) console.log(`  ${eligibleCount} ticket(s) eligible to run now.`);
+    // The plan line is the one that answers "are we building the right thing?" — printed here
+    // so it lands in the same place people already look for "is the board OK?".
+    if (plan) {
+      if (!planIsGating(plan)) {
+        console.log(`  No project plan yet — the scope gate is off. Run /plan-update to write one.`);
+      } else {
+        const c = planCompleteness(plan);
+        const uncovered = planCoverage(plan, board?.tickets ?? [], archive?.tickets ?? []).filter((r) => !r.tickets.length);
+        console.log(`  Plan ${c.percent}% complete${c.requiredGaps.length ? `, ${c.requiredGaps.length} required gap(s) open` : ""}.`);
+        if (uncovered.length) {
+          console.log(`  ${uncovered.length} plan item(s) with no ticket: ${uncovered.map((r) => r.id).join(", ")}`);
+        }
+      }
+    }
     process.exit(0);
   } else {
     console.log(`\n✗ Board invalid: ${errors.length} error(s), ${warnings.length} warning(s).`);

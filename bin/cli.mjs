@@ -21,6 +21,7 @@ import { spawnSync } from "child_process";
 import { createInterface } from "readline";
 import { createHash } from "crypto";
 import { readRegistry, findKitDir } from "../scripts/registry.mjs";
+import { emptyPlan, renderPlanMd, planCompleteness } from "../scripts/plan-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -141,6 +142,7 @@ function writeVendorPackageJson(dest) {
       sync: "node render/sync.mjs --project .",
       validate: "node scripts/validate-board.mjs board/data.json",
       ticket: "node scripts/board-write.mjs",
+      plan: "node scripts/plan-write.mjs",
       update: "npx @mychiefmind/ai-maestro@latest update --kit .",
       preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
@@ -515,6 +517,48 @@ ${orOpen(brief.constraints)}
 ${openSection}`;
 }
 
+/**
+ * Seed `board/plan.json` from the brief, and render its `plan.md` mirror.
+ *
+ * Only the goal is seeded, and only when the user actually answered. The rest of the plan —
+ * the scope boundary, deliverables, use cases, functional and non-functional requirements — is
+ * a set of commitments nobody but the user can make, and a plausible guess written here would
+ * count as "filled" toward the completeness percentage while being no one's decision. The
+ * percentage is only worth printing if it is honest.
+ *
+ * Returns the plan's completeness percentage, or null if the plan couldn't be written (an
+ * older starter with no board, say) — setup then just doesn't mention it.
+ *
+ * @param {string} kit @param {string} name @param {Record<string,string>} brief
+ * @returns {number | null}
+ */
+function seedPlan(kit, name, brief) {
+  const boardDir = join(kit, "board");
+  if (!existsSync(boardDir)) return null;
+  const planPath = join(boardDir, "plan.json");
+
+  try {
+    // An existing plan is the user's own work — a --force re-run must not blank it.
+    let plan;
+    if (existsSync(planPath)) {
+      try { plan = JSON.parse(readFileSync(planPath, "utf8")); } catch { plan = emptyPlan(); }
+      const hasGoal = plan?.sections?.goal?.text?.trim();
+      if (hasGoal) return planCompleteness(plan).percent;
+    } else {
+      plan = emptyPlan();
+    }
+
+    const outcome = answered(brief.outcome);
+    if (outcome) plan.sections.goal.text = outcome;
+
+    writeFileSync(planPath, JSON.stringify(plan, null, 2) + "\n");
+    writeFileSync(join(boardDir, "plan.md"), renderPlanMd(plan, name));
+    return planCompleteness(plan).percent;
+  } catch {
+    return null; // never let a plan-seeding hiccup abort an otherwise-good setup
+  }
+}
+
 // AI Maestro runs each ticket in a git worktree, so the project must be a repository. Create
 // one when the folder isn't a repo yet; never touch an existing repo's state.
 function ensureGitRepo(repoRoot) {
@@ -736,7 +780,7 @@ async function setup(args) {
   // not example content a new project should start from (see T-001's archive note). Only on
   // a genuinely fresh setup — a --force re-run must never clobber a project's live board.
   if (fresh) {
-    for (const f of ["data.json", "archive.json"]) {
+    for (const f of ["data.json", "archive.json", "plan.json", "plan.md"]) {
       const starterFile = join(starter, "board", f);
       if (existsSync(starterFile)) cpSync(starterFile, join(kit, "board", f));
     }
@@ -753,6 +797,12 @@ async function setup(args) {
   } else {
     writeFileSync(contextPath, renderContext(name, areas, brief));
   }
+
+  // Seed the project plan from the one brief answer that maps to it cleanly. Only the goal:
+  // everything else in the plan (scope boundary, deliverables, use cases, requirements) is a
+  // commitment the user has to actually make, and a seeded guess would count as "filled" while
+  // being nobody's decision. A 15% plan that says what's missing beats a 100% one that lies.
+  const planned = seedPlan(kit, name, brief);
 
   // A git repo is a hard requirement (tickets run in worktrees) — create one if needed.
   const git = ensureGitRepo(repoRoot);
@@ -783,13 +833,17 @@ ${C.dim("  What was created")}
    ${C.indigo("./.claude/")}              agents & skills, at your repo root
    ${C.indigo(`${kitName}/context.md`)}       your brief, written from your answers
    ${C.indigo(`${kitName}/board/data.json`)}  your work board
+   ${C.indigo(`${kitName}/board/plan.json`)}  your project plan${planned == null ? "" : C.dim(`  — ${planned}% complete`)}
 
 ${C.pink(C.b("  ▶  Next — in Claude Code:"))}
    ${C.cyan("1.")}  Open this repo:   ${C.yellow("claude")}
    ${C.cyan("2.")}  Plan the work:    ${C.yellow("/project-plan")}
-       ${C.dim("turns your brief into epics and dependency-ordered tickets,")}
-       ${C.dim("then stops for your review.")}
+       ${C.dim("writes the project plan — goal, scope, deliverables, use cases,")}
+       ${C.dim("requirements — then turns it into epics and dependency-ordered")}
+       ${C.dim("tickets, stopping for your review at each step.")}
+       ${C.dim("Fill in any section later with")} ${C.yellow("/plan-update")} ${C.dim("or the board's Plan tab.")}
    ${C.cyan("3.")}  Approve it, then build:   ${C.yellow("/orchestrator")}   ${C.dim("— one ticket per run")}
+       ${C.dim("It only runs tickets the plan covers — that's the point of the plan.")}
 ${openNote}
 ${C.dim("  Re-render after edits:")}   ${C.yellow("npm run sync")}   ${C.dim(`(from the ${kitName}/ folder)`)}
 ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or the README`);
@@ -1168,9 +1222,15 @@ function help() {
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.
   validate    Check the board's integrity
-  ticket      Change the board safely — set-status | block | archive | version
+  ticket      Change the board safely — add | import | set-status | retrace | archive | drop
               The only supported way to write a board: locked, validated and atomic, so two
-              writers can't silently overwrite each other. Run 'maestro ticket --help' for ops.
+              writers can't silently overwrite each other. 'import' bulk-adds a whole planned
+              board in one write and only ever ADDS — an existing id is an error, never an
+              overwrite. Run 'maestro ticket --help' for the full list.
+  plan        The project plan every ticket is scoped against — status | questions | add | ...
+              'maestro plan status' prints how complete the plan is and what's still thin;
+              'coverage' shows which requirements no ticket is working. Written under the same
+              lock as the board. Run 'maestro plan --help' for ops.
   drift       Report version + hand-edit drift across a registry of projects
               Needs a registry file (default ./maestro-registry.json): { "projects": [
               { "name": "...", "path": "..." } ] }. --offline skips the npm version check;
@@ -1200,7 +1260,8 @@ const COMMANDS = [
   { key: "update", label: "Bring a set-up kit to this CLI's version" },
   { key: "sync", label: "Re-render .claude/ from config.json + context.md" },
   { key: "validate", label: "Check the board's integrity" },
-  { key: "ticket", label: "Change the board safely (set-status | block | archive)" },
+  { key: "ticket", label: "Change the board safely (add | import | set-status | archive)" },
+  { key: "plan", label: "The project plan and its completeness (status | questions | add)" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
 ];
@@ -1213,6 +1274,7 @@ async function dispatch(command, args) {
     case "sync": process.exit(run("render/sync.mjs", args)); break;
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
     case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
+    case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }

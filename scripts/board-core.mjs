@@ -7,7 +7,13 @@
  *
  * The validator is archive-aware: a landed ticket moves from data.json to archive.json, so
  * dependency checks and eligibility must count archived tickets as existing + done.
+ *
+ * It is also plan-aware, but only when handed a plan. The scope gate WARNS here and BLOCKS at
+ * pick time (see eligibleTickets): you must be able to jot a ticket before the plan covers it,
+ * but nothing may run until someone decides it is in scope.
  */
+
+import { scopeVerdict, planIsGating } from "./plan-core.mjs";
 
 export const STATUSES = ["backlog", "todo", "in-progress", "review", "blocked", "done"];
 
@@ -93,19 +99,40 @@ export function suggestCode(unknown, knownCodes) {
  * The single source of truth for "ready" — validateBoard's eligibleCount and the portfolio
  * survey (T-003) both call this rather than keeping their own copy of the rule.
  */
-export function eligibleTickets(data, archived = []) {
+export function eligibleTickets(data, archived = [], opts = {}) {
   const archivedIds = new Set(archived.map((t) => t.id));
   const statusById = new Map((data.tickets ?? []).map((t) => [t.id, t.status]));
   const doneIds = new Set([
     ...archivedIds,
     ...[...statusById.keys()].filter((id) => statusById.get(id) === "done"),
   ]);
-  return (data.tickets ?? []).filter(
+  const ready = (data.tickets ?? []).filter(
     (t) =>
       t.status === "todo" &&
       !t.human_gate &&
       (Array.isArray(t.depends_on) ? t.depends_on : []).every((d) => doneIds.has(d))
   );
+
+  // The scope gate, applied at PICK time only. `plan` is opt-in because "is this ticket ready?"
+  // and "is this ticket in the plan?" are different questions with different consequences: the
+  // validator must keep answering the first about a board you are still drafting, while the
+  // orchestrator must never start work the plan doesn't cover. Passing no plan leaves this a
+  // no-op, so every existing caller behaves exactly as before.
+  if (!opts.plan) return ready;
+  return ready.filter((t) => !scopeVerdict(t, opts.plan).blocks);
+}
+
+/**
+ * Ready-but-out-of-scope tickets: the ones eligibleTickets(…, {plan}) just refused, with the
+ * reason. The orchestrator reports these rather than going idle in silence — "nothing to do" and
+ * "three things to do, none of them in the plan" demand opposite responses from a human.
+ */
+export function scopeBlockedTickets(data, archived = [], plan = null) {
+  if (!plan) return [];
+  const ready = eligibleTickets(data, archived);
+  return ready
+    .map((t) => ({ ticket: t, verdict: scopeVerdict(t, plan) }))
+    .filter((r) => r.verdict.blocks);
 }
 
 /**
@@ -143,10 +170,11 @@ export function effectiveModel(ticket, config) {
  * @param {any[]}  [opts.archivedEpics]  archived epics (archive.json epics)
  * @param {Set<string>|null} [opts.agentCodes]  known agent codes, or null to skip the check
  * @param {object|null} [opts.config]  project config (for model-floor checks), or null to skip
- * @returns {{errors: string[], warnings: string[], eligibleCount: number}}
+ * @param {object|null} [opts.plan]    board/plan.json, or null to skip the scope gate entirely
+ * @returns {{errors: string[], warnings: string[], eligibleCount: number, scopeBlocked: string[]}}
  */
 export function validateBoard(data, opts = {}) {
-  const { archived = [], archivedEpics = [], agentCodes = null, config = null } = opts;
+  const { archived = [], archivedEpics = [], agentCodes = null, config = null, plan = null } = opts;
   const errors = [];
   const warnings = [];
   const err = (m) => errors.push(m);
@@ -154,7 +182,7 @@ export function validateBoard(data, opts = {}) {
 
   if (!Array.isArray(data?.epics)) err("Missing or non-array `epics`.");
   if (!Array.isArray(data?.tickets)) err("Missing or non-array `tickets`.");
-  if (errors.length) return { errors, warnings, eligibleCount: 0 };
+  if (errors.length) return { errors, warnings, eligibleCount: 0, scopeBlocked: [] };
 
   // ── Epics (live + archived ids are both valid targets for a ticket's epicId) ──
   const epicIds = new Set();
@@ -246,6 +274,11 @@ export function validateBoard(data, opts = {}) {
 
     if (t.epicId && !allEpicIds.has(t.epicId)) err(`${id}: epicId "${t.epicId}" does not exist.`);
 
+    if (t.traces_to !== undefined && !Array.isArray(t.traces_to)) err(`${id}: traces_to must be an array of plan item ids.`);
+    if (t.scope_exception !== undefined && (typeof t.scope_exception !== "string" || !t.scope_exception.trim())) {
+      err(`${id}: scope_exception must be a non-empty reason string — an empty one silently disables the scope gate for this ticket.`);
+    }
+
     if (t.agent_plan) {
       if (!Array.isArray(t.agent_plan)) err(`${id}: agent_plan must be an array.`);
       else if (agentCodes) {
@@ -296,11 +329,41 @@ export function validateBoard(data, opts = {}) {
   };
   for (const id of ticketIds) if (color.get(id) === WHITE) visit(id);
 
+  // ── The scope gate (warn here, block at pick time) ──
+  // Only once the plan says something. A blank plan gating every ticket would make the fastest
+  // fix "delete the plan", which is the opposite of the point.
+  const scopeIssues = [];
+  if (plan && planIsGating(plan)) {
+    for (const t of data.tickets) {
+      const v = scopeVerdict(t, plan);
+      if (v.state === "exception") {
+        warn(`${t.id}: running outside the plan on a scope exception — "${t.scope_exception.trim()}".`);
+      } else if (v.blocks) {
+        scopeIssues.push(t.id);
+        warn(`${t.id}: ${v.reason} The orchestrator will not pick it — add it to the plan (/plan-update) or set scope_exception.`);
+      } else if (v.unknown.length) {
+        warn(`${t.id}: traces to ${v.unknown.join(", ")}, which the plan no longer defines — re-trace it.`);
+      }
+    }
+    for (const e of data.epics) {
+      const ids = Array.isArray(e.traces_to) ? e.traces_to : [];
+      if (!ids.length) warn(`Epic ${e.id}: traces to nothing in the plan.`);
+    }
+  }
+
   // ── Eligibility sanity ──
+  // Counted WITHOUT the scope gate: this number answers "is the dependency graph unstuck?",
+  // and folding scope into it would report a perfectly good board as jammed for a reason the
+  // dependency-shaped message doesn't explain. Scope gets its own line below.
   const eligible = eligibleTickets(data, archived);
   if (eligible.length === 0) {
     warn("No eligible `todo` ticket right now — the orchestrator will report idle.");
+  } else if (scopeIssues.length) {
+    const runnable = eligibleTickets(data, archived, { plan }).length;
+    if (runnable === 0) {
+      warn(`Every eligible ticket is out of the plan's scope (${scopeIssues.join(", ")}) — the orchestrator will refuse them all. Run /plan-update.`);
+    }
   }
 
-  return { errors, warnings, eligibleCount: eligible.length };
+  return { errors, warnings, eligibleCount: eligible.length, scopeBlocked: scopeIssues };
 }

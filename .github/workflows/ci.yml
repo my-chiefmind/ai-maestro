@@ -108,7 +108,11 @@ jobs:
           # The /project-plan and /orchestrator entry points must land at the repo root, where
           # the coding tool picks them up as slash commands.
           test -f /tmp/app2/.claude/skills/project-plan/SKILL.md
+          test -f /tmp/app2/.claude/skills/plan-update/SKILL.md
           test -f /tmp/app2/.claude/skills/orchestrator/SKILL.md
+          # A fresh project gets a plan seeded from its brief, with a readable mirror beside it.
+          test -f /tmp/app2/maestro/board/plan.json
+          test -f /tmp/app2/maestro/board/plan.md
           test -f /tmp/app2/.claude/agents/orchestrator.md   # the agent that holds the loop
 
       - name: init smoke test (separate-capsule flow)

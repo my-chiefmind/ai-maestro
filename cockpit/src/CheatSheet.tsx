@@ -32,7 +32,7 @@ const STEPS: Step[] = [
   {
     n: 2,
     title: 'Plan the work',
-    body: <>Run <Code>/project-plan</Code> (or paste the prompt below). Your brief becomes epics and dependency-ordered tickets — then it stops for your review.</>,
+    body: <>Run <Code>/project-plan</Code> (or paste the prompt below). It writes the project plan first — goal, scope, deliverables, use cases, requirements — then turns it into epics and dependency-ordered tickets, stopping for your review at each step. Fill any section later in the <b>Plan</b> tab or with <Code>/plan-update</Code>.</>,
   },
   {
     n: 3,
@@ -45,10 +45,12 @@ const STEPS: Step[] = [
 // Claude Code at the repo root, not in a shell.
 const COMMANDS: Cmd[] = [
   { cmd: 'claude', what: 'Open Claude Code in your repo root' },
-  { cmd: '/project-plan', what: 'Turn your brief into epics + tickets, then stop for review' },
+  { cmd: '/project-plan', what: 'Write the project plan, then turn it into epics + tickets' },
+  { cmd: '/plan-update', what: 'Fill in the plan section by section, and triage gaps' },
   { cmd: '/orchestrator', what: 'Build the next unblocked ticket (one per run)' },
   { cmd: 'npm run sync', what: 'Re-render .claude/ after editing context.md or the board' },
-  { cmd: 'npm run validate', what: "Check the board's integrity" },
+  { cmd: 'npm run validate', what: "Check the board's integrity and its scope against the plan" },
+  { cmd: 'npm run plan -- status', what: 'How complete the project plan is, and what is thin' },
   { cmd: 'npm run board', what: 'Open this visual board' },
 ];
 

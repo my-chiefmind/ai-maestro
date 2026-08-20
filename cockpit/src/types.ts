@@ -3,6 +3,8 @@ export interface BoardEpic {
   name: string;
   desc?: string;
   collapsed?: boolean;
+  traces_to?: string[];
+  sample?: boolean;
 }
 
 // Core fields are typed; extras are tolerated so a board can carry custom keys.
@@ -24,6 +26,9 @@ export interface BoardTicket {
   human_gate?: string;
   testCmd?: string;
   evidence?: string;
+  traces_to?: string[];
+  scope_exception?: string;
+  sample?: boolean;
   [key: string]: unknown;
 }
 
@@ -65,9 +70,105 @@ export interface PortfolioProject {
   setUp: boolean;
   total: number;
   ready: PortfolioReadyTicket[];
+  /** Ready by dependency but refused by the plan's scope gate. Never counted in `ready`. */
+  outOfScope: number;
   byStatus: Record<string, number>;
 }
 export interface PortfolioToday { week: string; projects: PortfolioProject[] }
 
 // ── Reports (generated files under board/reports/) ──────────────────────────────
 export interface ReportInfo { name: string; mtime: number; size: number }
+
+// ── Project plan (board/plan.json) ──────────────────────────────────────────────
+// The shape is owned by scripts/plan-core.mjs; these types mirror what /api/plan returns.
+export interface PlanItem {
+  id: string;
+  text: string;
+  notes?: string;
+  actor?: string;
+  verify?: string;
+  budget?: string;
+  target?: string;
+  mitigation?: string;
+  // Gaps only
+  need?: 'required' | 'optional';
+  status?: 'open' | 'accepted' | 'declined';
+  from?: string;
+  resolvedAs?: string;
+}
+
+export interface PlanGoal { text: string; metrics: string[] }
+export interface PlanScope { in: string[]; out: { id: string; text: string }[] }
+
+export interface Plan {
+  planVersion: number;
+  sections: {
+    goal: PlanGoal;
+    scope: PlanScope;
+    deliverables: PlanItem[];
+    useCases: PlanItem[];
+    functional: PlanItem[];
+    nonFunctional: PlanItem[];
+    milestones: PlanItem[];
+    risks: PlanItem[];
+    gaps: PlanItem[];
+    openQuestions: PlanItem[];
+    [key: string]: unknown;
+  };
+}
+
+export type PlanSectionKey = keyof Plan['sections'];
+
+export interface PlanSectionMeta {
+  key: string;
+  label: string;
+  kind: 'prose' | 'scope' | 'list' | 'gaps';
+  prefix: string | null;
+  weight: number;
+  heading: string;
+  blurb: string;
+  ask: string | null;
+  followUp: string | null;
+  fields: string[];
+  itemLabel: string | null;
+}
+
+export interface PlanSectionStatus {
+  key: string;
+  label: string;
+  weight: number;
+  filled: boolean;
+  counts: boolean;
+  count: number;
+  detail: string;
+}
+
+export interface PlanCompleteness {
+  percent: number;
+  earned: number;
+  possible: number;
+  sections: PlanSectionStatus[];
+  missing: string[];
+  requiredGaps: PlanItem[];
+  optionalGaps: PlanItem[];
+}
+
+export interface PlanCoverageRow {
+  id: string;
+  section: string;
+  text: string;
+  tickets: string[];
+  done: boolean;
+}
+
+export interface PlanResponse {
+  project: string | null;
+  planPath: string;
+  exists: boolean;
+  version: string;
+  plan: Plan;
+  sections: PlanSectionMeta[];
+  completeness: PlanCompleteness;
+  coverage: PlanCoverageRow[];
+  warnings: string[];
+}

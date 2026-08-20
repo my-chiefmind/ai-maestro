@@ -4,6 +4,27 @@ This is the working method AI Maestro packages. It came out of running a multi-r
 portfolio as a solo operator with AI agents doing most of the implementation. The tools
 matter less than the discipline; this doc is the discipline.
 
+## 0. The plan is the boundary
+
+Before the board says *what work is happening*, the plan says **what this project is for and
+what it will not do**. It lives in `board/plan.json`: a goal with a metric, a scope with both
+halves, and id'd deliverables, use cases, functional and non-functional requirements.
+
+That is not documentation. Every ticket carries `traces_to` naming the plan items it serves, and
+the orchestrator **refuses to run a ticket that traces to nothing**, to an id the plan doesn't
+define, or to something the plan explicitly excluded. Agents are fast and agreeable; without a
+boundary they will cheerfully build whatever the last sentence implied. The plan is where you
+decide once, in writing, and have the machinery hold you to it.
+
+The plan reports a completeness percentage, and it is honest about itself: placeholder text
+doesn't count as filled, and when a reporting skill finds something the plan doesn't cover it
+files a **gap** — required or optional — that holds the percentage down until a human accepts or
+declines it. A plan is never finished by being ignored.
+
+Two escape hatches, both deliberate: the gate stays off until the plan names real work, so a new
+project isn't refused everything; and a human can write a `scope_exception` on a ticket, which
+clears the gate and then shows up in every report so it can't quietly become the norm.
+
 ## 1. The board is the source of truth
 
 Chat sessions are volatile. Context windows fill, sessions get reset, you run two in

@@ -15,7 +15,9 @@
           "id":        { "type": "string" },
           "name":      { "type": "string" },
           "desc":      { "type": "string" },
-          "collapsed": { "type": "boolean" }
+          "collapsed": { "type": "boolean" },
+          "traces_to": { "type": "array", "items": { "type": "string" }, "description": "Plan item ids this epic delivers (D-/UC-/FR-/NFR-/M- from board/plan.json). An epic that traces to nothing is out of the plan's scope." },
+          "sample":    { "type": "boolean", "description": "Placeholder content seeded by a starter, not real work. `maestro ticket import --replace-sample` removes items carrying this flag, and only those — which is what makes replacing the starter board safe on a project that already has real tickets." }
         }
       }
     },
@@ -46,7 +48,10 @@
         "human_gate":     { "type": "string", "minLength": 1, "description": "When set, the orchestrator never auto-picks this ticket; a human must clear it. Value should come from the project's configured humanGates vocabulary." },
         "failureKind":    { "type": "string", "enum": ["merge-conflict", "merge-schema-invalid", "merge-unknown-status", "merge-missing-sha"], "description": "Optional, for blocker tickets created after a failed merge: classifies the structural failure mode so merge failures are queryable rather than free text. The validator warns on unknown values." },
         "testCmd":        { "type": "string", "minLength": 1, "description": "Optional ticket-specific test command that overrides the area default in the release gate." },
-        "evidence":       { "type": "string", "description": "Verification evidence recorded when the ticket is completed (commit SHA, test output, etc.)." }
+        "evidence":       { "type": "string", "description": "Verification evidence recorded when the ticket is completed (commit SHA, test output, etc.)." },
+        "traces_to":      { "type": "array", "items": { "type": "string" }, "description": "Plan item ids this ticket serves (D-/UC-/FR-/NFR-/M- from board/plan.json). This is what the scope gate reads: a ticket tracing to nothing, to an id the plan doesn't define, or to an OUT- id is out of scope and the orchestrator refuses to pick it. See board/plan.schema.json." },
+        "sample":         { "type": "boolean", "description": "Placeholder content seeded by a starter, not real work. Removed by `maestro ticket import --replace-sample`." },
+        "scope_exception": { "type": "string", "minLength": 1, "description": "A human's written reason for running this ticket despite being outside the plan. Clears the scope gate; still reported everywhere so the exception stays visible rather than becoming the norm." }
       },
       "additionalProperties": true
     }

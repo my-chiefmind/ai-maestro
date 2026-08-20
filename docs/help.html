@@ -219,9 +219,20 @@
         a <code>human_gate</code>.
       </p>
       <div class="note">
+        <h3>The board is never hand-edited</h3>
+        <p>Every write goes through <code>maestro ticket</code> — locked, validated, atomic.
+           <code>add</code> files one ticket; <code>import</code> lands a whole planned board in a
+           single write and only ever <em>adds</em>, so it cannot overwrite work already there.
+           <code>retrace</code> fixes a ticket the scope gate refused; <code>drop</code> retires
+           one that will never be done, recording why.</p>
+      </div>
+      <div class="note">
         <h3>Two commands do almost everything</h3>
-        <p><code>/project-plan</code> turns your brief into epics and dependency-ordered tickets, then
-           stops for your review. <code>/orchestrator</code> runs one ticket. That is the loop.</p>
+        <p><code>/project-plan</code> writes the project plan, then turns it into epics and
+           dependency-ordered tickets, stopping for your review at each step.
+           <code>/orchestrator</code> runs one ticket — and refuses any ticket the plan doesn't
+           cover. That is the loop. <code>/plan-update</code> fills the plan in later, section by
+           section.</p>
       </div>
     </section>
 
@@ -325,7 +336,8 @@
         <table>
           <thead><tr><th class="mono">Skill</th><th>What it does</th></tr></thead>
           <tbody>
-            <tr><td class="mono"><b>project-plan</b></td><td>Turns a brief into 3–6 epics and 5–15 dependency-ordered tickets, validates them, then stops for review.</td></tr>
+            <tr><td class="mono"><b>project-plan</b></td><td>Writes the project plan from a brief (goal, scope, deliverables, use cases, functional and non-functional requirements), then turns it into 3–6 epics and 5–15 dependency-ordered tickets that each trace to a plan item. Stops for review at each step.</td></tr>
+            <tr><td class="mono"><b>plan-update</b></td><td>Fills in the project plan section by section as a conversation, and triages the gaps other skills raised. Raises the plan's completeness percentage.</td></tr>
             <tr><td class="mono"><b>orchestrator</b></td><td>Starts a board run: pre-flights the board and working tree, then hands off to the orchestrator agent.</td></tr>
             <tr><td class="mono"><b>board-validate</b></td><td>Checks the board for structural and logical integrity.</td></tr>
             <tr><td class="mono"><b>delivery-hygiene</b></td><td>Keeps the board small, clear, and close to the real delivery shape.</td></tr>

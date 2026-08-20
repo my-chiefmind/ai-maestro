@@ -8,6 +8,7 @@ import { alpha } from '@mui/material/styles';
 import type { Board, BoardTicket, ProjectConfig } from './types';
 import { useBoard } from './useBoard';
 import { useConfig } from './useConfig';
+import { usePlanScope } from './usePlanScope';
 import { getSpec, putSpec } from './api';
 import {
   BOARD_STATUSES, PRIORITIES, MODELS, epicName, isReady, isGated, planLabel,
@@ -263,6 +264,9 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
                           <Badge label={t.status} color={statusColor(t.status)} />
                           {ready && <Badge label="ready" color="#1f9e5b" strong />}
                           {isGated(t) && <Badge label="gate" color={priorityColor('P1')} strong />}
+                          {/* Placeholder content from a starter, so it reads as "replace me" rather
+                              than as real work. `maestro ticket import --replace-sample` clears it. */}
+                          {t.sample === true && <Badge label="sample" color="#8b8f9a" />}
                         </Box>
                       </Box>
                       <Typography sx={{ mt: 1.2, mb: 0.8, fontSize: 14.5, fontWeight: 600, lineHeight: 1.3 }}>{t.name}</Typography>
@@ -364,6 +368,11 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
   const depOptions = t ? allTicketRefs(board).filter((r) => r.id !== t.id) : [];
   const useAreaSelect = (config?.areas?.length ?? 0) > 0;
 
+  // The project plan, for the scope controls below. The verdict shown here is a preview: the
+  // validator warns and the orchestrator blocks on the server's own reading of the same rules.
+  const scope = usePlanScope();
+  const verdict = t ? scope.verdict(t) : null;
+
   // Load the ticket's spec whenever the open ticket changes.
   useEffect(() => {
     setConfirmDel(false); setSpecSaved('idle');
@@ -448,6 +457,42 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
                 </Select>
               </Box>
 
+              <Box>
+                <Select multiple size="small" fullWidth displayEmpty
+                  value={t.traces_to || []}
+                  onChange={(e) => onPatch({ traces_to: (typeof e.target.value === 'string' ? [e.target.value] : e.target.value) as string[] })}
+                  input={<OutlinedInput />}
+                  renderValue={(sel) => (
+                    <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                      {(sel as string[]).length === 0
+                        ? <Typography sx={{ color: 'text.disabled', fontSize: 13 }}>Traces to — nothing (out of scope)</Typography>
+                        : (sel as string[]).map((id) => (
+                          <Chip key={id} label={id} size="small"
+                            color={scope.byId.get(id)?.out ? 'error' : scope.byId.has(id) ? 'default' : 'warning'}
+                            sx={{ fontFamily: 'monospace', height: 20, fontSize: 11 }} />
+                        ))}
+                    </Box>
+                  )}>
+                  {scope.options.length === 0 && <MenuItem disabled value="">No plan items yet — write the plan first</MenuItem>}
+                  {scope.options.map((o) => (
+                    <MenuItem key={o.id} value={o.id}>
+                      <Checkbox checked={(t.traces_to || []).includes(o.id)} size="small" />
+                      <ListItemText primary={`${o.id}${o.out ? '  (out of scope)' : ''}`}
+                        secondary={`${scope.label(o.section)} — ${o.text}`} />
+                    </MenuItem>
+                  ))}
+                </Select>
+                {verdict && (
+                  <Typography sx={{ fontSize: 12, mt: 0.6, color: verdict.blocks ? 'warning.main' : 'text.secondary' }}>
+                    {verdict.blocks ? '⚠ ' : ''}{verdict.reason}
+                  </Typography>
+                )}
+              </Box>
+
+              <TextField label="Scope exception" value={String(t.scope_exception || '')}
+                onChange={(e) => onPatch({ scope_exception: e.target.value || undefined })} fullWidth
+                helperText="A written reason for running this ticket even though the plan doesn't cover it. Clears the gate — and stays visible in every report, so it can't quietly become the norm." />
+
               <TextField select label="Human gate" value={t.human_gate || ''} onChange={(e) => onPatch({ human_gate: e.target.value || undefined })} fullWidth
                 helperText="requires a person to clear it before the orchestrator auto-picks it">
                 <MenuItem value="">— none —</MenuItem>
@@ -482,6 +527,13 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
               </Box>
               <Field label="Agent plan">{planLabel(t) || '—'}</Field>
               <Field label="Depends on">{(t.depends_on || []).join(', ') || '—'}</Field>
+              <Field label="Traces to">{(t.traces_to || []).join(', ') || '—'}</Field>
+              {verdict && verdict.state !== 'no-plan' && (
+                <Typography sx={{ fontSize: 12, mb: 1.5, color: verdict.blocks ? 'warning.main' : 'text.secondary' }}>
+                  {verdict.blocks ? '⚠ ' : ''}{verdict.reason}
+                </Typography>
+              )}
+              {t.scope_exception && <Field label="Scope exception">{String(t.scope_exception)}</Field>}
               <Field label="Human gate">{t.human_gate}</Field>
               {spec.trim() && <Field label="Spec"><Box component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', m: 0 }}>{spec}</Box></Field>}
               <Field label="Evidence">{String(t.evidence || '')}</Field>
