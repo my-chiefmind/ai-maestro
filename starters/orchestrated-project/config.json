@@ -39,7 +39,8 @@
     "pipeline-quality",
     "orchestration-health",
     "repo-audit",
-    "scale"
+    "scale",
+    "data-model"
   ],
   "model": {
     "default": "sonnet",
