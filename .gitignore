@@ -17,6 +17,8 @@ npm-debug.log*
 # too (package.json "files"). Only the DATA is private.
 /board/data.json
 /board/archive.json
+/board/plan.json
+/board/plan.md
 /board/parked.json
 /board/specs/
 /board/reports/

@@ -76,9 +76,47 @@ recommendations beyond naming the skill that would act on a finding (`worktree-c
 - <branch> — unmerged, no worktree
 ```
 
+## File what's missing as a plan gap
+
+A finding that the **project plan** doesn't cover belongs in the plan, not only in this report.
+A report is read once; a gap sits against the plan, holds its completeness percentage down, and
+has to be answered.
+
+Check first — a project with no plan has nothing to file against:
+
+```sh
+maestro plan status --board {{BOARD}}/data.json
+```
+
+If a plan exists, file each uncovered finding once:
+
+```sh
+maestro plan gap-add --board {{BOARD}}/data.json --from "atomic-report" \
+  --need required --text "<what the plan is missing, stated as a gap>"
+```
+
+- **`--need required`** — the plan is genuinely incomplete without it: an unstated requirement
+  the project clearly depends on, a quality bar the work is already being judged against, a
+  deliverable nobody wrote down. These lower the percentage until a human accepts or declines
+  them.
+- **`--need optional`** — worth considering. Never affects the percentage.
+
+Rules that keep this from becoming noise:
+
+- **State the gap, not the fix.** "No stated availability target for the API" — not "add
+  a health check".
+- **Only what the plan is missing.** A bug, a stale branch, or a failing test is a report
+  finding and belongs in the report. It is not a plan gap.
+- **Be sparing with `required`.** Classify as required only what you could defend to the owner.
+  A wall of required gaps reads as noise and gets ignored wholesale.
+- Re-runs are safe: a gap whose text already exists is skipped, not duplicated.
+
+Name every gap you filed in your summary, with its id and `need`. Triage happens in
+`/plan-update`, never here — you file, a human decides.
+
 ## Rules
 
-- **Read-only, always.** No edits, commits, pushes, or board writes.
+- **Read-only, except the plan's gap inbox.** No edits to source, no git writes, no commits, and no board writes. `maestro plan gap-add` is the one exception: it files a question against the plan for a human to answer, and commits the project to nothing.
 - **One fact per bullet.** If a line needs "and", split it into two bullets.
 - **Unknown beats guessed.** A failed git command is reported as unknown, not silently skipped
   or omitted.

@@ -101,6 +101,116 @@ questions** for the agents to resolve and show you. Keep it short and true:
 
 Re-run `sync` after editing so the context reaches the agents.
 
+## The plan — `maestro/board/plan.json`
+
+`context.md` says **how to work here**. The plan says **what this project is for and where its
+boundary is** — and unlike the brief, it is enforced.
+
+| Section | What goes in it |
+| --- | --- |
+| **Goal** | The outcome, plus a metric you could actually measure |
+| **Scope** | In, and — the half that does the work — explicitly **out** |
+| **Deliverables** | `D-1` … the artifacts that must exist at the end |
+| **Use cases** | `UC-1` … an actor and what they're trying to get done |
+| **Functional requirements** | `FR-1` … one behaviour each, with how it's verified |
+| **Non-functional requirements** | `NFR-1` … a measurable bar: `p95 < 300ms`, `WCAG 2.2 AA` |
+| **Milestones / Risks / Open questions** | Where they're real |
+| **Gaps** | What reporting skills found the plan doesn't cover, split required / optional |
+
+`setup` seeds the goal from your brief and leaves the rest empty — everything else is a
+commitment only you can make, and a seeded guess would count as filled while being nobody's
+decision. Three ways to fill it in:
+
+- **`/plan-update`** — a section-by-section conversation. It proposes from your actual
+  repository, writes what you agree to, and tells you the new percentage as it goes. You can
+  also just say "add a requirement that exports are CSV" and skip the interview.
+- **The cockpit's Plan tab** — every section, editable in place.
+- **`maestro plan`** — the same operations from a shell. `maestro plan status` is the quick look.
+
+### Completeness, and why it's a number
+
+The plan reports a percentage. Sections are **weighted** — a goal is worth more than a
+milestone list — and placeholder text (`TBD`, `propose one`) never counts as filled. Open
+**required** gaps are added to the denominator, so a report finding a hole in the plan visibly
+lowers the number until someone accepts or declines it.
+
+### Invariants — rules agents cannot violate
+
+`verify` on a plan item says how a human would check it. **`enforce`** is a command that runs:
+
+```bash
+maestro plan add nonFunctional --text "No record written unencrypted" \
+  --budget "zero plaintext writes" --enforce "npm run check:encryption"
+
+maestro plan check          # runs every enforce command — put this in CI
+maestro plan check --json   # exit 1 and machine-readable output on any violation
+```
+
+The release gate runs the invariants a ticket traces to, and a non-zero exit is a hard no-go —
+not weighed against how good the change looks. This is the difference between a rule stated in
+a brief (which a confident model can talk itself past) and a rule that fails the build.
+
+The kit ships the mechanism and none of the rules: what must never be violated belongs to your
+product, not to this framework.
+
+### The scope gate
+
+Every ticket carries `traces_to`: the plan item ids it serves. That is what makes the plan more
+than a document.
+
+| Where | What happens to an out-of-scope ticket |
+| --- | --- |
+| `validate` / the cockpit's save button | **Warning.** The board stays valid — jot the ticket first, plan it after. |
+| The orchestrator picking a ticket | **Refused.** Nothing runs that the plan doesn't cover. |
+
+Out of scope means: traces to nothing, traces to an id the plan doesn't define, or traces to
+something the plan explicitly excluded (`OUT-n`). Fix it by adding the requirement, dropping the
+ticket, or — when a human really does want it anyway — writing a `scope_exception` with the
+reason, which clears the gate and stays visible in every report.
+
+The gate stays **off** until the plan names at least one deliverable, use case, or requirement.
+A brand-new project isn't refused everything.
+
+```bash
+node maestro/scripts/plan-write.mjs status   --board maestro/board/data.json
+node maestro/scripts/plan-write.mjs coverage --board maestro/board/data.json  # which FRs no ticket covers
+```
+
+## Running work in parallel — lanes
+
+By default one ticket runs at a time. Set `orchestration.maxWorktrees` to opt into **lanes**:
+
+```jsonc
+"orchestration": {
+  "maxWorktrees": 3,                        // pool size; hard ceiling is 5
+  "serialFiles": ["infra/terraform/**"]     // added to the built-in serial patterns
+}
+```
+
+A lane is a worktree that runs a *queue* of tickets, landing each before starting the next — so
+the number of live branches is the number of lanes, never the number of tickets. That is what
+keeps merges tractable; a worktree per ticket is the arrangement lanes exist to avoid.
+
+Two tickets get different lanes only when nothing suggests they share files. Declaring
+**`touches`** on a ticket is what unlocks parallelism:
+
+```jsonc
+{ "id": "T-014", "area": "backend", "touches": ["src/api/cart/**"] }
+```
+
+Without it the scheduler falls back to epic, then area, and puts anything it can't prove
+independent in one lane. A ticket touching a **serial-only** file — migrations, lockfiles,
+generated schema — runs alone with the pool drained first.
+
+```bash
+maestro lanes plan               # the schedule, and why each decision was made
+maestro lanes next               # exactly what may start now
+maestro lanes check T-004 T-007  # would these two conflict? (exit 1 if yes)
+```
+
+`maestro lanes plan` also lists the pairs held back **only** because their file scope is
+undeclared — the one thing you can fix to get more parallelism.
+
 ## Tuning areas & models — `maestro/config.json`
 
 `setup` already wrote sensible defaults. Adjust to taste:
@@ -142,8 +252,9 @@ never drifts from it independently.
 
 ## The board — what a ticket needs
 
-`/project-plan` writes the board for you from your brief, and the cockpit edits it with validated
-pickers — but this is the shape underneath, for when you hand-edit `maestro/board/data.json`.
+`/project-plan` writes the plan and then the board for you, and the cockpit edits both with
+validated pickers — but this is the shape underneath, for when you hand-edit
+`maestro/board/data.json`.
 
 A ticket needs at minimum an `id` and a `status`; a **runnable** ticket also wants `name`, `area`,
 `agent_plan`, and `model` (the validator warns when a `todo` ticket is missing them):
@@ -157,9 +268,27 @@ A ticket needs at minimum an `id` and a `status`; a **runnable** ticket also wan
   "status": "todo",
   "depends_on": [],                                 // ids of tickets that must finish first
   "agent_plan": ["pe", "backend", "qa", "merge"],   // the pipeline (qa → merge is appended if omitted)
-  "model": "sonnet"                                  // the model to run it on
+  "model": "sonnet",                                 // the model to run it on
+  "traces_to": ["FR-3"]                              // the plan items this serves — the scope gate reads this
 }
 ```
+
+### Writing the board
+
+Don't hand-edit `data.json` — use `maestro ticket`, which is locked, validated and atomic, so a
+tab and an agent writing at the same moment can't silently overwrite each other:
+
+```bash
+maestro ticket next-id --count 12                     # allocate free ids
+maestro ticket add --name "…" --desc "…" --traces-to FR-3
+maestro ticket import planned-board.json --replace-sample   # a whole planned board, one write
+maestro ticket retrace T-014 --traces-to FR-3         # fix a scope-blocked ticket
+maestro ticket drop T-014 --reason "superseded"       # leave the board unfinished, honestly
+```
+
+`import` only **adds** — an id that already exists is an error, never an overwrite — so it can't
+damage work already on the board. `--replace-sample` clears the starter's placeholder epic and
+ticket, and only items explicitly marked as samples. `/project-plan` uses exactly this path.
 
 Validate before running:
 

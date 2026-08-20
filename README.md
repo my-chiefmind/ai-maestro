@@ -88,9 +88,9 @@ the full mapping.
 
 | Piece | What it is |
 | --- | --- |
-| [`board/`](./board/) | The board format (`board.schema.json`) + this repo's own workboard. A runnable example board ships in [`starters/orchestrated-project/board/`](./starters/orchestrated-project/board/) instead — that's what `setup` seeds a new project from, never this one's. |
+| [`board/`](./board/) | The board + project-plan formats (`board.schema.json`, `plan.schema.json`) and this repo's own workboard. A runnable example board ships in [`starters/orchestrated-project/board/`](./starters/orchestrated-project/board/) instead — that's what `setup` seeds a new project from, never this one's. |
 | [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, technical-writer, qa, principal-delivery |
-| [`skills/`](./skills/) | Reusable skills — the `/project-plan` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
+| [`skills/`](./skills/) | Reusable skills — the `/project-plan`, `/plan-update` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
 | [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
@@ -129,10 +129,12 @@ board** (say no and nothing is left running). The six project-brief questions de
 `propose one`, which hands those decisions to the agents and has them show you what they chose;
 the project name and work areas have concrete defaults.
 
-Now open the repo in Claude Code and run **`/project-plan`** — you get epics and
-dependency-ordered tickets to review. Approve them, then run **`/orchestrator`**; it picks up the
-first unblocked ticket and runs it. (Plain language works too: "plan the project", "run the
-board".)
+Now open the repo in Claude Code and run **`/project-plan`** — it writes the **project plan**
+first (goal, scope, deliverables, use cases, functional and non-functional requirements), stops
+for your review, then turns it into epics and dependency-ordered tickets that each trace back to
+a plan item. Approve them, then run **`/orchestrator`**; it picks up the first unblocked ticket
+and runs it — and refuses anything the plan doesn't cover. (Plain language works too: "plan the
+project", "run the board".)
 
 ### Path 2 — Hands-Free Onboarding with Claude Code
 
@@ -175,9 +177,10 @@ Open your project in Claude Code and run these once, in order:
 
 | Step | Do this | Why |
 | :--: | --- | --- |
-| **1** | Run:<br/>**`/project-plan`** | Turns the brief you gave `setup` into 3-6 epics and 5-15 dependency-ordered tickets, replacing the example ones, and proposes an answer for anything you left as `propose one`. It stops for your review — nothing is implemented. |
-| **2** | Review the epics, tickets, and proposed assumptions; ask for revisions in plain language | The plan is the contract every later agent works from. Fix it before code exists, not after. |
-| **3** | Commit the approved starting point, then run:<br/>**`/orchestrator`** | The first commit gives worktrees a stable base; the orchestrator then builds one ticket per run. |
+| **1** | Run:<br/>**`/project-plan`** | Writes the **project plan** from your brief — goal, scope, deliverables, use cases, functional and non-functional requirements — and proposes an answer for anything you left as `propose one`. It stops for your review; nothing is implemented. |
+| **2** | Review the plan; fill in what's thin with **`/plan-update`** or the board's **Plan** tab | The plan reports a completeness percentage and says which sections are missing. It's the contract every later agent works from — and the scope boundary the orchestrator enforces. |
+| **3** | Approve it; `/project-plan` then writes 3-6 epics and 5-15 dependency-ordered tickets, each tracing to a plan item | A ticket that traces to nothing is out of scope by definition, and won't run. |
+| **4** | Commit the approved starting point, then run:<br/>**`/orchestrator`** | The first commit gives worktrees a stable base; the orchestrator then builds one ticket per run. |
 
 ### Going further
 

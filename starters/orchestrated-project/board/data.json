@@ -3,7 +3,8 @@
     {
       "id": "e1",
       "name": "Foundation",
-      "desc": "Initial setup and the first vertical slice."
+      "desc": "Initial setup and the first vertical slice.",
+      "sample": true
     }
   ],
   "tickets": [
@@ -17,9 +18,15 @@
       "swag": "S",
       "status": "todo",
       "depends_on": [],
-      "agent_plan": ["pe", "backend", "qa", "merge"],
+      "agent_plan": [
+        "pe",
+        "backend",
+        "qa",
+        "merge"
+      ],
       "execution_mode": "multi-agent",
-      "model": "sonnet"
+      "model": "sonnet",
+      "sample": true
     }
   ]
 }

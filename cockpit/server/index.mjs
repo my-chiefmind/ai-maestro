@@ -42,6 +42,11 @@ import { resolve, dirname, join, sep } from "path";
 import { fileURLToPath } from "url";
 import { marked } from "marked";
 import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
+import { readPlan, planVersion, mutatePlan, PlanConflictError } from "../../scripts/plan-io.mjs";
+import {
+  PLAN_SECTIONS, SECTION_BY_KEY, GAP_NEEDS, GAP_STATUSES,
+  planCompleteness, planCoverage, validatePlan, nextId, nextOutId, sectionForId,
+} from "../../scripts/plan-core.mjs";
 import { boardVersion as sharedBoardVersion } from "../../scripts/board-io.mjs";
 import { neuterRawHtml } from "./sanitize.mjs";
 import { findFreePort } from "./ports.mjs";
@@ -136,7 +141,7 @@ const REGISTRY_PATH = argValue("--registry") || process.env.MAESTRO_REGISTRY || 
  * @typedef {{
  *   name: string | null, boardDir: string, projectDir: string, root: string,
  *   data: string, archive: string, backups: string, specs: string, reports: string,
- *   config: string,
+ *   plan: string, config: string,
  * }} Scope
  */
 /**
@@ -153,6 +158,7 @@ function scopeFor(boardDir, root, name = null) {
     archive: join(boardDir, "archive.json"),
     backups: join(boardDir, ".backups"),
     specs: join(boardDir, "specs"),
+    plan: join(boardDir, "plan.json"),
     reports: join(boardDir, "reports"),
     config: join(projectDir, "config.json"),
   };
@@ -372,11 +378,16 @@ app.put("/api/board", (req, res) => {
   const arch = readJSON(scope.archive, { epics: [], tickets: [] });
   const config = loadConfig(scope);
   const planSteps = planStepsFromConfig(config);
+  // The plan goes in too, so this call is byte-for-byte the CLI's — "one validator, same
+  // answer everywhere" is the property this file's header claims, and it stops being true the
+  // moment the two paths pass different inputs. (Scope only ever warns, so this cannot make
+  // the UI reject a board the CLI would accept.)
   const { errors } = validateBoard({ epics, tickets }, {
     archived: arch.tickets ?? [],
     archivedEpics: arch.epics ?? [],
     agentCodes: planSteps ? new Set(planSteps) : null,
     config,
+    plan: (() => { try { return readPlan(scope.plan); } catch { return null; } })(),
   });
   if (errors.length) {
     return res.status(400).json({ error: `Board would be invalid:\n- ${errors.join("\n- ")}` });
@@ -483,6 +494,183 @@ app.put("/api/spec/:id", (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+// ── Project plan (board/plan.json) ──────────────────────────────────────────────
+// Writes go through mutatePlan — the same lock, CAS, validation and plan.md re-render the CLI
+// uses — so the pretty UI cannot produce a plan `maestro plan` would have refused, and a tab
+// left open overnight cannot clobber what an agent wrote in the meantime.
+//
+// Edits are SECTION-SCOPED rather than whole-plan. Two people (or a person and an agent)
+// working on different sections both succeed, where a whole-plan PUT would make the second one
+// a conflict for no reason.
+
+/** The section registry, as the Plan tab's field metadata. Derived, never duplicated in the UI. */
+const PLAN_SECTION_META = PLAN_SECTIONS.map((s) => ({
+  key: s.key, label: s.label, kind: s.kind, prefix: s.prefix, weight: s.weight,
+  heading: s.heading, blurb: s.blurb, ask: s.ask ?? null, followUp: s.followUp ?? null,
+  fields: s.fields ?? [], itemLabel: s.itemLabel ?? null,
+}));
+
+app.get("/api/plan", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  try {
+    const plan = readPlan(scope.plan);
+    const data = readJSON(scope.data, { tickets: [] });
+    const arch = readJSON(scope.archive, { tickets: [] });
+    res.json({
+      project: scope.name,
+      planPath: scope.plan,
+      exists: existsSync(scope.plan),
+      version: planVersion(scope.plan),
+      plan,
+      sections: PLAN_SECTION_META,
+      completeness: planCompleteness(plan),
+      coverage: planCoverage(plan, data.tickets ?? [], arch.tickets ?? []),
+      warnings: validatePlan(plan).warnings,
+    });
+  } catch (e) {
+    // An unparsable plan.json is reported, never silently replaced with an empty one — the
+    // next save would write that blank over a real plan.
+    res.status(400).json({ error: errMessage(e) });
+  }
+});
+
+/**
+ * Replace one section. The body carries the whole section value, which covers add, edit,
+ * reorder and delete in a single call — and any item arriving WITHOUT an id gets one assigned
+ * here, inside the lock, from the plan on disk. Client-side id generation is what produces two
+ * different "FR-7"s when a tab and an agent add a requirement in the same second.
+ */
+app.put("/api/plan/section/:key", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const key = req.params.key;
+  const meta = SECTION_BY_KEY.get(key);
+  if (!meta) return res.status(400).json({ error: `Unknown plan section "${key}".` });
+
+  const { value, version } = req.body ?? {};
+  if (value == null) return res.status(400).json({ error: "Body must be { value, version }." });
+
+  try {
+    const r = mutatePlan({
+      planPath: scope.plan,
+      expectVersion: version ?? undefined,
+      projectName: loadConfig(scope)?.project?.name ?? "Project",
+      op: `cockpit-plan-${key}`,
+      mutate: (plan) => {
+        if (meta.kind === "prose") {
+          plan.sections[key] = {
+            text: String(value.text ?? ""),
+            metrics: (Array.isArray(value.metrics) ? value.metrics : []).map(String).filter(Boolean),
+          };
+        } else if (meta.kind === "scope") {
+          const outs = Array.isArray(value.out) ? value.out : [];
+          plan.sections.scope = {
+            in: (Array.isArray(value.in) ? value.in : []).map(String).filter(Boolean),
+            out: outs.map((/** @type {any} */ o) => ({ id: o?.id || nextOutId(plan), text: String(o?.text ?? "") }))
+              .filter((/** @type {{text: string}} */ o) => o.text),
+          };
+          // Ids assigned above are computed against the plan as it was READ, so a batch of new
+          // OUT- rows would all get the same one. Renumber any that collide.
+          const seen = new Set();
+          for (const o of plan.sections.scope.out) {
+            while (seen.has(o.id)) o.id = bumpId(o.id);
+            seen.add(o.id);
+          }
+        } else {
+          const rows = Array.isArray(value) ? value : [];
+          const allowed = ["text", "notes", ...(meta.fields ?? [])];
+          if (meta.kind === "gaps") allowed.push("need", "status", "from", "resolvedAs");
+          const seen = new Set(rows.map((/** @type {any} */ r2) => r2?.id).filter(Boolean));
+          plan.sections[key] = rows
+            .filter((/** @type {any} */ row) => String(row?.text ?? "").trim())
+            .map((/** @type {any} */ row) => {
+              let id = row.id;
+              if (!id) {
+                id = nextId(plan, key);
+                while (seen.has(id)) id = bumpId(id);
+                seen.add(id);
+              }
+              /** @type {Record<string, any>} */
+              const item = { id };
+              for (const f of allowed) if (row[f] !== undefined) item[f] = row[f];
+              if (meta.kind === "gaps" && !GAP_NEEDS.includes(item.need)) item.need = "optional";
+              if (meta.kind === "gaps" && item.status && !GAP_STATUSES.includes(item.status)) item.status = "open";
+              return item;
+            });
+        }
+        return plan;
+      },
+    });
+    const data = readJSON(scope.data, { tickets: [] });
+    const arch = readJSON(scope.archive, { tickets: [] });
+    res.json({
+      ok: true,
+      version: r.version,
+      plan: r.plan,
+      completeness: planCompleteness(r.plan),
+      coverage: planCoverage(r.plan, data.tickets ?? [], arch.tickets ?? []),
+      warnings: r.warnings,
+    });
+  } catch (e) {
+    if (e instanceof PlanConflictError) {
+      const plan = readPlan(scope.plan);
+      return res.status(409).json({
+        error: "The plan changed on disk since you loaded it (an agent or another tab wrote it). Reloaded the latest — reapply your edit.",
+        current: { plan, version: planVersion(scope.plan), completeness: planCompleteness(plan) },
+      });
+    }
+    res.status(400).json({ error: errMessage(e) });
+  }
+});
+
+/**
+ * "FR-7" -> "FR-8". Used only to break an id collision within one batched write.
+ * @param {string} id
+ */
+function bumpId(id) {
+  const m = String(id).match(/^([A-Z]+)-(\d+)$/);
+  return m ? `${m[1]}-${Number(m[2]) + 1}` : id;
+}
+
+// Gap triage is its own route because it is a decision, not an edit: accepting a gap should
+// not require the tab to hold (and therefore be able to overwrite) the whole gaps array.
+app.put("/api/plan/gap/:id", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const { id } = req.params;
+  if (!SAFE_ID.test(id) || sectionForId(id) !== "gaps") {
+    return res.status(400).json({ error: `"${id}" is not a gap id.` });
+  }
+  const { status, need, resolvedAs, version } = req.body ?? {};
+  if (status && !GAP_STATUSES.includes(status)) return res.status(400).json({ error: `Unknown status "${status}".` });
+  if (need && !GAP_NEEDS.includes(need)) return res.status(400).json({ error: `Unknown need "${need}".` });
+
+  try {
+    const r = mutatePlan({
+      planPath: scope.plan,
+      expectVersion: version ?? undefined,
+      projectName: loadConfig(scope)?.project?.name ?? "Project",
+      op: "cockpit-plan-gap",
+      mutate: (plan) => {
+        const g = plan.sections.gaps.find((/** @type {any} */ x) => x.id === id);
+        if (!g) throw new Error(`${id} is not a gap in this plan.`);
+        if (status) g.status = status;
+        if (need) g.need = need;
+        if (resolvedAs !== undefined) g.resolvedAs = resolvedAs;
+        return plan;
+      },
+    });
+    res.json({ ok: true, version: r.version, plan: r.plan, completeness: planCompleteness(r.plan) });
+  } catch (e) {
+    if (e instanceof PlanConflictError) {
+      const plan = readPlan(scope.plan);
+      return res.status(409).json({ error: "The plan changed on disk since you loaded it.", current: { plan, version: planVersion(scope.plan), completeness: planCompleteness(plan) } });
+    }
+    res.status(400).json({ error: errMessage(e) });
   }
 });
 

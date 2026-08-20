@@ -23,14 +23,21 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
      recreate it or dispatch a second implementation in parallel; that's how the same
      feature gets built twice.
 4. **Claim it**: set `status: in-progress` and record that you're on it before dispatching.
-   ⚠️ This is **best-effort, not atomic** — the kit assumes **one orchestrator at a time**
-   (one ticket per run). Do not run parallel orchestrators against the same board without
-   external coordination; two runs can claim the same ticket. If you already see a ticket
-   `in-progress`, assume another run owns it and skip it. Reconcile (step 3) complements
-   this — it catches the collisions the claim can't prevent.
+   ⚠️ This is **best-effort, not atomic** — the kit assumes **one orchestrator at a time**.
+   Do not run parallel orchestrators against the same board without external coordination;
+   two runs can claim the same ticket. If you already see a ticket `in-progress`, assume
+   another run owns it and skip it. Reconcile (step 3) complements this — it catches the
+   collisions the claim can't prevent.
+   > One orchestrator running several **lanes** is a different thing and is supported: the
+   > lanes come from `maestro lanes next`, which never returns two tickets that could touch
+   > the same files. Several orchestrators racing the same board is still unsafe.
 5. **Isolate**: create a git worktree + branch for the ticket and bring its dependencies with
    it (see the `git-branch` and `worktree-cleanup` skills) — unless reconcile adopted an
    existing one.
+   With lanes enabled (`orchestration.maxWorktrees` > 1), the worktree is a **lane** that
+   outlives the ticket: rebase it on the default branch, run the ticket, land it, and leave the
+   lane for the next ticket `maestro lanes next` assigns to it. Never open a worktree per
+   ticket — that is the arrangement lanes exist to avoid.
 6. **Resolve, then run the plan.** Two things are computed from policy, not taken literally:
    - **Effective model** = the **stronger** of the ticket's `model` and its area's floor (see
      the *Model policy* in `CLAUDE.md`). Run every stage on the effective model.

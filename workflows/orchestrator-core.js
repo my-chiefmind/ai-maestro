@@ -21,6 +21,8 @@
  *   WORKTREES:    string,  // absolute path to the worktree directory
  *   RUNS:         string,  // absolute path to the run-record directory
  *   VALIDATE_CMD: string,  // command that validates the board (run after every board write)
+ *   TICKET_CMD:   string,  // the guarded board writer (scripts/board-write.mjs)
+ *   PLAN_CMD:     string,  // the plan reader/writer (scripts/plan-write.mjs) — feeds the scope gate
  *   MERGE_STRATEGY: "local-push" | "pr",
  *   PUBLISH_BOARD: boolean, // commit+push board transitions (false = write locally only)
  *   REPO_PATH: { [area]: string },   // area → repo directory (single-repo: all → PROJECT_ROOT)
@@ -62,6 +64,12 @@ const BOARD_REPO = BOARD.replace(/[\/\\]board[\/\\][^\/\\]+$/, "");
 // which is correct in the vendored layout (kit IS the board's parent) and wrong in the
 // capsule layout — which is exactly why sync injects it instead.
 const TICKET_CMD = PROJECT_CONFIG.TICKET_CMD || `node ${BOARD_REPO}/scripts/board-write.mjs`;
+
+// The plan reader, same injection pattern. The scope gate has to be enforced HERE, in code:
+// the `/orchestrator` skill path gets it from eligibleTickets(…, {plan}), but this script can
+// import nothing (a Workflow script has no filesystem access), so a run driven by the harness
+// would otherwise be gated by nothing but a paragraph of prose in a skill file.
+const PLAN_CMD = PROJECT_CONFIG.PLAN_CMD || `node ${BOARD_REPO}/scripts/plan-write.mjs`;
 
 // How every board-writing prompt must handle the command's exit codes. Exit 2 is the
 // contended case — another writer held the lock or the board moved — and is precisely the
@@ -107,6 +115,18 @@ const BOARD_SCHEMA = {
     epics: { type: "array" },
     tickets: { type: "array" },
     archiveTickets: { type: "array", items: { type: "object" } },
+    // The scope boundary, copied verbatim from `maestro plan gate --json`. Deliberately NOT
+    // derived by the reading agent from plan.json: "what counts as in scope" is decided in
+    // scripts/plan-core.mjs, and a model re-deciding it per run is how two callers end up
+    // disagreeing about whether a ticket may run.
+    plan: {
+      type: "object",
+      properties: {
+        gating:      { type: "boolean" },
+        inScopeIds:  { type: "array", items: { type: "string" } },
+        outIds:      { type: "array", items: { type: "string" } },
+      },
+    },
   },
 };
 
@@ -254,11 +274,55 @@ function isPlaceholderTestCmd(cmd) {
   return typeof cmd === "string" && /\bno\b.*\btest\b.*\bconfigured\b/i.test(cmd);
 }
 
-function pickNextTicket(board) {
+// ── The scope gate ───────────────────────────────────────────────────────────
+// Mirrors scopeVerdict() in scripts/plan-core.mjs, which stays the authority — this script
+// cannot import it, so the rule is restated rather than shared. Keep the two in step: the
+// board/plan.schema.json docs and test/plan-core.test.mjs describe the same six states.
+//
+// The gate is OFF unless the plan names real work (`gating`), so a project that has not
+// planned yet is not refused everything — and a tooling failure reading the plan reports
+// gating=false, which fails OPEN. Refusing every ticket because a command errored would be a
+// far worse failure mode than running one the plan hasn't caught up with.
+function scopeOf(ticket, board) {
+  const plan = board.plan;
+  if (!plan || !plan.gating) return { blocks: false, state: "no-plan", reason: "no project plan yet" };
+
+  if (typeof ticket.scope_exception === "string" && ticket.scope_exception.trim()) {
+    return { blocks: false, state: "exception", reason: `scope exception: ${ticket.scope_exception.trim()}` };
+  }
+
+  const ids = Array.isArray(ticket.traces_to) ? ticket.traces_to : [];
+  if (ids.length === 0) {
+    return { blocks: true, state: "untraced", reason: "traces to nothing in the plan" };
+  }
+  const outIds = plan.outIds || [];
+  const out = ids.filter(id => outIds.includes(id));
+  if (out.length) {
+    return { blocks: true, state: "out", reason: `traces to ${out.join(", ")}, which the plan lists as out of scope` };
+  }
+  const inScope = plan.inScopeIds || [];
+  const resolved = ids.filter(id => inScope.includes(id));
+  if (resolved.length === 0) {
+    return { blocks: true, state: "unknown", reason: `traces only to ${ids.join(", ")}, which the plan does not define as in-scope work` };
+  }
+  return { blocks: false, state: "in-scope", reason: `in scope via ${resolved.join(", ")}` };
+}
+
+// Ready by dependency + gate, ignoring scope. Kept separate so "nothing to do" and "things to
+// do, none of them in the plan" stay distinguishable — they call for opposite responses.
+function readyTickets(board) {
   // BACKLOG SAFEGUARD: only picks from "todo". NEVER auto-promotes backlog.
-  const todos = board.tickets.filter(t =>
+  return board.tickets.filter(t =>
     t.status === "todo" && depsMet(t, board) && !ticketIsHumanGated(t)
   );
+}
+
+function scopeBlocked(board) {
+  return readyTickets(board).filter(t => scopeOf(t, board).blocks);
+}
+
+function pickNextTicket(board) {
+  const todos = readyTickets(board).filter(t => !scopeOf(t, board).blocks);
   if (todos.length === 0) return null;
   const priorities = ["P0", "P1", "P2", "P3"];
   for (const p of priorities) {
@@ -502,7 +566,14 @@ function boardInflationReport(board) {
 
 async function readBoard() {
   return await agent(
-    `Read ${BOARD} as the active board and ${ARCHIVE} as the archive. Return the active board's epics and tickets arrays plus archiveTickets containing every archived ticket. If a file is absent or empty, use an empty array. Do not treat a missing dependency as archived.`,
+    `Read ${BOARD} as the active board and ${ARCHIVE} as the archive. Return the active board's epics and tickets arrays plus archiveTickets containing every archived ticket. If a file is absent or empty, use an empty array. Do not treat a missing dependency as archived.
+
+  Then run EXACTLY this command and return its parsed JSON as \`plan\`:
+    ${PLAN_CMD} gate --board ${BOARD} --json
+  Copy the command's \`gating\`, \`inScopeIds\` and \`outIds\` through verbatim — do NOT read
+  plan.json yourself and do NOT decide for yourself what is in scope. If the command fails or
+  is unavailable, return plan={gating:false,inScopeIds:[],outIds:[]}, which leaves the scope
+  gate off rather than blocking every ticket on a tooling error.`,
     { label: "read-board", schema: BOARD_SCHEMA }
   );
 }
@@ -672,6 +743,18 @@ async function mergeAgent(repoPath, worktreePath, branch, id, name) {
 }
 
 // ── Blocker / terminal helpers ────────────────────────────────────────────────
+
+// "Nothing to do" and "three things to do, none of them in the plan" demand opposite responses
+// from a human, so they are never collapsed into one `idle`.
+async function scopeBlockedReport(board, blocked) {
+  const lines = blocked.map(t => `${t.id} (${t.name}): ${scopeOf(t, board).reason}`).join("; ");
+  const outcome = await agent(
+    `Every ticket that is otherwise ready is outside the project plan's scope, so the orchestrator will not start any of them: ${lines}. Return outcome="idle" with a summary that names those tickets, says they are out of the plan's scope, and states the two ways forward: add the missing requirement to the plan (run /plan-update, or 'maestro plan add …'), or have a human record a scope exception on the ticket ('maestro ticket retrace <id> --scope-exception "<reason>"'). Do NOT suggest editing the board or the plan by hand, and do NOT start any ticket.`,
+    { label: "scope-blocked-report", schema: OUTCOME_SCHEMA }
+  );
+  log(`Out of scope: ${outcome.summary}`);
+  return outcome;
+}
 
 async function idleReport(board) {
   const outcome = await agent(
@@ -1056,7 +1139,10 @@ async function doStartNext() {
   for (const w of boardInflationReport(board)) log(`⚠ ${w}`);
   await runHealthAdvisory();
   const ticket = pickNextTicket(board);
-  if (!ticket) return await idleReport(board);
+  if (!ticket) {
+    const blocked = scopeBlocked(board);
+    return blocked.length ? await scopeBlockedReport(board, blocked) : await idleReport(board);
+  }
   return await startTicket(ticket, board);
 }
 
@@ -1069,6 +1155,13 @@ async function doStart(id) {
   if (ticket.status !== "todo") return { outcome: "blocked", ticketId: id, summary: `ticket ${id} is ${ticket.status}, not todo` };
   if (!depsMet(ticket, board)) return { outcome: "blocked", ticketId: id, summary: `ticket ${id} has missing or incomplete dependencies` };
   if (ticketIsHumanGated(ticket)) return { outcome: "blocked", ticketId: id, summary: `ticket ${id} requires explicit human approval` };
+  // Naming a ticket explicitly does not bypass the plan — that would make the gate advisory
+  // for anyone who knows a ticket id, which is everyone reading the board.
+  const scope = scopeOf(ticket, board);
+  if (scope.blocks) {
+    return { outcome: "blocked", ticketId: id,
+      summary: `ticket ${id} is outside the project plan's scope — ${scope.reason}. Add the requirement to the plan (/plan-update), or record a scope exception: maestro ticket retrace ${id} --scope-exception "<reason>"` };
+  }
   return await startTicket(ticket, board);
 }
 

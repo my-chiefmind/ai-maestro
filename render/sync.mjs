@@ -634,6 +634,7 @@ if (config.targets?.workflow) {
     RUNS_JSON: JSON.stringify(join(OUT, ".maestro", "run")),
     VALIDATE_CMD_JSON: JSON.stringify(`node ${join(KIT, "scripts", "validate-board.mjs")} ${boardData}`),
     TICKET_CMD_JSON: JSON.stringify(`node ${join(KIT, "scripts", "board-write.mjs")}`),
+    PLAN_CMD_JSON: JSON.stringify(`node ${join(KIT, "scripts", "plan-write.mjs")}`),
     MERGE_STRATEGY_JSON: JSON.stringify(orch.mergeStrategy === "pr" ? "pr" : "local-push"),
     PUBLISH_BOARD_JSON: JSON.stringify(orch.publishBoard === true),
     REPO_PATH_JSON: JSON.stringify(repoPath),

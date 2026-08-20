@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CssBaseline, ThemeProvider, Box, Button, Typography, IconButton, Select, MenuItem } from '@mui/material';
 import { buildTheme, type ThemeMode } from './theme';
 import BoardConsole from './BoardConsole';
+import PlanPage from './PlanPage';
 import RosterPage from './RosterPage';
 import DocsPage from './DocsPage';
 import HelpPage from './HelpPage';
@@ -12,7 +13,7 @@ import { useConfig } from './useConfig';
 import { getPortfolioToday, setActiveProject } from './api';
 import logoUrl from '../asset/logo.png';
 
-type Tab = 'board' | 'today' | 'roster' | 'docs' | 'reports' | 'help';
+type Tab = 'board' | 'plan' | 'today' | 'roster' | 'docs' | 'reports' | 'help';
 
 // Sentinel for "the board this service was started for" in the project picker. A real
 // registry name can't collide with it: it isn't a name the registry format produces.
@@ -74,6 +75,7 @@ export default function App() {
           )}
           <Box sx={{ display: 'flex', gap: 0.5, ml: 2 }}>
             <NavButton active={tab === 'board'} onClick={() => setTab('board')}>Board</NavButton>
+            <NavButton active={tab === 'plan'} onClick={() => setTab('plan')}>Plan</NavButton>
             {projects && <NavButton active={tab === 'today'} onClick={() => setTab('today')}>Today</NavButton>}
             <NavButton active={tab === 'roster'} onClick={() => setTab('roster')}>Roster</NavButton>
             <NavButton active={tab === 'docs'} onClick={() => setTab('docs')}>Docs</NavButton>
@@ -88,6 +90,7 @@ export default function App() {
             through the new scope without knowing portfolio mode exists. */}
         <Box key={project}>
           {tab === 'board' ? <BoardConsole />
+            : tab === 'plan' ? <PlanPage />
             : tab === 'today' ? <TodayPage onOpenProject={pickProject} />
             : tab === 'roster' ? <RosterPage />
             : tab === 'docs' ? <DocsPage />

@@ -37,6 +37,15 @@ Validate whenever the board was hand-edited or a run behaves unexpectedly.
   (`config.model.floors`); it will run on the stronger model. Set it explicitly to silence the
   warning.
 - **Epic references** — every `epicId` points at a real epic.
+- **Plan scope** — once `{{BOARD}}/plan.json` names a deliverable, use case, or requirement,
+  the validator **warns** on any ticket whose `traces_to` is empty, points at an id the plan
+  doesn't define, or points at an `OUT-` id. It stays a warning here on purpose: you must be
+  able to jot a ticket before the plan covers it. It becomes a **block at run time** — the
+  orchestrator refuses to pick a scope-blocked ticket. Fix it by adding the requirement
+  (`/plan-update`) or by having a human write a `scope_exception` with the reason. A project
+  with no plan has the gate off, and the validator says so.
+- **Plan coverage** — the validator lists plan items no ticket is working. An uncovered `FR-`
+  is either a missing ticket or a requirement that shouldn't have been in the plan.
 - **Human gates** — the validator warns when a `human_gate` value isn't in
   `config.humanGates`, so gates stay a known vocabulary the orchestrator matches reliably
   rather than free text. It also warns when a human-gated ticket sits in `todo` or
