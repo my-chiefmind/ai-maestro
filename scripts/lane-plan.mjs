@@ -18,7 +18,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { resolve, dirname, join } from "path";
-import { eligibleTickets } from "./board-core.mjs";
+import { eligibleTickets, scopeBlockedTickets } from "./board-core.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import {
   assignLanes, startableNow, conflictReason, parallelismLostToVagueness,
@@ -91,6 +91,12 @@ try { plan = readPlanForBoard(boardPath); } catch { plan = null; }
 
 const ready = eligibleTickets(board, archive.tickets ?? [], { plan });
 
+// Ready by dependency but refused by the plan. Reported separately, never folded into "nothing
+// to schedule": a board with three scope-blocked tickets and a board with no work left look
+// identical otherwise, and only one of them is fixed by /plan-update. The orchestrator, the
+// validator and the portfolio survey all keep these apart; this report has to as well.
+const blockedByScope = scopeBlockedTickets(board, archive.tickets ?? [], plan);
+
 // ── check ───────────────────────────────────────────────────────────────────────
 if (op === "check") {
   const [, aId, bId] = argv;
@@ -135,12 +141,13 @@ if (op === "next") {
       start: startable.start.map((t) => t.id),
       exclusive: startable.exclusive?.id ?? null,
       waiting: startable.waiting.map((t) => t.id),
+      scopeBlocked: blockedByScope.map((r) => r.ticket.id),
       max: schedule.max,
     }) + "\n");
     process.exit(0);
   }
   out("");
-  if (!startable.start.length) out("  Nothing startable right now.");
+  if (!startable.start.length) out(`  Nothing startable right now.${blockedByScope.length ? ` ${blockedByScope.length} ticket(s) are ready but out of the plan's scope.` : ""}`);
   else out(`  Start now (${startable.start.length}): ${startable.start.map((t) => t.id).join(", ")}`);
   if (startable.exclusive) out(`  ⚠ ${startable.exclusive.id} runs ALONE — the pool must be empty first.`);
   if (startable.waiting.length) out(`  Waiting for the pool to drain: ${startable.waiting.map((t) => t.id).join(", ")}`);
@@ -158,6 +165,7 @@ if (JSON_OUT) {
     })),
     startNow: startable.start.map((t) => t.id),
     waiting: startable.waiting.map((t) => t.id),
+    scopeBlocked: blockedByScope.map((r) => ({ id: r.ticket.id, reason: r.verdict.reason })),
     parallelismLost: vague,
   }) + "\n");
   process.exit(0);
@@ -165,7 +173,17 @@ if (JSON_OUT) {
 
 out("");
 if (!ready.length) {
-  out("  Nothing is eligible to run, so there is nothing to schedule.");
+  if (blockedByScope.length) {
+    // The actionable case, and the one this used to hide behind "nothing to schedule".
+    out(`  Nothing can be scheduled: all ${blockedByScope.length} ready ticket(s) are outside the project plan's scope.`);
+    out("");
+    for (const { ticket, verdict } of blockedByScope) out(`   ✗ ${String(ticket.id).padEnd(8)} ${verdict.reason}`);
+    out("");
+    out("  Add the missing requirement to the plan (/plan-update), or record a scope exception:");
+    out("    maestro ticket retrace <id> --scope-exception \"<reason>\"");
+  } else {
+    out("  Nothing is eligible to run, so there is nothing to schedule.");
+  }
   out("");
   process.exit(0);
 }
@@ -185,6 +203,9 @@ for (const l of schedule.lanes) {
   out("");
 }
 out(`  Starting now: ${startable.start.map((t) => t.id).join(", ") || "nothing"}`);
+if (blockedByScope.length) {
+  out(`  Out of the plan's scope, so never scheduled: ${blockedByScope.map((r) => r.ticket.id).join(", ")}`);
+}
 if (startable.waiting.length) {
   out(`  Held until the pool drains: ${startable.waiting.map((t) => t.id).join(", ")}`);
 }
