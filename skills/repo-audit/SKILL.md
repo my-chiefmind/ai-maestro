@@ -33,9 +33,9 @@ portfolio tooling, so its board-drift section will legitimately be thin.
 
 1. Resolve the argument to **exactly one** repo. If it matches nothing, or more than one, **ask —
    do not guess.**
-2. Launch the agent via the Agent tool with `subagent_type: "repo-audit"`, passing the resolved
-   repo path and any extra focus the user gave (e.g. "focus on the upload path"). Run it in the
-   foreground so you can relay the result.
+2. Delegate to the named `repo-audit` agent using the active runtime's subagent mechanism,
+   passing the resolved repo path and any extra focus the user gave (e.g. "focus on the upload
+   path"). Run it in the foreground so you can relay the result.
 3. When it returns, relay: the verdict line, severity counts, the top 3 improvements, and the
    **report file path** as a clickable link.
 4. State the next repo in the queue, so the user can run `/repo-audit next`.

@@ -60,6 +60,10 @@ test("a fresh setup seeds the starter's board, not this kit's own", () => {
   assert.deepEqual(data.epics.map((e) => e.id), ["e1"]);
   assert.equal(data.epics[0].name, "Foundation", "should get the starter's epic, not ai-maestro's own epics");
 
+  assert.ok(existsSync(join(projDir, "AGENTS.md")), "setup must generate Codex project guidance");
+  assert.ok(existsSync(join(projDir, ".agents", "skills", "orchestrator", "SKILL.md")), "setup must generate Codex skills");
+  assert.ok(existsSync(join(projDir, ".codex", "agents", "orchestrator.toml")), "setup must generate Codex subagents");
+
   const archive = JSON.parse(readFileSync(join(projDir, "maestro", "board", "archive.json"), "utf8"));
   assert.deepEqual(archive.tickets, []);
 
@@ -95,6 +99,7 @@ test("setup creates the custom/ folder the docs tell people to use", () => {
   writeFileSync(join(custom, "agents", "house.md"), "---\nname: house\ndescription: ours\n---\n# House\n");
   run(["sync", "--project", join(projDir, "maestro")]);
   assert.ok(existsSync(join(projDir, ".claude", "agents", "house.md")));
+  assert.ok(existsSync(join(projDir, ".codex", "agents", "house.toml")));
 
   // A --force re-run must not overwrite an edited README or eat the agent.
   const edited = "# mine\n";

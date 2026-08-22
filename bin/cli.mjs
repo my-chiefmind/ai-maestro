@@ -158,8 +158,8 @@ function writeVendorPackageJson(dest) {
  * The docs name `custom/agents/` and `custom/skills/<name>/SKILL.md` as where your own agents
  * go, but nothing created either — the folder only ever appeared when `update` or the renderer
  * rescued a file into it. So the documented path didn't exist in a fresh install, which reads
- * as "that isn't really how this works" and sends people back to hand-editing `.claude/` —
- * the one place the renderer overwrites.
+ * as "that isn't really how this works" and sends people back to hand-editing generated
+ * runtime folders — exactly what the renderer overwrites.
  *
  * Never overwrites: on a `--force` re-run the README may have been edited, and any agent
  * already there is the whole point of the folder.
@@ -174,8 +174,8 @@ function seedCustomDir(kit) {
     `# Your agents and skills
 
 This folder is yours. \`maestro update\` replaces the kit's folders wholesale and never touches
-this one, so anything here survives every upgrade — unlike hand-editing \`.claude/\`, which the
-renderer regenerates.
+this one, so anything here survives every upgrade — unlike hand-editing \`.claude/\`,
+\`.agents/\`, or \`.codex/\`, which the renderer regenerates.
 
 | You want to | Put it in |
 | --- | --- |
@@ -628,7 +628,7 @@ async function init(args) {
   config.kitSource = IS_PACKAGED
     ? { mode: "npm", package: "@mychiefmind/ai-maestro" }
     : { mode: "sibling", path: relative(projectDir, KIT_ROOT) || "." };
-  config.outDir = ".."; // render .claude/ + CLAUDE.md to the repo root (parent of the capsule)
+  config.outDir = ".."; // render native runtime files to the repo root (parent of the capsule)
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 
   // 2b. Replace the starter's placeholder brief with one written from the answers.
@@ -670,15 +670,15 @@ async function init(args) {
 ✅ Done. Next steps:
 
 ${existsSync(boardData)
-  ? `   1. Open this repo in Claude Code and run '/project-plan' — your brief in
+  ? `   1. Open this repo in Claude Code or Codex and run '/project-plan' — your brief in
       ${rel}/context.md becomes epics and dependency-ordered tickets, then it stops for review.`
-  : `   1. Open this repo in Claude Code — your brief is in ${rel}/context.md; correct anything
+  : `   1. Open this repo in Claude Code or Codex — your brief is in ${rel}/context.md; correct anything
       the agents should know before they start.`}
 ${boardStep}
 ${existsSync(boardData)
   ? `   3. Approve the plan, then run '/orchestrator' to build a ticket. Agents & skills are in
-      ./.claude/ at your repo root.`
-  : `   3. Agents & skills are in ./.claude/ at your repo root — ask one of them for the work
+      ./.claude/ for Claude and ./.agents/ + ./.codex/ for Codex.`
+  : `   3. Agents & skills are ready for Claude and Codex at your repo root — ask one of them for the work
       you need.`}
 
    Re-run '${syncCmd}' after changing config.json or context.md.
@@ -689,7 +689,7 @@ ${existsSync(boardData)
  * setup — the whole onboarding, in one questionnaire: it asks for the project brief (outcome,
  * users, stack, constraints, run/test commands), writes config.json + context.md from the
  * answers, initializes a git repo if the folder isn't one, renders the agents/skills, and
- * validates the board — so the only thing left is to ask Claude Code to plan the work.
+ * validates the board — so the only thing left is to ask Claude Code or Codex to plan the work.
  *
  * Two equivalent entry points:
  *
@@ -700,7 +700,7 @@ ${existsSync(boardData)
  *   node maestro/bin/cli.mjs setup      # same, on a clone — answer 2 questions, done
  *
  * The cloned kit holds your config.json / context.md / board; the generated agents land in
- * ./.claude/ + ./CLAUDE.md at your REPO ROOT (where the coding tool discovers them). No npm
+ * native Claude Code and Codex files at your REPO ROOT (where coding tools discover them). No npm
  * install, no server — the core kit is dependency-free. The cockpit UI is optional.
  * Idempotent: re-running detects an existing config and does nothing.
  */
@@ -772,7 +772,7 @@ async function setup(args) {
   const config = JSON.parse(readFileSync(join(starter, "config.json"), "utf8"));
   config.project = { name, areas };
   config.kitSource = { mode: "self", path: "." };
-  config.outDir = ".."; // render .claude/ + CLAUDE.md to the repo root, where the tool looks
+  config.outDir = ".."; // render native runtime files to the repo root, where tools look
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 
   // Seed the initial board from the starter, not from whatever ended up at kit/board/ —
@@ -831,13 +831,14 @@ async function setup(args) {
 ${C.green(C.b(`✅  "${name}" is ready.`))}
 
 ${C.dim("  What was created")}
-   ${C.indigo("./.claude/")}              agents & skills, at your repo root
+   ${C.indigo("./.claude/")}              Claude agents & skills, at your repo root
+   ${C.indigo("./.agents/ + ./.codex/")}  Codex skills & subagents, at your repo root
    ${C.indigo(`${kitName}/context.md`)}       your brief, written from your answers
    ${C.indigo(`${kitName}/board/data.json`)}  your work board
    ${C.indigo(`${kitName}/board/plan.json`)}  your project plan${planned == null ? "" : C.dim(`  — ${planned}% complete`)}
 
-${C.pink(C.b("  ▶  Next — in Claude Code:"))}
-   ${C.cyan("1.")}  Open this repo:   ${C.yellow("claude")}
+${C.pink(C.b("  ▶  Next — in Claude Code or Codex:"))}
+   ${C.cyan("1.")}  Open this repo:   ${C.yellow("claude")} ${C.dim("or")} ${C.yellow("codex")}
    ${C.cyan("2.")}  Plan the work:    ${C.yellow("/project-plan")}
        ${C.dim("writes the project plan — goal, scope, deliverables, use cases,")}
        ${C.dim("requirements — then turns it into epics and dependency-ordered")}
@@ -917,7 +918,7 @@ function isKitClone() {
  *
  * From npm/npx/global (IS_PACKAGED): refreshes the kit that `setup` vendored into
  * <repo>/maestro/ — kit files are replaced, the user's config.json / context.md / board data
- * are kept — then re-renders .claude/ and re-checks the board. The registry is the update
+ * are kept — then re-renders all enabled runtime targets and re-checks the board. The registry is the update
  * channel, so run it through the latest package:
  *
  *   npx @mychiefmind/ai-maestro@latest update      # at the repo root
@@ -1202,12 +1203,12 @@ function help() {
 
   setup       Set up AI Maestro in your project — a short questionnaire (start here)
               Asks for your project brief, writes config.json + context.md from the answers,
-              runs 'git init' if needed, renders .claude/, and checks the board.
+              runs 'git init' if needed, renders Claude + Codex files, and checks the board.
               Offers to open the visual board at the end (--no-board to skip, --yes to auto-open)
               Answer non-interactively with: --name, --areas, --outcome, --users, --stack,
               --constraints, --run, --test  (anything omitted defaults to "propose one")
   update      Bring a set-up kit to this CLI's version
-              Refreshes the kit files in maestro/ and re-renders .claude/; your config.json,
+              Refreshes the kit files in maestro/ and re-renders Claude + Codex targets; your config.json,
               context.md, board data, and anything in maestro/custom/ are kept. Run it through
               the latest package: 'npx @mychiefmind/ai-maestro@latest update' (or 'npm run
               update' from maestro/). On a git clone of the kit it pulls and re-renders instead.
@@ -1219,7 +1220,7 @@ function help() {
               If the project already matches this CLI, it checks that the CLI is itself current
               before saying so — npx runs a cached copy unless you name a version, and a stale
               one would otherwise call a months-old project up to date. --offline skips it.
-  sync        Re-render .claude/ from config.json + context.md
+  sync        Re-render Claude + Codex targets from config.json + context.md
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.
   validate    Check the board's integrity
@@ -1263,7 +1264,7 @@ Examples:
 const COMMANDS = [
   { key: "setup", label: "Set up AI Maestro in your project (start here)" },
   { key: "update", label: "Bring a set-up kit to this CLI's version" },
-  { key: "sync", label: "Re-render .claude/ from config.json + context.md" },
+  { key: "sync", label: "Re-render Claude + Codex files from config.json + context.md" },
   { key: "validate", label: "Check the board's integrity" },
   { key: "ticket", label: "Change the board safely (add | import | set-status | archive)" },
   { key: "plan", label: "The project plan and its completeness (status | questions | add)" },
