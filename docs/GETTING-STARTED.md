@@ -28,8 +28,8 @@ You'll need:
 
 - **git** and a repo (new or existing — both work the same way).
 - **Node.js 18+** — check with `node --version`.
-- **An agentic coding tool** that can run subagents — [Claude Code](https://claude.com/claude-code)
-  or a compatible harness.
+- **An agentic coding tool** that can run subagents — [Claude Code](https://claude.com/claude-code),
+  Codex, or a compatible harness.
 
 That's it. The core kit is **dependency-free**, so setup needs no `npm install` and starts
 nothing running.
@@ -50,9 +50,9 @@ question in your brief rather than a silent blank.
 then runs from inside the `maestro/` folder. If you'd rather stay at your project root,
 `node maestro/bin/cli.mjs setup` is exactly equivalent.
 
-**What it won't clobber** — an existing root `CLAUDE.md` is never overwritten, and an existing
-`context.md` is kept rather than replaced by your answers. `setup` is idempotent: re-running does
-nothing once you're set up.
+**What it won't clobber** — existing root `CLAUDE.md` or `AGENTS.md` files are never overwritten,
+nor are unmanaged `.codex/agents` or `.agents/skills` files. An existing `context.md` is kept
+rather than replaced by your answers. `setup` is idempotent: re-running does nothing once you're set up.
 
 **The board prompt** — `setup` ends by asking *"Open the visual board now?"*. `--yes` opens it
 without asking; `--no-board` skips the prompt entirely. Both matter for scripted/CI runs, which
@@ -64,7 +64,7 @@ interactive terminal shows a numbered picker for `setup` / `sync` / `validate` /
 > **Adopting into an existing codebase?** Don't answer the questionnaire from memory — have your
 > coding agent fill it in from the real repo, then plan a board of near-term work for you to
 > review. The ready-made prompt for that is
-> [Path 2 in the README](../README.md#path-2--hands-free-onboarding-with-claude-code).
+> [Path 2 in the README](../README.md#path-2--hands-free-onboarding-with-an-ai-coding-agent).
 
 ## What you maintain
 
@@ -73,7 +73,7 @@ repo root, and your application code is never touched. See the
 [layout diagram](../README.md#how-it-sits-in-your-project) in the README.
 
 You maintain **three things** — `config.json`, `context.md`, and the **board**. Everything in
-`.claude/` is rendered from them, so it is never the thing you edit. After any change to
+`.claude/`, `.agents/`, and `.codex/` is rendered from them, so it is never the thing you edit. After any change to
 `config.json` or `context.md`, re-render (from inside the `maestro/` folder):
 
 ```bash
@@ -81,8 +81,8 @@ npm run sync
 ```
 
 In CI or a pre-commit hook, add `--check` to fail if the generated files are stale. `sync` only
-removes files it generated last time (tracked in `.maestro.lock`), so anything else you keep
-under `.claude/` is left alone.
+removes files it generated last time (tracked in `.maestro.lock`), so unmanaged runtime files
+are left alone.
 
 ## The brief — `maestro/context.md`
 
@@ -240,15 +240,15 @@ A few less common keys, for when you need them:
 {
   "roster": ["orchestrator", "principal-engineer", "backend-developer", "qa"],  // narrow the kit's agents to just these (by file basename, no ".md")
   "skills": ["board-validate", "delivery-hygiene"],                            // same idea, for skills
-  "targets": { "codex": true }                                                 // also render .codex/agents/*.toml per agent, for the Codex CLI
+  "targets": { "claude": true, "codex": true }                                // both default true; set either false to disable it
 }
 ```
 
 `roster`/`skills` default to everything the kit ships when omitted. A narrowed entry with a
 typo warns (`config.roster: "xyz" matches no agent — typo?`) rather than silently vanishing —
-check `sync`'s output after editing either. `targets.codex` is off by default; each generated
-`.codex/agents/<name>.toml` is derived from the matching `.claude/agents/<name>.md`, so it
-never drifts from it independently.
+check `sync`'s output after editing either. Claude Code and Codex output are both enabled by
+default. Each `.codex/agents/<name>.toml` and `.agents/skills/<name>/SKILL.md` is derived from
+the same canonical `agents/` and `skills/` sources as Claude's files, so the targets cannot drift.
 
 ## The board — what a ticket needs
 
@@ -299,7 +299,7 @@ node maestro/scripts/validate-board.mjs maestro/board/data.json
 ## Running the orchestrator
 
 Open your agentic coding tool at your **repo root** (not inside `maestro/`) and run
-**`/orchestrator`** (in Claude Code) or ask for the `orchestrator` agent by name. The skill
+**`/orchestrator`** or ask for the `orchestrator` agent by name. The skill
 pre-flights the board and your working tree, then hands off to the agent. Each run it will:
 
 1. Read `maestro/board/data.json` and pick the highest-priority unblocked `todo` ticket.
@@ -367,7 +367,7 @@ npm run update                               # …or from the maestro/ folder �
 
 `update` replaces the kit's own files in `maestro/` with the new version's (upstream deletions
 propagate too), keeps everything that's yours — `config.json`, `context.md`, and the board's
-`data.json` / `archive.json` — then re-renders `.claude/` and re-checks the board. It's safe to
+`data.json` / `archive.json` — then re-renders both runtime targets and re-checks the board. It's safe to
 run any time: if you're already current it says so and stops, and it refuses to downgrade
 unless you pass `--force`. Review the diff before committing, like any other change.
 
@@ -459,7 +459,7 @@ Clone the kit once, then `init` drops a small **capsule** (just `config.json`, `
 ```bash
 git clone https://github.com/my-chiefmind/ai-maestro.git ~/maestro   # once, anywhere
 cd ~/code/my-app
-node ~/maestro/bin/cli.mjs init                               # writes maestro/, renders .claude/ to the repo root
+node ~/maestro/bin/cli.mjs init                               # writes maestro/, renders Claude + Codex files to the repo root
 ```
 
 ### Clone the kit in, but keep it out of your git
@@ -474,14 +474,14 @@ printf '\n.maestro-kit/\n.maestro/\n' >> .gitignore
 node .maestro-kit/bin/cli.mjs init
 ```
 
-Commit `maestro/`, `.claude/`, and `CLAUDE.md`; the kit stays untracked. Update with
+Commit `maestro/`, `.claude/`, `.agents/`, `.codex/`, `CLAUDE.md`, and `AGENTS.md`; the kit stays untracked. Update with
 `node .maestro-kit/bin/cli.mjs update` (pulls the clone, then re-render with
 `node .maestro-kit/render/sync.mjs --project maestro`).
 
 ### By hand (or on Windows)
 
 `init` just automates these steps — copy a starter capsule, edit the two config files (**set
-`"outDir": ".."`** so `.claude/` renders to the repo root), then render and validate:
+`"outDir": ".."`** so generated runtime files render to the repo root), then render and validate:
 
 ```bash
 cd ~/code/my-app
@@ -503,7 +503,7 @@ detects drift.
 | Symptom | Fix |
 | --- | --- |
 | `kit not found at … (no agents/ dir)` | Your `--kit` path or `kitSource.path` is wrong — point it at the AI Maestro repo root. |
-| `.claude/` rendered inside `maestro/`, not the repo root | Add `"outDir": ".."` to `config.json` and re-run `sync` (`setup`/`init` set this for you). |
+| Runtime files rendered inside `maestro/`, not the repo root | Add `"outDir": ".."` to `config.json` and re-run `sync` (`setup`/`init` set this for you). |
 | `sync` reports drift under `--check` | A generated file was edited, or `config.json`/`context.md` changed without re-rendering. Re-run `sync` (without `--check`). |
 | Board validation fails | An invalid/duplicate ticket id, a `depends_on`/`epicId` pointing at an id that doesn't exist, or a dependency cycle. Fix and re-validate. |
 | Orchestrator picks nothing | No ticket is both `todo` and unblocked (all its `depends_on` must be `done`) with any `human_gate` cleared. |

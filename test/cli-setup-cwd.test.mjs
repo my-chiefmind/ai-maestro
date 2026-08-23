@@ -66,6 +66,8 @@ test("still works from inside the maestro/ clone itself", () => {
     cli(kitClone, ["setup", "--yes", "--no-board"], kitClone);
     assert.ok(existsSync(join(kitClone, "config.json")));
     assert.ok(existsSync(join(join(tmp, "project"), "CLAUDE.md")), "renders up to the project root, dirname(kit)");
+    assert.ok(existsSync(join(join(tmp, "project"), "AGENTS.md")), "renders Codex guidance to the project root");
+    assert.ok(existsSync(join(join(tmp, "project"), ".agents", "skills", "orchestrator", "SKILL.md")));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

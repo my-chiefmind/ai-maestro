@@ -2,7 +2,7 @@
 /**
  * maestro-drift.mjs — cross-project drift report.
  *
- * .claude/ must always be exactly what render/sync.mjs would generate — that is what makes
+ * Generated Claude Code and Codex files must match render/sync.mjs — that is what makes
  * ai-maestro the source of truth instead of N diverging copies. Any hand-edited generated
  * file is a signal someone improved something locally and never sent it upstream. This walks
  * a registry of projects and reports, per project: the installed kit version vs the latest on

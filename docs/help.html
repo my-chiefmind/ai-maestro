@@ -195,8 +195,9 @@
         </div>
         <div class="card">
           <h3><span class="tagdot t-gen"></span>Everything else is generated</h3>
-          <p><code>.claude/</code> and <code>CLAUDE.md</code> are rendered from those files plus the
-             kit. Never hand-edit them — change the source and re-render.</p>
+          <p>Claude's <code>.claude/</code>/<code>CLAUDE.md</code> and Codex's
+             <code>.agents/</code>/<code>.codex/</code>/<code>AGENTS.md</code> are rendered from those
+             files plus the kit. Never hand-edit them — change the source and re-render.</p>
         </div>
       </div>
     </section>
@@ -253,13 +254,13 @@
       agents/*.md
       skills/&lt;name&gt;/SKILL.md
     agents/ skills/ render/ …   <span class="c">kit files — replaced wholesale on update</span>
-  <b>.claude/</b>                      <span class="c">GENERATED — agents &amp; skills, do not hand-edit</span>
-  <b>CLAUDE.md</b>                     <span class="c">GENERATED — header + your context</span>
+  <b>.claude/ + CLAUDE.md</b>          <span class="c">GENERATED — Claude agents, skills &amp; guidance</span>
+  <b>.agents/ + .codex/ + AGENTS.md</b> <span class="c">GENERATED — Codex skills, subagents &amp; guidance</span>
   <b>.maestro.lock</b>                 <span class="c">content hashes of everything generated</span></pre>
       <p class="prose">
         The lock file is what makes the renderer safe: it records exactly which files this tool
-        produced, so it only ever removes its own. Anything else you keep under <code>.claude/</code>
-        is either adopted into <code>custom/</code> or left alone — never silently overwritten.
+        produced, so it only ever removes its own. Unmanaged runtime files are either adopted
+        into <code>custom/</code> or left alone — never silently overwritten.
       </p>
     </section>
 
@@ -277,7 +278,7 @@
             <tr><td class="mono">area</td><td>backend / frontend / infra / docs… Selects the area's model floor and test command.</td></tr>
             <tr><td class="mono">depends_on</td><td>The ticket is eligible only when every id listed is done.</td></tr>
             <tr><td class="mono">agent_plan</td><td>The ordered pipeline of agent codes. Terminal gates are appended if absent.</td></tr>
-            <tr><td class="mono">model</td><td><code>haiku</code> / <code>sonnet</code> / <code>opus</code>. The run uses the <em>stronger</em> of this and the area floor.</td></tr>
+            <tr><td class="mono">model</td><td><code>haiku</code> / <code>sonnet</code> / <code>opus</code>. The run uses the <em>stronger</em> of this and the area floor; Codex maps them to low / medium / high reasoning effort.</td></tr>
             <tr><td class="mono">execution_mode</td><td><code>multi-agent</code> runs the full gated pipeline; <code>single-agent</code> a lighter path.</td></tr>
             <tr><td class="mono">human_gate</td><td>When set, the orchestrator never auto-picks it — a person must clear it first.</td></tr>
             <tr><td class="mono">testCmd</td><td>Overrides the area's default test command for this ticket only.</td></tr>
@@ -395,19 +396,20 @@
         output afterwards: it looks exactly like a kit agent.
       </p>
       <div class="note good">
-        <h3>Already using Claude Code before installing?</h3>
+        <h3>Already using Claude Code or Codex before installing?</h3>
         <p>Your existing <code>.claude/agents</code> and <code>.claude/skills</code> are <strong>adopted,
            not overwritten</strong>. On the first render they move into <code>maestro/custom/</code>,
            which both preserves them and keeps them the thing that renders — so your setup behaves
            after the install exactly as it did before. Your own <code>CLAUDE.md</code> is kept in
-           place untouched.</p>
+           place untouched. Existing unmanaged Codex files under <code>.agents/skills</code> and
+           <code>.codex/agents</code> are likewise preserved in place.</p>
       </div>
     </section>
 
     <!-- ── update ── -->
     <section id="update">
       <div class="sec-head"><p class="eyebrow">Lifecycle</p><h2>Install, render, update</h2></div>
-<pre><span class="c"># set up in your repo — asks a short questionnaire, writes config + context, renders .claude/</span>
+<pre><span class="c"># set up in your repo — asks a short questionnaire and renders Claude + Codex targets</span>
 npx @mychiefmind/ai-maestro setup
 
 <span class="c"># re-render after editing config.json or context.md (from the maestro/ folder)</span>
@@ -437,7 +439,7 @@ maestro ticket archive   T-010 --evidence "merged abc123: suite green"</pre>
       </p>
       <div class="note">
         <h3>Keeping generated files honest</h3>
-        <p><code>sync --check</code> exits non-zero if the committed <code>.claude/</code> no longer
+        <p><code>sync --check</code> exits non-zero if committed generated runtime files no longer
            matches what would be rendered. Useful in a pre-commit hook or CI so generated files
            can't go stale.</p>
       </div>
@@ -482,7 +484,7 @@ node maestro/render/sync.mjs --all --registry maestro-registry.json --check</pre
             <tr><td>Orchestrator reports idle</td><td>No ticket is eligible: every <code>todo</code> ticket has an unmet <code>depends_on</code> or a <code>human_gate</code>. Run <code>maestro validate</code> — it prints the eligible count.</td></tr>
             <tr><td>A ticket routes nowhere</td><td>Its <code>agent_plan</code> names a code with no agent behind it. Check the code table above — the code is not always the filename.</td></tr>
             <tr><td>My agent isn't rendering</td><td>If it's a kit agent, add it to <code>roster</code> in <code>config.json</code>. Your own agents in <code>custom/</code> are never roster-filtered and always render.</td></tr>
-            <tr><td>An edit to <code>.claude/</code> disappeared</td><td>That folder is generated. Put the change in <code>maestro/custom/</code> — as an <code>.overlay.md</code> if you only wanted to add rules — and re-render.</td></tr>
+            <tr><td>An edit to a generated runtime folder disappeared</td><td>Put the change in <code>maestro/custom/</code> — as an <code>.overlay.md</code> if you only wanted to add rules — and re-render.</td></tr>
             <tr><td><code>sync --check</code> reports drift</td><td>A generated file was edited, or <code>config.json</code>/<code>context.md</code> changed without re-rendering. Run <code>sync</code> without <code>--check</code>.</td></tr>
             <tr><td>An agent stopped improving with the kit</td><td>You have a full replacement for it in <code>custom/</code>. <code>sync</code> names these under "replacing a kit agent". Convert it to an <code>.overlay.md</code> to get updates back.</td></tr>
             <tr><td>A stuck or suspicious run</td><td>Use the <code>orchestration-health</code> skill — it finds phantom in-progress tickets, orphaned worktrees and unresolved dependencies.</td></tr>

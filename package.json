@@ -1,6 +1,6 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
@@ -59,6 +59,8 @@
     "board",
     "kanban",
     "claude",
+    "codex",
+    "gpt",
     "agentic",
     "workflow"
   ],

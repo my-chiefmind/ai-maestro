@@ -40,7 +40,8 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
    ticket — that is the arrangement lanes exist to avoid.
 6. **Resolve, then run the plan.** Two things are computed from policy, not taken literally:
    - **Effective model** = the **stronger** of the ticket's `model` and its area's floor (see
-     the *Model policy* in `CLAUDE.md`). Run every stage on the effective model.
+     the *Model policy* in the root `AGENTS.md` or `CLAUDE.md`). Run every stage on the effective
+     model; in Codex, map `haiku`/`sonnet`/`opus` to low/medium/high reasoning effort.
    - **Resolved plan** = the ticket's `agent_plan` with terminal gates appended in order:
      always end with `qa → merge`; add `pd` before `merge` for `multi-agent` or human-gated
      tickets. A bare `["backend"]` therefore runs `backend → qa → merge`.

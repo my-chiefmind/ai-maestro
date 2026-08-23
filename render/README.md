@@ -1,13 +1,21 @@
 # render/
 
-`sync.mjs` turns a project's two hand-maintained files into a full `.claude/` setup.
+`sync.mjs` turns a project's two hand-maintained files into native Claude Code and Codex setups.
 
 ```
-config.json  +  context.md  +  the kit  ──sync.mjs──►  .claude/agents/   (chosen roster)
-                                                        .claude/skills/   (chosen skills)
-                                                        CLAUDE.md         (header + context)
-                                                        .maestro.lock     (content hashes)
+config.json + context.md + kit ──sync.mjs──► .claude/agents/       Claude roster
+                                           .claude/skills/       Claude skills
+                                           CLAUDE.md             Claude guidance
+                                           .codex/agents/        Codex subagents
+                                           .agents/skills/       Codex skills
+                                           AGENTS.md             Codex guidance
+                                           .maestro.lock         content hashes
 ```
+
+The Codex output follows the official conventions for
+[AGENTS.md](https://developers.openai.com/codex/guides/agents-md),
+[skills](https://developers.openai.com/codex/skills), and
+[custom subagents](https://developers.openai.com/codex/subagents).
 
 ## Usage
 
@@ -37,6 +45,9 @@ node render/sync.mjs --project <dir> [--kit <dir>] [--check]
   both preserves it and keeps it the thing that renders, since `custom/` overrides a kit file of
   the same name. `CLAUDE.md` / `AGENTS.md` have no `custom/` slot, so those are left in place
   with a warning instead.
+- **Existing Codex files are never overwritten on first render.** An unmanaged
+  `.codex/agents/*.toml` or `.agents/skills/*/SKILL.md` remains in place and is excluded from
+  Maestro's lock. Once Maestro has generated a Codex file, later syncs update it normally.
 - **Adding vs replacing.** A project file whose name the kit doesn't ship *adds* an agent and
   costs nothing. One whose name the kit *does* ship *replaces* it — this project then stops
   receiving kit improvements to it. `sync` reports the two separately and names the alternative
@@ -63,4 +74,5 @@ See `starters/orchestrated-project/config.json` for a full example. Keys:
 | `skills` | Skill dir names to include (omit = all). |
 | `model.default` / `model.floors` | Default model tier + per-area floors. |
 | `humanGates` | Allowed `human_gate` phrases for tickets. |
+| `targets.claude` / `targets.codex` | Enable either runtime target; both default to `true`. |
 | `kitSource.mode` / `kitSource.path` | Where the kit lives (`sibling` / `vendor`). |

@@ -55,6 +55,10 @@
     "owner sign-off",
     "irreversible change approved"
   ],
+  "targets": {
+    "claude": true,
+    "codex": true
+  },
   "kitSource": {
     "mode": "sibling",
     "path": "../../maestro"

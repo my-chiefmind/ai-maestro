@@ -1,7 +1,7 @@
 /**
  * Tests for the render/sync.mjs features ported from lense-kit's toolkit/render/sync.mjs
  * (T-004 §2 item 12): roster/skills typo warnings, generic {{KEY|filter}} templating,
- * AGENTS.md output, opt-in Codex multi-target rendering, configHash in the lock, and --all
+ * AGENTS.md output, native Codex multi-target rendering, configHash in the lock, and --all
  * batch mode with per-project error isolation.
  *
  * Run: npm test
@@ -80,27 +80,91 @@ test("warns on a typo'd roster or skills entry instead of silently dropping or c
   }
 });
 
-test("opt-in Codex rendering: off by default, on with targets.codex", () => {
-  const { tmp, proj } = makeProject();
+test("Codex rendering is on by default and can be disabled explicitly", () => {
+  const { tmp, proj } = makeProject({ targets: { codex: false } });
   try {
     sync(proj);
-    assert.ok(!existsSync(join(proj, ".codex")), "no .codex/ without targets.codex");
+    assert.ok(!existsSync(join(proj, ".codex")), "no .codex/ when targets.codex is false");
+    assert.ok(!existsSync(join(proj, ".agents")), "no .agents/ when targets.codex is false");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 
-  const { tmp: tmp2, proj: proj2 } = makeProject({ targets: { codex: true } });
+  const { tmp: tmp2, proj: proj2 } = makeProject();
   try {
     sync(proj2);
     const toml = readFileSync(join(proj2, ".codex", "agents", "backend-developer.toml"), "utf8");
-    assert.match(toml, /name\s*=\s*"backend-developer"/);
-    assert.match(toml, /\[prompt\]/);
+    assert.match(toml, /^name\s*=\s*"backend-developer"$/m);
+    assert.match(toml, /^description\s*=\s*".+"$/m);
+    assert.match(toml, /^developer_instructions\s*=\s*".+"$/m);
+    assert.doesNotMatch(toml, /^\[(agent|prompt)\]$/m, "Codex agent keys must be top-level");
+    assert.doesNotMatch(toml, /^model\s*=/m, "omitting model lets the custom agent inherit its parent");
     // the agent's frontmatter description made it into the Codex file, not just a placeholder
     const md = readFileSync(join(proj2, ".claude", "agents", "backend-developer.md"), "utf8");
     const description = md.match(/description:\s*"(.*)"/)[1];
     assert.ok(toml.includes(description.slice(0, 40)), "Codex description should come from the agent's own frontmatter");
+    assert.equal(
+      readFileSync(join(proj2, ".agents", "skills", "board-validate", "SKILL.md"), "utf8"),
+      readFileSync(join(proj2, ".claude", "skills", "board-validate", "SKILL.md"), "utf8"),
+      "Codex and Claude skills must derive from the same overlaid source"
+    );
   } finally {
     rmSync(tmp2, { recursive: true, force: true });
+  }
+});
+
+test("Codex-only rendering omits .claude and CLAUDE.md", () => {
+  const { tmp, proj } = makeProject({ targets: { claude: false, codex: true } });
+  try {
+    sync(proj);
+    assert.ok(!existsSync(join(proj, ".claude")));
+    assert.ok(!existsSync(join(proj, "CLAUDE.md")));
+    assert.ok(existsSync(join(proj, "AGENTS.md")));
+    assert.ok(existsSync(join(proj, ".agents", "skills", "board-validate", "SKILL.md")));
+    assert.ok(existsSync(join(proj, ".codex", "agents", "backend-developer.toml")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("disabling Codex prunes only Codex files Maestro generated", () => {
+  const { tmp, proj } = makeProject();
+  try {
+    sync(proj);
+    const ownedAgent = join(proj, ".codex", "agents", "backend-developer.toml");
+    const ownedSkill = join(proj, ".agents", "skills", "board-validate", "SKILL.md");
+    const userAgent = join(proj, ".codex", "agents", "mine.toml");
+    writeFileSync(userAgent, 'name = "mine"\ndescription = "mine"\ndeveloper_instructions = "mine"\n');
+
+    const config = JSON.parse(readFileSync(join(proj, "config.json"), "utf8"));
+    config.targets = { codex: false };
+    writeFileSync(join(proj, "config.json"), JSON.stringify(config));
+    sync(proj);
+
+    assert.ok(!existsSync(ownedAgent));
+    assert.ok(!existsSync(ownedSkill));
+    assert.ok(existsSync(userAgent), "disabling a target must not remove unmanaged files");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("first Codex render never overwrites unmanaged Codex files", () => {
+  const { tmp, proj } = makeProject();
+  try {
+    const agent = join(proj, ".codex", "agents", "backend-developer.toml");
+    const skill = join(proj, ".agents", "skills", "board-validate", "SKILL.md");
+    mkdirSync(dirname(agent), { recursive: true });
+    mkdirSync(dirname(skill), { recursive: true });
+    writeFileSync(agent, 'name = "mine"\ndescription = "mine"\ndeveloper_instructions = "mine"\n');
+    writeFileSync(skill, "---\nname: mine\ndescription: mine\n---\nMine.\n");
+    const out = sync(proj);
+    assert.match(readFileSync(agent, "utf8"), /name = "mine"/);
+    assert.match(readFileSync(skill, "utf8"), /name: mine/);
+    assert.match(out, /kept your existing \.codex\/agents\/backend-developer\.toml/);
+    assert.match(out, /kept your existing \.agents\/skills\/board-validate\/SKILL\.md/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 

@@ -91,7 +91,7 @@ the full mapping.
 | [`board/`](./board/) | The board + project-plan formats (`board.schema.json`, `plan.schema.json`) and this repo's own workboard. A runnable example board ships in [`starters/orchestrated-project/board/`](./starters/orchestrated-project/board/) instead — that's what `setup` seeds a new project from, never this one's. |
 | [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, technical-writer, qa, principal-delivery |
 | [`skills/`](./skills/) | Reusable skills — the `/project-plan`, `/plan-update` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
-| [`render/`](./render/) | `sync.mjs` — generates a project's `.claude/` from its config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
+| [`render/`](./render/) | `sync.mjs` — generates native Claude Code and Codex files from one config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
 | [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` (questionnaire onboarding), `sync`, `validate`, `drift`, `init` |
@@ -105,7 +105,7 @@ Two ways in — pick one:
 | Path | What it is | Command |
 | --- | --- | --- |
 | **[1 — Instant Setup with npx](#path-1--instant-setup-with-npx)** | Run the questionnaire yourself, then do the [first steps](#first-steps-after-setup). | `npx @mychiefmind/ai-maestro setup` |
-| **[2 — Hands-Free Onboarding with Claude Code](#path-2--hands-free-onboarding-with-claude-code)** | Paste one prompt; Claude runs setup and fills things in for you. | *(the prompt is below)* |
+| **[2 — Hands-Free Onboarding with an AI coding agent](#path-2--hands-free-onboarding-with-an-ai-coding-agent)** | Paste one prompt in Claude Code or Codex; the agent runs setup and fills things in for you. | *(the prompt is below)* |
 
 Starting from an empty folder, or showing someone else how this works? The
 **[new-project demo](https://mychiefmind.com/ai-maestro/demo)** walks the whole path in plain
@@ -123,23 +123,23 @@ npx @mychiefmind/ai-maestro setup # asks about your project; Enter accepts every
 
 `setup` asks for your project brief — outcome, users, stack, constraints, and how to run and
 test it — then copies the kit into `./maestro/`, writes your `config.json` + `context.md` from
-those answers, runs `git init` if the folder isn't a repo yet, renders the agents & skills into
-`./.claude/` at your repo root, checks the board, and **asks if you'd like to open the visual
+those answers, runs `git init` if the folder isn't a repo yet, renders native Claude Code and
+Codex agents & skills at your repo root, checks the board, and **asks if you'd like to open the visual
 board** (say no and nothing is left running). The six project-brief questions default to
 `propose one`, which hands those decisions to the agents and has them show you what they chose;
 the project name and work areas have concrete defaults.
 
-Now open the repo in Claude Code and run **`/project-plan`** — it writes the **project plan**
+Now open the repo in Claude Code or Codex and run **`/project-plan`** — it writes the **project plan**
 first (goal, scope, deliverables, use cases, functional and non-functional requirements), stops
 for your review, then turns it into epics and dependency-ordered tickets that each trace back to
 a plan item. Approve them, then run **`/orchestrator`**; it picks up the first unblocked ticket
 and runs it — and refuses anything the plan doesn't cover. (Plain language works too: "plan the
 project", "run the board".)
 
-### Path 2 — Hands-Free Onboarding with Claude Code
+### Path 2 — Hands-Free Onboarding with an AI coding agent
 
 Prefer not to answer the questionnaire yourself? Open your project in
-[Claude Code](https://claude.com/claude-code) (or a compatible agentic tool) and paste this
+[Claude Code](https://claude.com/claude-code), Codex, or another compatible agentic tool and paste this
 prompt — it runs `setup` with answers drawn from your real codebase, then plans a board for you
 to review:
 
@@ -157,8 +157,9 @@ Add AI Maestro — the AI-agent orchestration kit — to this project.
      --constraints "<real conventions and guardrails>" \
      --run "<real dev command>" --test "<real test command>"
 
-   This vendors the kit into ./maestro/ and renders agents + skills into
-   ./.claude/ at the repo root. It must NOT touch my application code.
+   This vendors the kit into ./maestro/ and renders Claude files into ./.claude/
+   plus Codex skills/subagents into ./.agents/ and ./.codex/ at the repo root.
+   It must NOT touch my application code.
 
 2. Then plan the work: propose a few real starter tickets based on
    near-term work you can see (TODOs, missing tests, rough edges), keep
@@ -173,7 +174,7 @@ then I'll run /orchestrator myself.
 
 ### First steps after setup
 
-Open your project in Claude Code and run these once, in order:
+Open your project in Claude Code or Codex and run these once, in order:
 
 | Step | Do this | Why |
 | :--: | --- | --- |
@@ -228,19 +229,22 @@ my-app/
 │   └── custom/                ← optional: YOUR agents & skills (never touched by an update)
 │       ├── agents/*.md
 │       └── skills/*/SKILL.md
-├── .claude/                   ← GENERATED — agents & skills (don't hand-edit)
-└── CLAUDE.md                  ← GENERATED — project brief
+├── .claude/                   ← GENERATED — Claude agents & skills
+├── CLAUDE.md                  ← GENERATED — Claude project guidance
+├── .agents/skills/            ← GENERATED — Codex skills
+├── .codex/agents/             ← GENERATED — Codex custom subagents
+└── AGENTS.md                  ← GENERATED — Codex project guidance
 ```
 
 **You'll need** git, Node.js 18+, and an agentic coding tool that can run subagents
-([Claude Code](https://claude.com/claude-code) or compatible). Setup is the single command from
+([Claude Code](https://claude.com/claude-code), Codex, or compatible). Setup is the single command from
 the [Quickstart](#quickstart) — then, from your coding tool at the repo root, run
 **`/project-plan`**, approve the plan, and run **`/orchestrator`**.
 
 > **Keep your own agents/skills in one place.** Drop custom agents in `maestro/custom/agents/`
-> and skills in `maestro/custom/skills/<name>/SKILL.md`. `sync` merges them into `.claude/` (overriding a
-> kit file of the same name), and `maestro/custom/` is the one folder an update never touches —
-> so unlike hand-editing `.claude/`, or keeping them among the kit's own files, they survive
+> and skills in `maestro/custom/skills/<name>/SKILL.md`. `sync` merges them into every enabled
+> runtime target (overriding a kit file of the same name), and `maestro/custom/` is the one folder
+> an update never touches — so unlike hand-editing generated runtime files, they survive
 > both re-renders and kit upgrades. They don't need listing in `config.json`: `roster`/`skills`
 > selects which *kit* agents you take; your own are always included.
 

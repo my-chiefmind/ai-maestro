@@ -31,7 +31,7 @@ judgment actually pays off. The routing decision is made **once, on the ticket**
 
 The **effective model** a ticket runs on is the **stronger** of its own `model` and its area's
 floor — a floor can *raise* a ticket but never lower it. The orchestrator applies this (the
-policy is baked into the generated `CLAUDE.md`), and `validate-board` warns when a ticket's
+policy is baked into the generated `CLAUDE.md` and `AGENTS.md`), and `validate-board` warns when a ticket's
 `model` sits below its area floor.
 
 ## A caveat worth knowing
@@ -40,3 +40,8 @@ If your harness has a "fork current agent" mode that inherits the parent's model
 per-ticket `model` override may be ignored for that sub-agent — it'll silently run on the
 parent's model. When a ticket must run on a specific (cheaper or pricier) tier, dispatch it
 as a fresh agent with the model set explicitly rather than forking.
+
+In Codex, Maestro keeps the current model by default and maps these portable workload tiers to
+reasoning effort: `haiku` → low, `sonnet` → medium, `opus` → high. Project-scoped Codex agent
+files intentionally omit `model`, so they inherit the parent unless the caller explicitly
+selects another model at dispatch time.
