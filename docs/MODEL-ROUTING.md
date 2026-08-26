@@ -45,3 +45,13 @@ In Codex, Maestro keeps the current model by default and maps these portable wor
 reasoning effort: `haiku` → low, `sonnet` → medium, `opus` → high. Project-scoped Codex agent
 files intentionally omit `model`, so they inherit the parent unless the caller explicitly
 selects another model at dispatch time.
+
+## Independent dev/reviewer models and runtimes
+
+A ticket's `model` is one tier for its whole `agent_plan`. A ticket can instead run its
+implementation and its review as independently chosen roles — different model, different
+runtime, or both — via `dev_runtime`/`dev_model` and
+`reviewer_runtime`/`reviewer_model`, dispatched with `maestro run <ticket-id>`. See
+[CROSS-REVIEW.md](./CROSS-REVIEW.md). These per-role model fields accept either a portable
+tier or a runtime-specific model id. The bundled Codex adapter maps portable tiers to
+reasoning effort and passes any other value as `codex exec -m <model>`.

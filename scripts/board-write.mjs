@@ -41,13 +41,13 @@ const KIT_ROOT = resolve(__dir, "..");
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
-  "set-status", "block", "archive", "version",
+  "set-status", "set-routing", "block", "archive", "version",
   "add", "add-epic", "import", "next-id", "retrace", "drop",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
 // add-epic) or take a file path (import), and must not be forced through the id guard below.
-const OPS_TAKING_ID = new Set(["set-status", "block", "archive", "retrace", "drop"]);
+const OPS_TAKING_ID = new Set(["set-status", "set-routing", "block", "archive", "retrace", "drop"]);
 
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -86,6 +86,7 @@ function usage() {
     maestro ticket import <file.json|->       bulk-add epics + tickets in one atomic write
     maestro ticket next-id [--count N]        allocate free ids (add --epics for epic ids)
     maestro ticket set-status <id> <status>   move a ticket between statuses
+    maestro ticket set-routing <id>           set/clear cross-review role routing
     maestro ticket retrace <id>               set the plan items a ticket serves
     maestro ticket block <id>                 mark blocked and file a blocker ticket
     maestro ticket archive <id>               land-and-archive a finished ticket
@@ -108,6 +109,10 @@ function usage() {
 
   set-status flags:
     --execution-mode <m>   --agent-plan <a,b,c>   --current-agent <c>   --next-agent <c>
+
+  set-routing flags:
+    --dev-runtime <id>  --dev-model <id>  --reviewer-runtime <id>  --reviewer-model <id>
+    --clear             remove all four cross-review overrides (project defaults may apply)
 
   retrace flags:
     --traces-to FR-1,FR-2   --scope-exception <reason>   --clear-traces   --clear-exception
@@ -264,6 +269,31 @@ const RUN = {
     const nxt = flag("next-agent"); if (nxt != null && has("next-agent")) t.nextAgent = nxt;
 
     return { data, result: { id: ticketId, from, to: status }, human: `${ticketId}: ${from} → ${status}` };
+  },
+
+  "set-routing": ({ data }) => {
+    const t = find(data.tickets, ticketId);
+    if (!t) throw usageError(`Ticket ${ticketId} is not on the active board at ${dataPath}.`);
+    const fields = {
+      dev_runtime: flag("dev-runtime"), dev_model: flag("dev-model"),
+      reviewer_runtime: flag("reviewer-runtime"), reviewer_model: flag("reviewer-model"),
+    };
+    if (has("clear")) {
+      for (const field of Object.keys(fields)) delete t[field];
+    } else {
+      const entries = Object.entries(fields).filter(([, value]) => value != null);
+      if (!entries.length) throw usageError("set-routing needs at least one routing flag, or --clear.");
+      for (const [field, value] of entries) {
+        if (!value.trim()) throw usageError(`--${field.replaceAll("_", "-")} needs a non-empty value.`);
+        t[field] = value.trim();
+      }
+    }
+    return {
+      data,
+      result: { id: ticketId, dev_runtime: t.dev_runtime, dev_model: t.dev_model,
+        reviewer_runtime: t.reviewer_runtime, reviewer_model: t.reviewer_model },
+      human: `${ticketId}: cross-review routing ${has("clear") ? "cleared" : "updated"}`,
+    };
   },
 
   block: ({ data, archive }) => {

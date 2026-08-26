@@ -210,6 +210,11 @@ export function validateBoard(data, opts = {}) {
     if (t.priority && !PRIORITY.includes(t.priority)) err(`archive ${id}: invalid priority "${t.priority}".`);
     if (t.swag && !SWAG.includes(t.swag)) err(`archive ${id}: invalid swag "${t.swag}".`);
     if (t.model && !MODELS.includes(t.model)) err(`archive ${id}: invalid model "${t.model}".`);
+    for (const field of ["dev_runtime", "reviewer_runtime", "dev_model", "reviewer_model"]) {
+      if (t[field] !== undefined && (typeof t[field] !== "string" || !t[field].trim())) {
+        err(`archive ${id}: ${field} must be a non-empty string.`);
+      }
+    }
     if (t.execution_mode && !MODES.includes(t.execution_mode)) err(`archive ${id}: invalid execution_mode "${t.execution_mode}".`);
     if (t.failureKind && !FAILURE_KINDS.includes(t.failureKind)) {
       warn(`archive ${id}: unknown failureKind "${t.failureKind}" — known: ${FAILURE_KINDS.join(", ")}.`);
@@ -241,6 +246,26 @@ export function validateBoard(data, opts = {}) {
     if (t.swag && !SWAG.includes(t.swag)) err(`${id}: invalid swag "${t.swag}".`);
     if (t.model && !MODELS.includes(t.model)) err(`${id}: invalid model "${t.model}".`);
     else if (!t.model) warn(`${id}: no model set (will fall back to the area default).`);
+    for (const field of ["dev_runtime", "reviewer_runtime", "dev_model", "reviewer_model"]) {
+      if (t[field] !== undefined && (typeof t[field] !== "string" || !t[field].trim())) {
+        err(`${id}: ${field} must be a non-empty string.`);
+      }
+    }
+    const effectiveDevRuntime = t.dev_runtime || config?.crossReview?.dev?.runtime;
+    const effectiveReviewerRuntime = t.reviewer_runtime || config?.crossReview?.reviewer?.runtime;
+    const hasCrossReview = [t.dev_runtime, t.dev_model, t.reviewer_runtime, t.reviewer_model,
+      config?.crossReview?.dev?.runtime, config?.crossReview?.dev?.model,
+      config?.crossReview?.reviewer?.runtime, config?.crossReview?.reviewer?.model].some(Boolean);
+    if (hasCrossReview && (!effectiveDevRuntime || !effectiveReviewerRuntime)) {
+      warn(`${id}: cross-review needs both a developer runtime and a reviewer runtime (on the ticket or in config.crossReview).`);
+    }
+    // Runtimes are project-defined in the canonical board. An adapter that is explicitly
+    // disabled is suspicious; an absent target key means the renderer's default applies.
+    for (const [field, runtime] of [["dev_runtime", effectiveDevRuntime], ["reviewer_runtime", effectiveReviewerRuntime]]) {
+      if (runtime && config?.targets?.[runtime] === false) {
+        warn(`${id}: effective ${field} "${runtime}" is not enabled in config.targets — that runtime won't have rendered agent files.`);
+      }
+    }
     if (t.execution_mode && !MODES.includes(t.execution_mode)) err(`${id}: invalid execution_mode "${t.execution_mode}".`);
     if (t.failureKind && !FAILURE_KINDS.includes(t.failureKind)) {
       warn(`${id}: unknown failureKind "${t.failureKind}" — known: ${FAILURE_KINDS.join(", ")}.`);

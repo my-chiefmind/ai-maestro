@@ -153,6 +153,26 @@ test("a current --expect-version is accepted", async () => {
   assert.equal(read(dataPath).tickets[0].status, "review");
 });
 
+test("set-routing updates and clears ticket role overrides atomically", async () => {
+  const { dataPath } = seedBoard(1);
+  const set = await ticket(["set-routing", "T-001",
+    "--dev-runtime", "claude", "--dev-model", "claude-sonnet-4-5",
+    "--reviewer-runtime", "codex", "--reviewer-model", "gpt-5.4"], dataPath);
+  assert.equal(set.code, 0);
+  const routed = read(dataPath).tickets[0];
+  assert.equal(routed.dev_runtime, "claude");
+  assert.equal(routed.dev_model, "claude-sonnet-4-5");
+  assert.equal(routed.reviewer_runtime, "codex");
+  assert.equal(routed.reviewer_model, "gpt-5.4");
+
+  const clear = await ticket(["set-routing", "T-001", "--clear"], dataPath);
+  assert.equal(clear.code, 0);
+  const updated = read(dataPath).tickets[0];
+  for (const field of ["dev_runtime", "dev_model", "reviewer_runtime", "reviewer_model"]) {
+    assert.equal(Object.hasOwn(updated, field), false);
+  }
+});
+
 test("mutateBoard throws BoardConflictError, not a generic Error", () => {
   const { dataPath, archivePath } = seedBoard(1);
   assert.throws(

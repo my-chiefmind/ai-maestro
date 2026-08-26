@@ -20,6 +20,10 @@ export interface BoardTicket {
   depends_on?: string[];
   agent_plan?: string[];
   model?: string;
+  dev_runtime?: string;
+  dev_model?: string;
+  reviewer_runtime?: string;
+  reviewer_model?: string;
   execution_mode?: string;
   wave?: number;
   agent?: string;
@@ -42,12 +46,15 @@ export interface Board {
 }
 
 // Project config surfaced to drive the UI's pickers (areas, agent_plan steps, models).
+export interface CrossReviewRole { runtime: string; model: string }
 export interface ProjectConfig {
   name: string | null;
   areas: string[];
   planSteps: string[];
   models: string[];
   humanGates: string[];
+  targets: string[];
+  crossReview: { dev: CrossReviewRole; reviewer: CrossReviewRole } | null;
 }
 
 export interface RosterAgent { code: string; name: string; description: string }

@@ -93,8 +93,8 @@ the full mapping.
 | [`skills/`](./skills/) | Reusable skills — the `/project-plan`, `/plan-update` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
 | [`render/`](./render/) | `sync.mjs` — generates native Claude Code and Codex files from one config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
-| [`cockpit/`](./cockpit/) | A React/MUI board console — config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
-| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — `setup` (questionnaire onboarding), `sync`, `validate`, `drift`, `init` |
+| [`cockpit/`](./cockpit/) | A React/MUI board console — list and Kanban views, config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
+| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — setup, sync, validation, board/plan writes, and the triggered [dev → PR → reviewer pipeline](./docs/CROSS-REVIEW.md) |
 | [`scripts/registry.mjs`](./scripts/registry.mjs) | The shared registry format behind `maestro drift` and `sync --all` — see [Managing several projects](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
 
@@ -259,8 +259,8 @@ Optional, and the only part that runs a server. It ships with both install paths
 vendors it into your `maestro/` folder, and a clone has it too — and `setup` offers to open it for
 you at the end.
 
-A no-terminal way to run the board: stat cards, an epic sidebar, and filterable ticket cards.
-Add and edit epics and tickets in place — areas, models, and the agent pipeline are **pickers
+A no-terminal way to run the board: stat cards, an epic sidebar, and filterable list or Kanban
+views. Add and edit epics and tickets in place — areas, models, cross-review roles, and the agent pipeline are **pickers
 driven by your `config.json`**, ticket IDs are generated for you, and every write is validated
 before it's saved (the UI can't create a broken board). A **Roster** tab lists the agents and
 skills your tickets route to. Edits land back in `board/data.json`; if an agent changes the

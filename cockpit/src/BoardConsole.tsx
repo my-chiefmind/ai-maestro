@@ -90,6 +90,7 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
   const [f, setF] = useState({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '' });
   const [sel, setSel] = useState<string | null>(null);
   const [epicsOpen, setEpicsOpen] = useState(false);
+  const [view, setView] = useState<'list' | 'kanban'>('list');
 
   const areas = useMemo(() => [...new Set(
     [...(config?.areas || []), ...board.tickets, ...board.archived].map((t) => typeof t === 'string' ? t : t.area).filter(Boolean),
@@ -133,6 +134,30 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
         || (a.wave ?? 99) - (c.wave ?? 99) || a.id.localeCompare(c.id));
     }
     return { count: tickets.length, entries: [...g.entries()] };
+  }, [board, f]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Same filtered ticket set as the list view's `groups`, grouped by status instead of
+  // epic — the Kanban columns. Statuses outside BOARD_STATUSES (archived/duplicate/wont-do)
+  // only show up here via the "all"/"archive" focus modes, so they're appended after the
+  // canonical workflow columns rather than baked into BOARD_STATUSES itself.
+  const statusGroups = useMemo(() => {
+    const tickets = sourceFor().filter(matches);
+    const g = new Map<string, BoardTicket[]>();
+    for (const t of tickets) {
+      const k = t.status || '_';
+      if (!g.has(k)) g.set(k, []);
+      g.get(k)!.push(t);
+    }
+    // Every canonical status gets a column even with zero tickets — an empty column is still a
+    // valid drop target (e.g. dragging the board's only "blocked" ticket back to "todo" must
+    // not make "blocked" disappear from under the cursor). Non-canonical statuses (archived/
+    // duplicate/wont-do) only show up via "all"/"archive" focus and only when actually present.
+    const extras = [...g.keys()].filter((s) => !BOARD_STATUSES.includes(s));
+    const order = f.focus === 'archive' ? [...g.keys()] : [...BOARD_STATUSES, ...extras];
+    for (const arr of g.values()) {
+      arr.sort((a, c) => (PRANK[a.priority || ''] ?? 9) - (PRANK[c.priority || ''] ?? 9) || a.id.localeCompare(c.id));
+    }
+    return order.map((s) => [s, g.get(s) ?? []] as const);
   }, [board, f]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const focusTickets = useMemo(() => sourceFor(), [board, f.focus]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -234,10 +259,20 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
         </Card>
 
         <Box sx={{ minWidth: 0 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1 }}>
+            <Box sx={{ display: 'flex', border: '1px solid', borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
+              <Button size="small" onClick={() => setView('list')}
+                variant={view === 'list' ? 'contained' : 'text'} sx={{ minWidth: 0, borderRadius: 0 }}>List</Button>
+              <Button size="small" onClick={() => setView('kanban')}
+                variant={view === 'kanban' ? 'contained' : 'text'} sx={{ minWidth: 0, borderRadius: 0 }}>Board</Button>
+            </Box>
             <Button size="small" variant="outlined" onClick={addTicket} sx={{ minWidth: 0 }}>+ ticket</Button>
           </Box>
-          {groups.count === 0 ? (
+          {view === 'kanban' ? (
+            <KanbanBoard statusGroups={statusGroups} board={board} statusColor={statusColor}
+              priorityColor={priorityColor} onOpen={(id) => setSel(id)}
+              onMove={(id, status) => patchTicket(id, { status })} />
+          ) : groups.count === 0 ? (
             <Box sx={{ p: 5, textAlign: 'center', border: '1px dashed', borderColor: 'divider', borderRadius: 2, color: 'text.secondary' }}>No tickets match these filters.</Box>
           ) : groups.entries.map(([epicId, tickets]) => (
             <Box key={epicId} sx={{ mb: 2.5 }}>
@@ -289,6 +324,11 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
                         </Box>
                         <span style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{planLabel(t)}</span>
                       </Box>
+                      {(t.dev_runtime || t.reviewer_runtime) && (
+                        <Box sx={{ mt: 0.6, fontSize: 10.5, fontFamily: 'monospace', color: 'text.secondary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          dev:{t.dev_runtime || '—'}/{t.dev_model || '—'} → reviewer:{t.reviewer_runtime || '—'}/{t.reviewer_model || '—'}
+                        </Box>
+                      )}
                     </Card>
                   );
                 })}
@@ -302,6 +342,74 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
         onPatch={(patch) => sel && patchTicket(sel, patch)} onDelete={() => sel && deleteTicket(sel)} />
       <EpicsDialog board={board} open={epicsOpen} onClose={() => setEpicsOpen(false)} update={update} />
     </Container>
+  );
+}
+
+// Kanban view: the same filtered tickets as the list view, grouped by status into columns.
+// Moving a ticket is native HTML5 drag-and-drop between columns — no drag library needed —
+// which calls the same patchTicket/update path the list view's drawer already uses, so it
+// gets the existing optimistic-concurrency + validateBoard + backup behavior for free.
+function KanbanBoard({ statusGroups, board, statusColor, priorityColor, onOpen, onMove }: {
+  statusGroups: readonly (readonly [string, BoardTicket[]])[];
+  board: Board; statusColor: (s: string) => string; priorityColor: (p?: string) => string;
+  onOpen: (id: string) => void; onMove: (id: string, status: string) => void;
+}) {
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overStatus, setOverStatus] = useState<string | null>(null);
+  const statusOf = new Map<string, string>();
+  for (const [status, tickets] of statusGroups) for (const t of tickets) statusOf.set(t.id, status);
+
+  const drop = (status: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    setOverStatus(null);
+    const id = e.dataTransfer.getData('text/plain');
+    setDragId(null);
+    if (!id || statusOf.get(id) === status) return;
+    // Completion is not a board edit: it is the merge + evidence + archive operation owned
+    // by `maestro run` / land-and-archive. A drag must never unblock dependants by itself.
+    if (status === 'done') return;
+    onMove(id, status);
+  };
+
+  return (
+    <Box sx={{ display: 'flex', gap: 1.4, overflowX: 'auto', pb: 1, alignItems: 'flex-start' }}>
+      {statusGroups.map(([status, tickets]) => (
+        <Box key={status}
+          onDragOver={(e) => { if (status !== 'done') { e.preventDefault(); setOverStatus(status); } }}
+          onDragLeave={() => setOverStatus((s) => (s === status ? null : s))}
+          onDrop={drop(status)}
+          sx={{
+            flex: '0 0 260px', minWidth: 260, borderRadius: 2, p: 0.6,
+            bgcolor: overStatus === status ? 'action.hover' : 'transparent',
+            outline: overStatus === status ? (th) => `2px dashed ${th.palette.primary.main}` : 'none',
+            transition: 'background-color .1s', opacity: status === 'done' ? 0.72 : 1,
+          }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.8, mb: 1, px: 0.3 }}>
+            <Badge label={status} color={statusColor(status)} strong />
+            <Typography variant="caption" color="text.secondary">{tickets.length}</Typography>
+          </Box>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, minHeight: 40 }}>
+            {tickets.map((t) => {
+              const live = Boolean(board.tickets.find((x) => x.id === t.id));
+              return (
+                <Card key={t.id} draggable={live}
+                  onDragStart={(e) => { e.dataTransfer.setData('text/plain', t.id); e.dataTransfer.effectAllowed = 'move'; setDragId(t.id); }}
+                  onDragEnd={() => { setDragId(null); setOverStatus(null); }}
+                  onClick={() => live && onOpen(t.id)}
+                  sx={{ p: 1.4, cursor: live ? 'grab' : 'default', opacity: dragId === t.id ? 0.4 : 1,
+                    '&:active': { cursor: live ? 'grabbing' : 'default' } }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+                    <Typography sx={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 11, color: 'primary.main' }}>{t.id}</Typography>
+                    {t.priority && <Badge label={t.priority} color={priorityColor(t.priority)} />}
+                  </Box>
+                  <Typography sx={{ mt: 0.8, fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{t.name}</Typography>
+                </Card>
+              );
+            })}
+          </Box>
+        </Box>
+      ))}
+    </Box>
   );
 }
 
@@ -352,6 +460,29 @@ function PlanEditor({ value, options, onChange }: { value: string[]; options: st
   );
 }
 
+// Cross-review pickers: independent runtime adapter + model selection for the dev and reviewer
+// roles. Blank ticket fields inherit config.crossReview when present; with no project default,
+// a blank pair keeps the classic single-pipeline agent_plan. Runtime options reflect installed
+// adapters surfaced by the server.
+function RolePicker({ label, runtime, model, runtimeOptions, onChange }: {
+  label: string; runtime?: string; model?: string; runtimeOptions: string[];
+  onChange: (patch: { runtime?: string; model?: string }) => void;
+}) {
+  return (
+    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+      <Typography variant="caption" color="text.secondary" sx={{ width: 62, flex: '0 0 auto' }}>{label}</Typography>
+      <TextField select size="small" label="Runtime" value={runtime || ''} sx={{ flex: 1 }}
+        onChange={(e) => onChange({ runtime: e.target.value || undefined })}>
+        <MenuItem value="">—</MenuItem>
+        {runtimeOptions.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
+      </TextField>
+      <TextField size="small" label="Model / tier" value={model || ''} sx={{ flex: 1 }}
+        placeholder="sonnet or model id"
+        onChange={(e) => onChange({ model: e.target.value || undefined })} />
+    </Box>
+  );
+}
+
 type DrawerProps = {
   board: Board; config: ProjectConfig | null; ticket: BoardTicket | null;
   onClose: () => void; onPatch: (patch: Partial<BoardTicket>) => void; onDelete: () => void;
@@ -363,10 +494,16 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
   const [confirmDel, setConfirmDel] = useState(false);
   const [spec, setSpec] = useState('');
   const [specSaved, setSpecSaved] = useState<'idle' | 'saving' | 'saved'>('idle');
-  const statusOptions = t ? [...new Set([...BOARD_STATUSES, t.status])] : BOARD_STATUSES;
+  const statusOptions = t
+    ? [...new Set([...BOARD_STATUSES.filter((s) => s !== 'done'), t.status])]
+    : BOARD_STATUSES.filter((s) => s !== 'done');
   const planSteps = planStepsFor(config);
   const depOptions = t ? allTicketRefs(board).filter((r) => r.id !== t.id) : [];
   const useAreaSelect = (config?.areas?.length ?? 0) > 0;
+  // A config.json that explicitly disables every runtime (targets: {claude:false, codex:false})
+  // must not be silently widened back to both — that defeats the point of the check in
+  // board-core.mjs's validateBoard. Only fall back when there's no config.json at all to ask.
+  const runtimeOptions = config ? config.targets : ['claude', 'codex'];
 
   // The project plan, for the scope controls below. The verdict shown here is a preview: the
   // validator warns and the orchestrator blocks on the server's own reading of the same rules.
@@ -437,6 +574,22 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
               </TextField>
 
               <PlanEditor value={t.agent_plan || []} options={planSteps} onChange={(v) => onPatch({ agent_plan: v })} />
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Cross-review (optional; blank values {config?.crossReview ? 'inherit the project defaults' : 'use the classic agent_plan above'})
+                </Typography>
+                <RolePicker label="Dev" runtime={t.dev_runtime} model={t.dev_model} runtimeOptions={runtimeOptions}
+                  onChange={(patch) => onPatch({
+                    dev_runtime: 'runtime' in patch ? patch.runtime : t.dev_runtime,
+                    dev_model: 'model' in patch ? patch.model : t.dev_model,
+                  })} />
+                <RolePicker label="Reviewer" runtime={t.reviewer_runtime} model={t.reviewer_model} runtimeOptions={runtimeOptions}
+                  onChange={(patch) => onPatch({
+                    reviewer_runtime: 'runtime' in patch ? patch.runtime : t.reviewer_runtime,
+                    reviewer_model: 'model' in patch ? patch.model : t.reviewer_model,
+                  })} />
+              </Box>
 
               <Box>
                 <Typography variant="caption" color="text.secondary">Depends on (blocks this ticket until they’re done)</Typography>
@@ -526,6 +679,11 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
                 <Field label="Model">{t.model}</Field>
               </Box>
               <Field label="Agent plan">{planLabel(t) || '—'}</Field>
+              {(t.dev_runtime || t.reviewer_runtime) && (
+                <Field label="Cross-review">
+                  {`dev: ${t.dev_runtime || '—'}/${t.dev_model || '—'}  →  reviewer: ${t.reviewer_runtime || '—'}/${t.reviewer_model || '—'}`}
+                </Field>
+              )}
               <Field label="Depends on">{(t.depends_on || []).join(', ') || '—'}</Field>
               <Field label="Traces to">{(t.traces_to || []).join(', ') || '—'}</Field>
               {verdict && verdict.state !== 'no-plan' && (

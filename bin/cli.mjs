@@ -6,6 +6,7 @@
  *   maestro update [--kit <dir>] [--force] [--offline]   (bring a set-up kit to this CLI's version)
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
+ *   maestro run <id> [...]    (thin passthrough to scripts/run-ticket.mjs)
  *
  * `init` is interactive: it asks a few questions, copies a starter into <repo>/maestro/,
  * writes config.json for you, renders the agents/skills, validates the board, and prints
@@ -1224,11 +1225,20 @@ function help() {
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.
   validate    Check the board's integrity
-  ticket      Change the board safely — add | import | set-status | retrace | archive | drop
+  ticket      Change the board safely — add | import | set-status | set-routing | retrace | archive | drop
               The only supported way to write a board: locked, validated and atomic, so two
               writers can't silently overwrite each other. 'import' bulk-adds a whole planned
               board in one write and only ever ADDS — an existing id is an error, never an
               overwrite. Run 'maestro ticket --help' for the full list.
+  run         Run a cross-review-enabled ticket: dev → PR → reviewer
+              A triggered, one-shot pipeline, not a daemon — checks the ticket is eligible
+              (todo, no human_gate, deps done, in scope), then runs the dev role in its own
+              git worktree (never your primary checkout) under its chosen runtime/model. A
+              reviewer (its own runtime/model) then reviews the PR and takes one real
+              'gh pr review' action, verified from GitHub's own review history, not the
+              agent's say-so. Never merges without --auto-merge. Needs dev_runtime/
+              reviewer_runtime on the ticket or config.json's crossReview.
+              Run 'maestro run --help' for the headless-permissions flags it requires.
   lanes       What can safely run in parallel — plan | next | check
               A lane is a worktree running a QUEUE of tickets one at a time. Two tickets go in
               different lanes only when nothing suggests they touch the same files. Pool size
@@ -1266,8 +1276,9 @@ const COMMANDS = [
   { key: "update", label: "Bring a set-up kit to this CLI's version" },
   { key: "sync", label: "Re-render Claude + Codex files from config.json + context.md" },
   { key: "validate", label: "Check the board's integrity" },
-  { key: "ticket", label: "Change the board safely (add | import | set-status | archive)" },
+  { key: "ticket", label: "Change the board safely (add | import | set-status | set-routing | archive)" },
   { key: "plan", label: "The project plan and its completeness (status | questions | add)" },
+  { key: "run", label: "Run a cross-review-enabled ticket: dev → PR → reviewer" },
   { key: "lanes", label: "What can safely run in parallel (plan | next | check)" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
@@ -1282,6 +1293,7 @@ async function dispatch(command, args) {
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
     case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
+    case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);

@@ -69,6 +69,8 @@ marked.use({ renderer: { html: ({ text }) => neuterRawHtml(text) } });
  *   project?: { name?: string, areas?: string[] },
  *   roster?: string[],
  *   humanGates?: unknown[],
+ *   targets?: Record<string, boolean>,
+ *   crossReview?: { dev: { runtime: string, model: string }, reviewer: { runtime: string, model: string } },
  * }} MaestroConfig  The project's config.json, as far as the cockpit reads it.
  *
  * @typedef {{ key: string, label: string, files?: string[], dir?: string }} DocSectionDef
@@ -291,8 +293,9 @@ const app = express();
 //      rebinding — a hostile page can point a name it controls at 127.0.0.1 and then
 //      talk to us as same-origin, which sails past the browser's CORS check.
 //
-// Vite's dev proxy forwards the browser's Host (localhost:5273) unchanged, so matching
-// on hostname and ignoring the port covers both the proxied and direct cases.
+// Vite's dev proxy forwards the browser's Host (localhost:5273, or a *.localhost name the
+// developer chose to visit instead) unchanged, so matching on hostname and ignoring the port
+// covers both the proxied and direct cases.
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /**
@@ -308,11 +311,17 @@ function hostnameOf(hostHeader) {
   }
 }
 
+// Any `<name>.localhost` hostname is accepted too — the "localhost" TLD is reserved by RFC
+// 6761 to always resolve to loopback, so this doesn't widen who can actually reach the
+// service, only which loopback-guaranteed spelling of it a developer is allowed to type
+// (e.g. visiting the cockpit as "cockpit.localhost:5273" instead of "localhost:5273").
+const isLocalHostname = (/** @type {string} */ host) => LOCAL_HOSTS.has(host) || host.endsWith(".localhost");
+
 app.use((req, res, next) => {
   const host = hostnameOf(req.headers.host ?? "");
   // No Host header, or one naming anything but loopback: refuse. Deliberately terse —
   // there is no legitimate caller here to help debug.
-  if (!host || !LOCAL_HOSTS.has(host)) {
+  if (!host || !isLocalHostname(host)) {
     return res.status(403).json({ error: "This service only accepts requests addressed to localhost." });
   }
   next();
@@ -444,6 +453,10 @@ app.get("/api/config", (req, res) => {
     planSteps: planStepsFromConfig(config) ?? [],
     models: MODELS,
     humanGates: config.humanGates ?? [],
+    // Installed runtime adapters, not arbitrary renderer targets. Both default on, matching
+    // render/sync.mjs; an explicit false is the only opt-out.
+    targets: ["claude", "codex"].filter((runtime) => config.targets?.[runtime] !== false),
+    crossReview: config.crossReview ?? null,
   });
 });
 
@@ -678,7 +691,7 @@ app.put("/api/plan/gap/:id", (req, res) => {
 // Curated so the tab shows the docs worth reading, not every file. Rendered server-side
 // with marked; read-only and path-allowlisted to the kit root (.md files only).
 const DOC_SECTIONS = [
-  { key: "guides", label: "Guides", files: ["README.md", "docs/GETTING-STARTED.md", "docs/METHOD.md", "docs/MODEL-ROUTING.md", "docs/AGENTS.md", "CONTRIBUTING.md"] },
+  { key: "guides", label: "Guides", files: ["README.md", "docs/GETTING-STARTED.md", "docs/METHOD.md", "docs/MODEL-ROUTING.md", "docs/CROSS-REVIEW.md", "docs/AGENTS.md", "CONTRIBUTING.md"] },
   { key: "reference", label: "Reference", files: ["board/README.md", "render/README.md", "cockpit/README.md", "starters/README.md"] },
   { key: "agents", label: "Agents", dir: "agents" },
   { key: "skills", label: "Skills", dir: "skills" },

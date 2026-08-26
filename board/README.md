@@ -97,6 +97,12 @@ agent cannot disagree about whether the board changed underneath them.
 | `human_gate` | Whether the orchestrator may auto-pick it |
 | `traces_to` | Whether the ticket is in the plan's scope at all |
 | `touches` | Whether it can run in a lane parallel to another ticket |
+| `dev_runtime` / `dev_model` | Cross-review only: the runtime adapter + model id/tier that implements the ticket |
+| `reviewer_runtime` / `reviewer_model` | Cross-review only: the runtime adapter + model id/tier that reviews the PR |
+
+Cross-review is opt-in and independent of `agent_plan`/`model` — see
+[docs/CROSS-REVIEW.md](../docs/CROSS-REVIEW.md) for the fields, defaults, and the
+`maestro run <ticket-id>` pipeline that dispatches them.
 
 ## Plan and scope
 
