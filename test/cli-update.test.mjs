@@ -189,3 +189,22 @@ test("update keeps a hand-edited board/README.md, not just this once but every r
   cli(["update"]);
   assert.equal(readFileSync(readmePath, "utf8"), edited, "edit should still survive a second, later update");
 });
+
+test("update --no-github-actions persists the opt-out and stops re-adding the scaffold", () => {
+  const prTitleWorkflow = join(projDir, ".github", "workflows", "maestro-pr-title.yml");
+  assert.ok(existsSync(prTitleWorkflow), "sanity: the scaffold is present going into this test");
+  rmSync(prTitleWorkflow);
+
+  writeFileSync(join(pkgDir, "VERSION"), "9.9.13\n");
+  const out = cli(["update", "--no-github-actions"]);
+  assert.match(out, /disabled the GitHub Actions PR-title workflow/);
+  assert.ok(!existsSync(prTitleWorkflow), "update --no-github-actions must not re-add the scaffold");
+
+  const config = JSON.parse(readFileSync(join(kitDir, "config.json"), "utf8"));
+  assert.equal(config.githubActions, false, "the opt-out must be written to config.json, not just honored this run");
+
+  // A later plain 'update' — without repeating the flag — must keep honoring the persisted opt-out.
+  writeFileSync(join(pkgDir, "VERSION"), "9.9.14\n");
+  cli(["update"]);
+  assert.ok(!existsSync(prTitleWorkflow), "the opt-out must survive without repeating the flag");
+});

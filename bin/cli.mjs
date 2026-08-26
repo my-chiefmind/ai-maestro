@@ -2,8 +2,8 @@
 /**
  * maestro — the one command a newcomer runs.
  *
- *   maestro init [--dir <repo>] [--name <name>] [--areas a,b,c] [--starter orchestrated|lightweight] [--yes]
- *   maestro update [--kit <dir>] [--force] [--offline]   (bring a set-up kit to this CLI's version)
+ *   maestro init [--dir <repo>] [--name <name>] [--areas a,b,c] [--starter orchestrated|lightweight] [--yes] [--no-github-actions]
+ *   maestro update [--kit <dir>] [--force] [--offline] [--no-github-actions]   (bring a set-up kit to this CLI's version)
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *   maestro run <id> [...]    (thin passthrough to scripts/run-ticket.mjs)
@@ -197,9 +197,19 @@ anything in this folder.
   );
 }
 
+// Whether this project wants the GitHub PR-title workflow — repos hosted on GitLab, Bitbucket,
+// or without CI at all can opt out (--no-github-actions at setup/init/update). `false` is
+// persisted in config.json so later `update` runs keep honoring it without repeating the flag.
+// Missing the field entirely (every config.json before this) defaults to true, matching the
+// scaffold's prior unconditional behavior.
+function githubActionsWanted(config) {
+  return config.githubActions !== false;
+}
+
 // Install the repository-level GitHub convention that connects every PR to the work board.
 // These files live outside maestro/, so vendoring the kit cannot place them by itself. Never
 // overwrite a project's existing template; the uniquely named workflow is safe to add once.
+// Callers must check githubActionsWanted() first — this always writes when called.
 function seedGitHubFiles(repoRoot, kit) {
   const source = join(kit, "starters", "github");
   if (!existsSync(source)) return;
@@ -661,6 +671,7 @@ async function init(args) {
     ? { mode: "npm", package: "@mychiefmind/ai-maestro" }
     : { mode: "sibling", path: relative(projectDir, KIT_ROOT) || "." };
   config.outDir = ".."; // render native runtime files to the repo root (parent of the capsule)
+  if (has(args, "no-github-actions")) config.githubActions = false;
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 
   // 2b. Replace the starter's placeholder brief with one written from the answers.
@@ -671,7 +682,7 @@ async function init(args) {
   if (git === "created") console.log(`\n✓ Initialized a git repository in ${relative(process.cwd(), repoDir) || "."}/`);
   else if (git === "failed" || git === "no-git") console.error("\n  ⚠ no git repository here — create one before starting the orchestrator (tickets run in worktrees).");
 
-  seedGitHubFiles(repoDir, KIT_ROOT);
+  if (githubActionsWanted(config)) seedGitHubFiles(repoDir, KIT_ROOT);
 
   console.log(`\n✓ Created ${relative(process.cwd(), projectDir) || projectDir}/  (from the ${starter} starter)\n`);
 
@@ -807,6 +818,7 @@ async function setup(args) {
   config.project = { name, areas };
   config.kitSource = { mode: "self", path: "." };
   config.outDir = ".."; // render native runtime files to the repo root, where tools look
+  if (has(args, "no-github-actions")) config.githubActions = false;
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 
   // Seed the initial board from the starter, not from whatever ended up at kit/board/ —
@@ -845,7 +857,7 @@ async function setup(args) {
   else if (git === "failed") console.error("\n  ⚠ 'git init' failed — run it yourself before starting the orchestrator (tickets run in worktrees).");
   else if (git === "no-git") console.error("\n  ⚠ git isn't installed — install it before starting the orchestrator (tickets run in worktrees).");
 
-  seedGitHubFiles(repoRoot, kit);
+  if (githubActionsWanted(config)) seedGitHubFiles(repoRoot, kit);
 
   // Render agents & skills to the repo root (config.outDir="..").
   console.log("\n→ Setting up your agents & skills…");
@@ -1209,7 +1221,17 @@ async function update(args) {
   const preRefreshLock = readVendorLock(kit);
   const rescued = refreshVendoredKit(kit);
   console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
-  seedGitHubFiles(projectRootForKit(kit), kit);
+
+  // config.json is a project file update() never overwrites (see refreshVendoredKit) — read it
+  // fresh to honor a persisted opt-out, and persist one passed here for the first time.
+  const configPath = join(kit, "config.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  if (has(args, "no-github-actions") && config.githubActions !== false) {
+    config.githubActions = false;
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+    console.log(`  ✓ disabled the GitHub Actions PR-title workflow in ${kitRel}/config.json — future updates won't re-add it (delete .github/workflows/maestro-pr-title.yml and .github/PULL_REQUEST_TEMPLATE.md yourself if you want the existing files gone too)`);
+  }
+  if (githubActionsWanted(config)) seedGitHubFiles(projectRootForKit(kit), kit);
   // Name what moved. The line above used to be the whole report, which read as an all-clear
   // even on updates that had just deleted a project's own agents and skills (T-011).
   if (rescued.length) {
@@ -1244,6 +1266,9 @@ function help() {
               Offers to open the visual board at the end (--no-board to skip, --yes to auto-open)
               Answer non-interactively with: --name, --areas, --outcome, --users, --stack,
               --constraints, --run, --test  (anything omitted defaults to "propose one")
+              --no-github-actions skips the GitHub PR-title workflow/template it otherwise adds
+              to .github/ — for repos on another host or CI, or none at all. Remembered in
+              config.json, so later 'update' runs keep honoring it.
   update      Bring a set-up kit to this CLI's version
               Refreshes the kit files in maestro/ and re-renders Claude + Codex targets; your config.json,
               context.md, board data, and anything in maestro/custom/ are kept. Run it through
@@ -1257,6 +1282,9 @@ function help() {
               If the project already matches this CLI, it checks that the CLI is itself current
               before saying so — npx runs a cached copy unless you name a version, and a stale
               one would otherwise call a months-old project up to date. --offline skips it.
+              --no-github-actions disables the GitHub PR-title workflow/template (persisted to
+              config.json) if you didn't already opt out at setup — it only stops future
+              re-adds, it doesn't remove files already in .github/.
   sync        Re-render Claude + Codex targets from config.json + context.md
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.

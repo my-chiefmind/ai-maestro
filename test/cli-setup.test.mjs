@@ -100,6 +100,16 @@ test("setup preserves existing GitHub PR conventions", () => {
   assert.equal(readFileSync(join(workflows, "maestro-pr-title.yml"), "utf8"), "# Team workflow\n");
 });
 
+test("setup --no-github-actions skips the PR-title scaffold and persists the opt-out", () => {
+  const { projDir, run } = packagedCli();
+  run(["setup", "--yes", "--no-board", "--no-github-actions"]);
+
+  assert.ok(!existsSync(join(projDir, ".github")), "no .github/ scaffold should appear at all — not just a skipped file inside it");
+
+  const config = JSON.parse(readFileSync(join(projDir, "maestro", "config.json"), "utf8"));
+  assert.equal(config.githubActions, false, "the opt-out must be remembered so a later 'update' keeps honoring it");
+});
+
 test("setup creates the custom/ folder the docs tell people to use", () => {
   // README and docs/AGENTS.md name custom/agents/ as where your own agents go, but nothing
   // created it — it only appeared when `update` or the renderer rescued a file into it. A

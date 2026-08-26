@@ -27,6 +27,7 @@
     "claude": true,
     "codex": true
   },
+  "githubActions": true,
   "kitSource": {
     "mode": "sibling",
     "path": "../../maestro"
