@@ -321,6 +321,30 @@ function runTests(cwd) {
   if (r.status !== 0) die(`Test command failed; ${ticketId} remains in-progress/review and will not merge.`);
 }
 
+/** A fresh worktree has the tracked code but none of the gitignored install output. Give it
+ *  its own real `node_modules` (never a symlink to the main checkout's) — worktrees run
+ *  concurrently, and a shared install directory means one ticket's `npm install` (e.g. adding
+ *  a dependency) silently corrupts another ticket's environment mid-run. No-op for a worktree
+ *  that isn't a JS/TS project. */
+function installDeps(cwd) {
+  if (!existsSync(join(cwd, "package.json"))) return;
+  const hadLockfile = existsSync(join(cwd, "package-lock.json")) || existsSync(join(cwd, "pnpm-lock.yaml")) || existsSync(join(cwd, "yarn.lock"));
+  const [cmd, args] = existsSync(join(cwd, "package-lock.json")) ? ["npm", ["ci"]]
+    : existsSync(join(cwd, "pnpm-lock.yaml")) ? ["pnpm", ["install", "--frozen-lockfile"]]
+    : existsSync(join(cwd, "yarn.lock")) ? ["yarn", ["install", "--frozen-lockfile"]]
+    : ["npm", ["install"]];
+  console.log(`\n→ installing dependencies in ${cwd} (${cmd} ${args.join(" ")})…`);
+  const r = spawnSync(cmd, args, { cwd, stdio: "inherit", timeout: timeoutMs, shell: process.platform === "win32" });
+  if (r.status !== 0) die(`"${cmd} ${args.join(" ")}" failed in ${cwd} (see above) — the worktree can't build or run tests.`);
+  // A missing lockfile means `npm install` just generated one — commit it now so the worktree
+  // starts clean; left uncommitted, it reads as dev-agent output and fails
+  // assertCleanCommittedWorktree even though the agent never touched it.
+  if (!hadLockfile && git(cwd, ["status", "--porcelain", "--", "package-lock.json"]).stdout.trim()) {
+    git(cwd, ["add", "package-lock.json"]);
+    git(cwd, ["commit", "-m", "chore: generate package-lock.json"], { stdio: "inherit" });
+  }
+}
+
 function assertCleanCommittedWorktree(cwd, baseBranch) {
   const dirty = git(cwd, ["status", "--porcelain"]);
   if (dirty.status !== 0 || dirty.stdout.trim()) die(`Developer handoff left uncommitted files in ${cwd}; commit or revert them before review.`);
@@ -405,6 +429,7 @@ if (!prUrl) {
   mkdirSync(dirname(worktreeDir), { recursive: true });
   const wt = git(repoDir, ["worktree", "add", worktreeDir, "-b", branchName, `origin/${defaultBranch}`], { stdio: "inherit" });
   if (wt.status !== 0) die(`git worktree add failed (see above) — ${ticketId} is left "in-progress".`);
+  installDeps(worktreeDir);
 
   runAgent(devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
 
@@ -433,6 +458,7 @@ if (!prUrl) {
     git(repoDir, ["fetch", "origin", branchName]);
     const wt = git(repoDir, ["worktree", "add", worktreeDir, branchName], { stdio: "inherit" });
     if (wt.status !== 0) die(`Could not recreate the worktree for ${branchName} (see above).`);
+    installDeps(worktreeDir);
   }
   const clean = git(worktreeDir, ["status", "--porcelain"]);
   if (clean.status !== 0 || clean.stdout.trim()) {
