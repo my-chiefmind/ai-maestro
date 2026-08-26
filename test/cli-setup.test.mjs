@@ -63,6 +63,10 @@ test("a fresh setup seeds the starter's board, not this kit's own", () => {
   assert.ok(existsSync(join(projDir, "AGENTS.md")), "setup must generate Codex project guidance");
   assert.ok(existsSync(join(projDir, ".agents", "skills", "orchestrator", "SKILL.md")), "setup must generate Codex skills");
   assert.ok(existsSync(join(projDir, ".codex", "agents", "orchestrator.toml")), "setup must generate Codex subagents");
+  const prTitleWorkflow = join(projDir, ".github", "workflows", "maestro-pr-title.yml");
+  assert.ok(existsSync(prTitleWorkflow), "setup must install the PR title gate");
+  assert.doesNotMatch(readFileSync(prTitleWorkflow, "utf8"), /maestro\/scripts\//, "the gate must work with the capsule-style init too");
+  assert.ok(existsSync(join(projDir, ".github", "PULL_REQUEST_TEMPLATE.md")), "setup must install the PR template");
 
   const archive = JSON.parse(readFileSync(join(projDir, "maestro", "board", "archive.json"), "utf8"));
   assert.deepEqual(archive.tickets, []);
@@ -80,6 +84,20 @@ test("a --force re-run never touches the project's own board", () => {
 
   run(["setup", "--yes", "--no-board", "--force"]);
   assert.equal(readFileSync(dataPath, "utf8"), liveBoard, "the project's live board must survive a --force re-run");
+});
+
+test("setup preserves existing GitHub PR conventions", () => {
+  const { projDir, run } = packagedCli();
+  const github = join(projDir, ".github");
+  const workflows = join(github, "workflows");
+  mkdirSync(workflows, { recursive: true });
+  writeFileSync(join(github, "PULL_REQUEST_TEMPLATE.md"), "# Team template\n");
+  writeFileSync(join(workflows, "maestro-pr-title.yml"), "# Team workflow\n");
+
+  run(["setup", "--yes", "--no-board"]);
+
+  assert.equal(readFileSync(join(github, "PULL_REQUEST_TEMPLATE.md"), "utf8"), "# Team template\n");
+  assert.equal(readFileSync(join(workflows, "maestro-pr-title.yml"), "utf8"), "# Team workflow\n");
 });
 
 test("setup creates the custom/ folder the docs tell people to use", () => {

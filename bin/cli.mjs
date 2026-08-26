@@ -197,6 +197,37 @@ anything in this folder.
   );
 }
 
+// Install the repository-level GitHub convention that connects every PR to the work board.
+// These files live outside maestro/, so vendoring the kit cannot place them by itself. Never
+// overwrite a project's existing template; the uniquely named workflow is safe to add once.
+function seedGitHubFiles(repoRoot, kit) {
+  const source = join(kit, "starters", "github");
+  if (!existsSync(source)) return;
+
+  const workflowDir = join(repoRoot, ".github", "workflows");
+  mkdirSync(workflowDir, { recursive: true });
+  const workflow = join(workflowDir, "maestro-pr-title.yml");
+  if (!existsSync(workflow)) cpSync(join(source, "maestro-pr-title.yml"), workflow);
+
+  const githubDir = join(repoRoot, ".github");
+  const template = join(githubDir, "PULL_REQUEST_TEMPLATE.md");
+  if (!existsSync(template)) cpSync(join(source, "PULL_REQUEST_TEMPLATE.md"), template);
+}
+
+// `setup` and `init` always stamp outDir="..", while a kit configured directly at a repo
+// root may omit it. Resolve the rendered project root from config instead of assuming every
+// installed kit is physically named maestro/.
+function projectRootForKit(kit) {
+  try {
+    const config = JSON.parse(readFileSync(join(kit, "config.json"), "utf8"));
+    return typeof config.outDir === "string" && config.outDir.trim()
+      ? resolve(kit, config.outDir)
+      : kit;
+  } catch {
+    return dirname(kit);
+  }
+}
+
 function vendorKit(dest) {
   mkdirSync(dest, { recursive: true });
   const filter = (src) => !VENDOR_SKIP.has(basename(src));
@@ -640,6 +671,8 @@ async function init(args) {
   if (git === "created") console.log(`\n✓ Initialized a git repository in ${relative(process.cwd(), repoDir) || "."}/`);
   else if (git === "failed" || git === "no-git") console.error("\n  ⚠ no git repository here — create one before starting the orchestrator (tickets run in worktrees).");
 
+  seedGitHubFiles(repoDir, KIT_ROOT);
+
   console.log(`\n✓ Created ${relative(process.cwd(), projectDir) || projectDir}/  (from the ${starter} starter)\n`);
 
   // 3. Render the agents & skills.
@@ -811,6 +844,8 @@ async function setup(args) {
   if (git === "created") console.log(`\n✓ Initialized a git repository in ${relative(process.cwd(), repoRoot) || "."}/`);
   else if (git === "failed") console.error("\n  ⚠ 'git init' failed — run it yourself before starting the orchestrator (tickets run in worktrees).");
   else if (git === "no-git") console.error("\n  ⚠ git isn't installed — install it before starting the orchestrator (tickets run in worktrees).");
+
+  seedGitHubFiles(repoRoot, kit);
 
   // Render agents & skills to the repo root (config.outDir="..").
   console.log("\n→ Setting up your agents & skills…");
@@ -1174,6 +1209,7 @@ async function update(args) {
   const preRefreshLock = readVendorLock(kit);
   const rescued = refreshVendoredKit(kit);
   console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
+  seedGitHubFiles(projectRootForKit(kit), kit);
   // Name what moved. The line above used to be the whole report, which read as an all-clear
   // even on updates that had just deleted a project's own agents and skills (T-011).
   if (rescued.length) {

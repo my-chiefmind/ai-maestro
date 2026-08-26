@@ -46,6 +46,18 @@ Claude model values are passed to `claude --model`. For Codex, the portable tier
 reasoning effort (`haiku`→low, `sonnet`→medium, `opus`→high); any other value is passed as the
 literal model id via `codex exec -m`. See [MODEL-ROUTING.md](./MODEL-ROUTING.md).
 
+### Test command
+
+`maestro run` refuses to create or merge a PR for a ticket with no test command — either the
+ticket's own `testCmd`, or an area default at `config.orchestrator.testCmd.<area>`. Set it from
+the cockpit drawer's "Test command" field, or:
+
+```sh
+maestro ticket set-testcmd T-042 --cmd "npm test"
+```
+
+Use `--clear` to remove a ticket-level override (an area default may still apply).
+
 ## Running the pipeline
 
 `maestro run <ticket-id>` is a **triggered, one-shot pipeline** — not a background daemon, and

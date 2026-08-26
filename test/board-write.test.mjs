@@ -173,6 +173,24 @@ test("set-routing updates and clears ticket role overrides atomically", async ()
   }
 });
 
+test("set-testcmd sets and clears a ticket's test command", async () => {
+  const { dataPath } = seedBoard(1);
+  const set = await ticket(["set-testcmd", "T-001", "--cmd", "npm test"], dataPath);
+  assert.equal(set.code, 0);
+  assert.equal(read(dataPath).tickets[0].testCmd, "npm test");
+
+  const clear = await ticket(["set-testcmd", "T-001", "--clear"], dataPath);
+  assert.equal(clear.code, 0);
+  assert.equal(Object.hasOwn(read(dataPath).tickets[0], "testCmd"), false);
+});
+
+test("set-testcmd without --cmd or --clear is a usage error", async () => {
+  const { dataPath } = seedBoard(1);
+  const r = await ticket(["set-testcmd", "T-001"], dataPath);
+  assert.equal(r.code, 1);
+  assert.match(r.out?.error ?? r.stderr ?? "", /needs --cmd|--clear/);
+});
+
 test("mutateBoard throws BoardConflictError, not a generic Error", () => {
   const { dataPath, archivePath } = seedBoard(1);
   assert.throws(
