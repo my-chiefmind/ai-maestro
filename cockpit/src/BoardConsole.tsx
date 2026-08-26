@@ -591,6 +591,9 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
                   })} />
               </Box>
 
+              <TextField label="Test command" value={t.testCmd || ''} onChange={(e) => onPatch({ testCmd: e.target.value || undefined })} fullWidth
+                helperText="Overrides the area default in the release gate — required before maestro run will create or merge a cross-review PR." />
+
               <Box>
                 <Typography variant="caption" color="text.secondary">Depends on (blocks this ticket until they’re done)</Typography>
                 <Select multiple fullWidth size="small" value={t.depends_on || []}
@@ -684,6 +687,7 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
                   {`dev: ${t.dev_runtime || '—'}/${t.dev_model || '—'}  →  reviewer: ${t.reviewer_runtime || '—'}/${t.reviewer_model || '—'}`}
                 </Field>
               )}
+              <Field label="Test command">{t.testCmd}</Field>
               <Field label="Depends on">{(t.depends_on || []).join(', ') || '—'}</Field>
               <Field label="Traces to">{(t.traces_to || []).join(', ') || '—'}</Field>
               {verdict && verdict.state !== 'no-plan' && (

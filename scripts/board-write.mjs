@@ -41,13 +41,13 @@ const KIT_ROOT = resolve(__dir, "..");
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
-  "set-status", "set-routing", "block", "archive", "version",
+  "set-status", "set-routing", "set-testcmd", "block", "archive", "version",
   "add", "add-epic", "import", "next-id", "retrace", "drop",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
 // add-epic) or take a file path (import), and must not be forced through the id guard below.
-const OPS_TAKING_ID = new Set(["set-status", "set-routing", "block", "archive", "retrace", "drop"]);
+const OPS_TAKING_ID = new Set(["set-status", "set-routing", "set-testcmd", "block", "archive", "retrace", "drop"]);
 
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -87,6 +87,7 @@ function usage() {
     maestro ticket next-id [--count N]        allocate free ids (add --epics for epic ids)
     maestro ticket set-status <id> <status>   move a ticket between statuses
     maestro ticket set-routing <id>           set/clear cross-review role routing
+    maestro ticket set-testcmd <id>           set/clear the ticket's test command
     maestro ticket retrace <id>               set the plan items a ticket serves
     maestro ticket block <id>                 mark blocked and file a blocker ticket
     maestro ticket archive <id>               land-and-archive a finished ticket
@@ -113,6 +114,10 @@ function usage() {
   set-routing flags:
     --dev-runtime <id>  --dev-model <id>  --reviewer-runtime <id>  --reviewer-model <id>
     --clear             remove all four cross-review overrides (project defaults may apply)
+
+  set-testcmd flags:
+    --cmd <command>     (required unless --clear)
+    --clear             remove the ticket's testCmd override (an area default may apply)
 
   retrace flags:
     --traces-to FR-1,FR-2   --scope-exception <reason>   --clear-traces   --clear-exception
@@ -293,6 +298,24 @@ const RUN = {
       result: { id: ticketId, dev_runtime: t.dev_runtime, dev_model: t.dev_model,
         reviewer_runtime: t.reviewer_runtime, reviewer_model: t.reviewer_model },
       human: `${ticketId}: cross-review routing ${has("clear") ? "cleared" : "updated"}`,
+    };
+  },
+
+  "set-testcmd": ({ data }) => {
+    const t = find(data.tickets, ticketId);
+    if (!t) throw usageError(`Ticket ${ticketId} is not on the active board at ${dataPath}.`);
+    if (has("clear")) {
+      delete t.testCmd;
+    } else {
+      const cmd = flag("cmd");
+      if (!cmd) throw usageError("set-testcmd needs --cmd <command>, or --clear.");
+      if (!cmd.trim()) throw usageError("--cmd needs a non-empty value.");
+      t.testCmd = cmd.trim();
+    }
+    return {
+      data,
+      result: { id: ticketId, testCmd: t.testCmd },
+      human: `${ticketId}: testCmd ${has("clear") ? "cleared" : "updated"}`,
     };
   },
 
