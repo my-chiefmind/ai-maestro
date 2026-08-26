@@ -62,7 +62,11 @@ function run(dir, args, { repo = KIT, env } = {}) {
  *  for run-ticket.mjs's `git fetch origin` / `origin/HEAD` resolution and worktree creation. */
 function makeGitRepo() {
   const bare = mkdtempSync(join(tmpdir(), "maestro-run-origin-"));
-  execFileSync("git", ["init", "--bare", "-q", bare]);
+  // -b main, explicitly: without it, the bare repo's HEAD symref follows the machine's
+  // init.defaultBranch (main here, but master on a stock git — e.g. CI runners), so
+  // `git remote set-head origin -a` in run-ticket.mjs can fail to resolve origin/HEAD even
+  // though "main" is the only branch ever pushed.
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", bare]);
   const work = mkdtempSync(join(tmpdir(), "maestro-run-repo-"));
   execFileSync("git", ["init", "-q", "-b", "main", work]);
   execFileSync("git", ["-C", work, "config", "user.email", "t@example.com"]);
