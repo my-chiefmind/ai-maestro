@@ -62,6 +62,8 @@ test("update refreshes kit files, keeps user files, re-renders", () => {
   const userContext = readFileSync(contextPath, "utf8") + "\n<!-- user edit -->\n";
   writeFileSync(contextPath, userContext);
   const userConfig = readFileSync(join(kitDir, "config.json"), "utf8");
+  const prTitleWorkflow = join(projDir, ".github", "workflows", "maestro-pr-title.yml");
+  rmSync(prTitleWorkflow); // simulate a project installed before the PR-title convention shipped
 
   // A "new release" in the registry copy: version bump, a new script, a removed starter.
   writeFileSync(join(pkgDir, "VERSION"), "9.9.9\n");
@@ -75,6 +77,7 @@ test("update refreshes kit files, keeps user files, re-renders", () => {
   assert.equal(readFileSync(join(kitDir, "VERSION"), "utf8").trim(), "9.9.9");
   assert.ok(existsSync(join(kitDir, "scripts", "new-tool.mjs")), "new kit file should be vendored in");
   assert.ok(!existsSync(join(kitDir, "starters", "lightweight-project")), "upstream deletion should propagate");
+  assert.ok(existsSync(prTitleWorkflow), "update must install the PR title gate in existing projects");
 
   // User files survived byte-for-byte.
   assert.equal(readFileSync(dataPath, "utf8"), userBoard);

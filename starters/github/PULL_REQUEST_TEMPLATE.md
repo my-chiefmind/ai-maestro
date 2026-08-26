@@ -1,6 +1,10 @@
+## Ticket
+
+Include the AI Maestro ticket id in the PR title, for example: `Fix login timeout (T-014)`.
+
 ## What & why
 
-_What this changes and the reason. Include the ticket id in the PR title (e.g. `Fix timeout (T-014)`)._
+_What this changes and why._
 
 ## Gate
 
@@ -12,4 +16,4 @@ _What this changes and the reason. Include the ticket id in the PR title (e.g. `
 
 ## Notes for review
 
-_Anything QA should scrutinize — a tricky edge case, a deliberate trade-off._
+_Anything QA should scrutinize — a tricky edge case or deliberate trade-off._

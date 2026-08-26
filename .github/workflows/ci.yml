@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  pr-title:
+    name: Ticket id in title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require an AI Maestro ticket id
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/validate-pr-title.mjs "$PR_TITLE"
+
   # A version identifies a release, not a change. Bumping per commit produced six versions in
   # two hours, three never published, with the file, the tag, and the registry all disagreeing.
   # The convention alone did not hold — CLAUDE.md used to ask for a per-change bump — so it is
