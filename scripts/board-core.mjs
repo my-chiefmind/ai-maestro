@@ -13,7 +13,7 @@
  * but nothing may run until someone decides it is in scope.
  */
 
-import { scopeVerdict, planIsGating } from "./plan-core.mjs";
+import { scopeVerdict, planIsGating, planItems, normalisePlan } from "./plan-core.mjs";
 
 export const STATUSES = ["backlog", "todo", "in-progress", "review", "blocked", "done"];
 
@@ -91,6 +91,140 @@ export function suggestCode(unknown, knownCodes) {
   return best && bestDist <= threshold ? best : null;
 }
 
+// ── Initiative ownership ────────────────────────────────────────────────────────
+//
+// Initiative mode is on when, and only when, the plan defines at least one initiative. There is
+// no implicit or default initiative anywhere in persisted JSON: a board that has never heard of
+// initiatives must keep behaving exactly as it did, and inventing a hidden "I-0" for it would
+// make every later question ("which initiative owns this?") have a fake answer.
+
+/**
+ * True when the plan defines at least one initiative.
+ *
+ * Derived from normalisePlan rather than plan-core's initiativeMap on purpose: T-024 and T-023
+ * are built in parallel off the same commit, and reaching for an export that only exists on the
+ * other branch would couple two tickets whose write scopes are otherwise disjoint. Once both
+ * have landed this can collapse to `initiativeMap(plan).size > 0` — same answer, one less
+ * traversal.
+ */
+export function initiativeModeActive(plan) {
+  return !!plan && normalisePlan(plan).sections.initiatives.some((i) => i && i.id);
+}
+
+/** The plan's initiatives by id — the local equivalent of plan-core's initiativeMap. */
+function initiativesById(plan) {
+  return new Map(normalisePlan(plan).sections.initiatives.filter((i) => i.id).map((i) => [i.id, i]));
+}
+
+/** Epics addressable by a ticket: live and archived, since a ticket's epic may have landed. */
+function epicIndex(data, archivedEpics) {
+  return new Map([...(data?.epics ?? []), ...archivedEpics].map((e) => [e.id, e]));
+}
+
+/**
+ * Does this ticket respect initiative ownership?
+ *
+ * A ticket has NO initiative of its own — it derives one through its epic, which is why
+ * `initiativeId` is never stored on a ticket. Duplicating it there would create two sources of
+ * truth that drift the first time an epic moves.
+ *
+ * States:
+ *   off               — no plan, or the plan defines no initiative; never blocks
+ *   unresolved        — epics were not supplied, so ownership cannot be derived; never blocks
+ *   unassigned-epic   — initiative mode, but the ticket's epic belongs to no initiative
+ *   unknown-initiative— the epic names an initiative the plan does not define
+ *   cross-initiative  — traces to an item another initiative owns
+ *   ok                — project-wide traces only, or traces its own initiative's items
+ *
+ * A `scope_exception` is deliberately NOT consulted. It is a human's decision to run work the
+ * plan does not cover — a statement about project scope, not a licence to wire a ticket to
+ * another initiative's requirement. Letting it clear this check would make the exception the
+ * easiest way to produce exactly the inconsistency the check exists to prevent.
+ *
+ * @returns {{state:string, blocks:boolean, reason:string, initiativeId:string|null, foreign:string[]}}
+ */
+export function ownershipVerdict(ticket, opts = {}) {
+  const { plan = null, data = null, archivedEpics = [] } = opts;
+  const none = { initiativeId: null, foreign: [] };
+  if (!initiativeModeActive(plan)) return { state: "off", blocks: false, reason: "", ...none };
+  // Callers that hand over tickets without their epics (the portfolio survey once did) cannot
+  // have ownership decided for them. Silence beats guessing: blocking on an epic we were never
+  // given would report a healthy board as jammed.
+  if (!Array.isArray(data?.epics)) return { state: "unresolved", blocks: false, reason: "", ...none };
+
+  const epics = epicIndex(data, archivedEpics);
+  // AC: resolve the epic FIRST. A ticket pointing at an epic that does not exist has a broken
+  // epicId, and saying "cross-initiative" about it would send the reader hunting the wrong bug;
+  // validateBoard reports the dangling epicId on its own line.
+  const epic = ticket.epicId ? epics.get(ticket.epicId) : null;
+  if (ticket.epicId && !epic) return { state: "unresolved", blocks: false, reason: "", ...none };
+
+  const initiatives = initiativesById(plan);
+  const own = epic?.initiativeId ?? null;
+
+  if (epic && !own) {
+    return {
+      state: "unassigned-epic",
+      blocks: true,
+      reason: `Epic ${epic.id} belongs to no initiative, so ${ticket.id} has none either. Assign it with 'maestro ticket edit-epic ${epic.id} --initiative <I-n>'.`,
+      initiativeId: null, foreign: [],
+    };
+  }
+  if (own && !initiatives.has(own)) {
+    return {
+      state: "unknown-initiative",
+      blocks: true,
+      reason: `Epic ${epic.id} names initiative ${own}, which the plan does not define. Create it with 'maestro plan initiative-add' or reassign the epic.`,
+      initiativeId: own, foreign: [],
+    };
+  }
+
+  const items = planItems(plan);
+  const ids = Array.isArray(ticket.traces_to) ? ticket.traces_to : [];
+  // A project-wide item (owner null) is available to everyone; an unknown id is the scope
+  // gate's business, not this check's.
+  const foreign = ids.filter((id) => {
+    const owner = items.get(id)?.initiativeId ?? null;
+    return owner !== null && owner !== own;
+  });
+  if (foreign.length) {
+    const owners = foreign.map((id) => `${id} owned by ${items.get(id).initiativeId}`).join(", ");
+    const reason = own
+      ? `${ticket.id} belongs to initiative ${own} through epic ${epic.id}, but traces to ${owners}. ` +
+        `Move the ticket/epic, reassign ${foreign.join("/")}, or trace to an ${own}/project-wide item.`
+      : `${ticket.id} has no epic, so it derives no initiative and may trace only to project-wide items, ` +
+        `but it traces to ${owners}. Give it an epic in the owning initiative, or trace to a project-wide item.`;
+    return { state: "cross-initiative", blocks: true, reason, initiativeId: own, foreign };
+  }
+  return { state: "ok", blocks: false, reason: "", initiativeId: own, foreign: [] };
+}
+
+/**
+ * The same question for an EPIC, which has an initiative of its own rather than a derived one.
+ * Epics are never picked, so this only ever feeds the validator.
+ */
+export function epicOwnershipVerdict(epic, plan) {
+  if (!initiativeModeActive(plan)) return { state: "off", blocks: false, reason: "", foreign: [] };
+  const initiatives = initiativesById(plan);
+  const own = epic.initiativeId ?? null;
+  if (own && !initiatives.has(own)) {
+    return { state: "unknown-initiative", blocks: true, reason: `Epic ${epic.id}: initiativeId "${own}" is not an initiative in the plan.`, foreign: [] };
+  }
+  const items = planItems(plan);
+  const foreign = (Array.isArray(epic.traces_to) ? epic.traces_to : []).filter((id) => {
+    const owner = items.get(id)?.initiativeId ?? null;
+    return owner !== null && owner !== own;
+  });
+  if (foreign.length) {
+    const owners = foreign.map((id) => `${id} owned by ${items.get(id).initiativeId}`).join(", ");
+    const reason = own
+      ? `Epic ${epic.id} belongs to initiative ${own}, but traces to ${owners}. Move the epic, reassign ${foreign.join("/")}, or trace to an ${own}/project-wide item.`
+      : `Epic ${epic.id} belongs to no initiative and may trace only to project-wide items, but traces to ${owners}.`;
+    return { state: "cross-initiative", blocks: true, reason, foreign };
+  }
+  return { state: "ok", blocks: false, reason: "", foreign: [] };
+}
+
 /**
  * Live `todo` tickets ready to run right now: every dependency satisfied (archived, or a live
  * ticket already `done`) and not blocked by a human gate. `archived` only needs `id`s here —
@@ -119,7 +253,11 @@ export function eligibleTickets(data, archived = [], opts = {}) {
   // orchestrator must never start work the plan doesn't cover. Passing no plan leaves this a
   // no-op, so every existing caller behaves exactly as before.
   if (!opts.plan) return ready;
-  return ready.filter((t) => !scopeVerdict(t, opts.plan).blocks);
+  // Two independent gates, both at pick time. Scope asks "is this in the plan at all?";
+  // ownership asks "is it wired to the right slice of it?". A ticket must clear both.
+  return ready.filter((t) =>
+    !scopeVerdict(t, opts.plan).blocks &&
+    !ownershipVerdict(t, { plan: opts.plan, data, archivedEpics: opts.archivedEpics ?? [] }).blocks);
 }
 
 /**
@@ -127,11 +265,18 @@ export function eligibleTickets(data, archived = [], opts = {}) {
  * reason. The orchestrator reports these rather than going idle in silence — "nothing to do" and
  * "three things to do, none of them in the plan" demand opposite responses from a human.
  */
-export function scopeBlockedTickets(data, archived = [], plan = null) {
+export function scopeBlockedTickets(data, archived = [], plan = null, archivedEpics = []) {
   if (!plan) return [];
   const ready = eligibleTickets(data, archived);
   return ready
-    .map((t) => ({ ticket: t, verdict: scopeVerdict(t, plan) }))
+    .map((t) => {
+      // Scope first: "not in the plan" is the more fundamental answer, and reporting an
+      // ownership problem for a ticket that is out of scope entirely would send the reader to
+      // fix the wrong thing.
+      const scope = scopeVerdict(t, plan);
+      if (scope.blocks) return { ticket: t, verdict: scope };
+      return { ticket: t, verdict: ownershipVerdict(t, { plan, data, archivedEpics }) };
+    })
     .filter((r) => r.verdict.blocks);
 }
 
@@ -373,6 +518,43 @@ export function validateBoard(data, opts = {}) {
     for (const e of data.epics) {
       const ids = Array.isArray(e.traces_to) ? e.traces_to : [];
       if (!ids.length) warn(`Epic ${e.id}: traces to nothing in the plan.`);
+    }
+  }
+
+  // ── Initiative ownership (warn on an unassigned epic, ERROR on a wrong wire) ──
+  //
+  // The split mirrors the scope gate above, and for the same reason (board-core.mjs header): a
+  // board that gains its first initiative must not become invalid on the spot. Every existing
+  // epic is unassigned at that moment, and the plan CLI cannot fix a board — different file,
+  // different lock. So an unassigned epic WARNS here and BLOCKS at pick time, which stops the
+  // work without bricking the board.
+  //
+  // A trace wired to another initiative's requirement is different in kind: nothing about it is
+  // a transitional state, and it is always someone's mistake. That errors.
+  if (initiativeModeActive(plan)) {
+    for (const e of data.epics) {
+      if (e.sample) continue; // starter placeholder, not real work
+      if (!e.initiativeId) {
+        warn(`Epic ${e.id}: belongs to no initiative, and the plan defines initiatives. Its tickets will not be picked — assign it with 'maestro ticket edit-epic ${e.id} --initiative <I-n>'.`);
+      }
+      const v = epicOwnershipVerdict(e, plan);
+      if (v.state === "unknown-initiative") err(v.reason);
+      else if (v.state === "cross-initiative") err(v.reason);
+    }
+    // Archived epics are not exempt: an archived ticket still resolves its initiative through
+    // one, so a dangling reference there corrupts the same reporting a live one would.
+    for (const e of archivedEpics) {
+      if (e.sample) continue;
+      if (!e.initiativeId) warn(`archive: epic ${e.id} belongs to no initiative — archived tickets under it resolve to none.`);
+      const v = epicOwnershipVerdict(e, plan);
+      if (v.state === "unknown-initiative" || v.state === "cross-initiative") err(`archive: ${v.reason}`);
+    }
+    for (const t of data.tickets) {
+      const v = ownershipVerdict(t, { plan, data, archivedEpics });
+      if (v.state === "cross-initiative") err(v.reason);
+      else if (v.state === "unknown-initiative") err(v.reason);
+      // "unassigned-epic" is already reported once against the epic itself; repeating it per
+      // ticket would bury the one line that names the fix under ten that don't.
     }
   }
 
