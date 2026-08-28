@@ -3,8 +3,7 @@ import type { BoardEpic, Plan, PlanInitiative, PlanResponse } from './types';
 import { getPlan } from './api';
 // The REAL rules, not a copy. Both modules are pure, dependency-free ESM with no node
 // builtins, so the browser runs the same code the CLI and the server do.
-import { scopeVerdict as coreScopeVerdict } from '../../scripts/plan-core.mjs';
-import { ownershipVerdict as coreOwnershipVerdict, initiativeModeActive } from '../../scripts/board-core.mjs';
+import { pickVerdict, initiativeModeActive } from '../../scripts/board-core.mjs';
 
 /** A plan item a ticket may legally trace to. `OUT-` ids are offered too, clearly marked. */
 export interface TraceOption {
@@ -98,17 +97,14 @@ export function usePlanScope(scopeKey?: string) {
   ): ScopeVerdict => {
     const plan = data?.plan;
     if (!plan) return { state: 'no-plan', blocks: false, reason: 'No project plan yet — the scope gate is off.' };
-    const scope = coreScopeVerdict(ticket, plan) as ScopeVerdict;
-    const own = epics
-      ? coreOwnershipVerdict(ticket, {
-        plan,
-        data: { epics: epics.epics, tickets: [] },
-        archivedEpics: epics.archivedEpics ?? [],
-      }) as ScopeVerdict
-      : { state: 'unresolved' as const, blocks: false, reason: '' };
-    if (scope.blocks) return scope;
-    if (own.blocks) return own;
-    return scope;
+    // pickVerdict IS the orchestrator's rule — the same function eligibleTickets filters on.
+    // Composing scope and ownership here by hand is what let the two drift before, so the
+    // composition is imported rather than repeated.
+    return pickVerdict(ticket, {
+      plan,
+      data: { epics: epics?.epics ?? [], tickets: [] },
+      archivedEpics: epics?.archivedEpics ?? [],
+    }) as ScopeVerdict;
   };
 
   return {

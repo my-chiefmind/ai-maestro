@@ -6,6 +6,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import type { Board, BoardEpic, BoardTicket, ProjectConfig } from './types';
+import { NO_INITIATIVE, reconcileEpicSelection, defaultEpicForNewTicket } from './boardFilters.mjs';
 import { useBoard } from './useBoard';
 import { useConfig } from './useConfig';
 import { usePlanScope } from './usePlanScope';
@@ -180,6 +181,8 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
   }, [focusTickets]);
 
   const clear = () => setF({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '', initiative: '' });
+  const selectEpic = (epicId: string) =>
+    setF(reconcileEpicSelection(f, [...board.epics, ...board.archivedEpics].find((e) => e.id === epicId), epicId));
 
   const patchTicket = (id: string, patch: Partial<BoardTicket>) =>
     update((b) => { const t = b.tickets.find((x) => x.id === id); if (t) Object.assign(t, patch); return b; });
@@ -189,17 +192,10 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
   };
   const addTicket = () => {
     const id = nextTicketId(board);
-    // The epic decides the ticket's initiative, so the default must respect the active
-    // initiative filter. Falling back to board.epics[0] would file a ticket into a DIFFERENT
-    // initiative than the one being looked at, and the only sign would be a cross-initiative
-    // refusal later.
-    const inInitiative = f.initiative && f.initiative !== NO_INITIATIVE
-      ? board.epics.filter((e) => e.initiativeId === f.initiative)
-      : f.initiative === NO_INITIATIVE ? board.epics.filter((e) => !e.initiativeId) : board.epics;
     update((b) => {
       b.tickets.unshift({
         id, name: 'New ticket', desc: '', status: 'backlog', priority: 'P2',
-        epicId: f.epic || inInitiative[0]?.id || '', area: config?.areas?.[0] || '',
+        epicId: defaultEpicForNewTicket(f, board.epics), area: config?.areas?.[0] || '',
         depends_on: [], agent_plan: [], model: config?.models?.[1] || 'sonnet',
       });
       return b;
@@ -275,10 +271,10 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
             <Box sx={{ flexGrow: 1 }} />
             <Button size="small" onClick={() => setEpicsOpen(true)} sx={{ minWidth: 0, fontSize: 11 }}>Manage</Button>
           </Box>
-          <EpicItem active={!f.epic} onClick={() => setF({ ...f, epic: '' })} name={f.epic ? 'Show all epics' : 'All epics'} count={focusTickets.length} />
+          <EpicItem active={!f.epic} onClick={() => selectEpic('')} name={f.epic ? 'Show all epics' : 'All epics'} count={focusTickets.length} />
           {!planScope.initiativeMode
             ? visibleEpics.map((e, i) => (
-              <EpicItem key={e.id} active={f.epic === e.id} onClick={() => setF({ ...f, epic: e.id })} no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
+              <EpicItem key={e.id} active={f.epic === e.id} onClick={() => selectEpic(e.id)} no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
             ))
             : groupEpicsByInitiative(visibleEpics, planScope.initiatives).map((g) => (
               <Box key={g.id ?? '_none'}>
@@ -287,7 +283,7 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
                   {g.id ? `${g.id} · ${g.name}` : 'No initiative'}
                 </Typography>
                 {g.epics.map((e, i) => (
-                  <EpicItem key={e.id} active={f.epic === e.id} onClick={() => setF({ ...f, epic: e.id })}
+                  <EpicItem key={e.id} active={f.epic === e.id} onClick={() => selectEpic(e.id)}
                     no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
                 ))}
               </Box>
@@ -799,9 +795,6 @@ function SpecEditor({ spec, setSpec, onSave, state, setState }: {
  * tickets are refused at pick time, so burying it is the opposite of useful — it is the group
  * someone needs to see.
  */
-/** Filter sentinel for "epics that belong to no initiative" — distinct from "no filter". */
-export const NO_INITIATIVE = '_none';
-
 function groupEpicsByInitiative(epics: BoardEpic[], initiatives: { id: string; name: string }[]) {
   const groups = initiatives.map((i) => ({ id: i.id as string | null, name: i.name, epics: epics.filter((e) => e.initiativeId === i.id) }));
   const known = new Set(initiatives.map((i) => i.id));
