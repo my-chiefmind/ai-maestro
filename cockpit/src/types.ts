@@ -227,3 +227,68 @@ export interface PlanResponse {
   projectWide: InitiativeProgress;
   warnings: string[];
 }
+
+// ── Ticket usage (Value page) ───────────────────────────────────────────────────
+// Mirrors what scripts/usage-core.mjs emits. The kit is the source of truth for these
+// shapes; this is the UI's read-only view of them.
+export interface UsageTokens {
+  input: number; output: number; cacheRead: number; cacheWrite: number;
+  thinking: number; total: number;
+}
+export interface UsageMetrics {
+  tokens: UsageTokens;
+  turns: number; runs: number;
+  estimatedActiveMs: number; exactMs: number; spanMs: number;
+  firstTs: number | null; lastTs: number | null;
+}
+export interface UsageBucket extends UsageMetrics { key: string }
+/** How a ticket's figures were obtained. `exact` came from run telemetry, `estimated` from
+ *  transcript attribution, `mixed` from both — never averaged into one unlabelled number. */
+export type UsageTiming = 'exact' | 'estimated' | 'mixed';
+export type UsageConfidence = 'exact' | 'high' | 'medium' | 'unassigned';
+export interface UsageTicket {
+  id: string; onBoard: boolean; name: string; status: string; area: string;
+  epicId: string; epicName: string; boardModel: string; agentPlan: string[];
+  executionMode: string; swag: string; priority: string; archived: boolean;
+  doneAt: string | null;
+  metrics: UsageMetrics;
+  confidence: UsageConfidence;
+  /** Why this ticket's turns were attributed to it — 'branch', 'board-write:set-status', … */
+  evidence: string[];
+  timing: UsageTiming;
+  /** First measured stage start to last measured stage end. Null when nothing was measured. */
+  cycleMs: number | null;
+  breakdown: Record<string, UsageBucket[]>;
+  /** Set only on a portfolio report, where one table spans several boards. */
+  project?: string;
+}
+export interface UsageProjectRow {
+  name: string; path: string; boardDir?: string; ok: boolean; error?: string;
+  /** The board holds nothing but starter samples — it exists, no work has been booked to it. */
+  template?: boolean;
+  totals?: UsageMetrics;
+  coverage?: { turns: number; attributed: number; exactRuns: number; ticketsOnBoard: number; ticketsWithUsage: number; unassignedTokens: number };
+  topTicket?: { id: string; name: string; total: number } | null;
+}
+export interface UsageReport {
+  generatedAt: string; schema: number; project: string; boardDir: string; roots: string[];
+  dateRange: { from: string | null; to: string | null };
+  enabled: { transcripts: boolean; telemetry: boolean };
+  coverage: {
+    turns: number; attributed: number;
+    byConfidence: Record<string, number>;
+    unassignedReasons: Record<string, number>;
+    skippedExact: number;
+    ticketsOnBoard: number; ticketsWithUsage: number;
+    exactRuns: number; telemetrySkippedLines: number;
+    transcriptFiles: number; transcriptSessions: number;
+    unassignedTokens: number; unassignedTurns: number;
+  };
+  totals: UsageMetrics;
+  unassigned: UsageMetrics;
+  tickets: UsageTicket[];
+  breakdown: Record<string, UsageBucket[]>;
+  /** 'portfolio' when merged across boards; absent for a single board. */
+  kind?: string;
+  projects?: UsageProjectRow[];
+}

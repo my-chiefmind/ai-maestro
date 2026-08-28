@@ -7,6 +7,7 @@
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *   maestro run <id> [...]    (thin passthrough to scripts/run-ticket.mjs)
+ *   maestro usage [...]       (thin passthrough to scripts/usage-report.mjs)
  *
  * `init` is interactive: it asks a few questions, copies a starter into <repo>/maestro/,
  * writes config.json for you, renders the agents/skills, validates the board, and prints
@@ -1402,6 +1403,10 @@ function help() {
               'maestro plan status' prints how complete the plan is and what's still thin;
               'coverage' shows which requirements no ticket is working. Written under the same
               lock as the board. Run 'maestro plan --help' for ops.
+  usage       Time and tokens per ticket — by agent, model, runtime, stage and date
+              Measured from run telemetry (board/telemetry.jsonl, written by 'maestro run')
+              and, opt-in, reconstructed from local Claude Code transcripts with a stated
+              confidence. --json / --csv / --html export the same figures. Tokens only.
   drift       Report version + hand-edit drift across a registry of projects
               Needs a registry file (default ./maestro-registry.json): { "projects": [
               { "name": "...", "path": "..." } ] }. --offline skips the npm version check;
@@ -1435,6 +1440,7 @@ const COMMANDS = [
   { key: "plan", label: "The project plan and its completeness (status | questions | add)" },
   { key: "run", label: "Run a cross-review-enabled ticket: dev → PR → reviewer" },
   { key: "lanes", label: "What can safely run in parallel (plan | next | check)" },
+  { key: "usage", label: "Time and tokens per ticket, by agent, model, runtime and stage" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
 ];
@@ -1471,6 +1477,7 @@ async function dispatch(command, args) {
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
     case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
+    case "usage": process.exit(run("scripts/usage-report.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }

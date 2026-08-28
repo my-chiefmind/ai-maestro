@@ -8,6 +8,10 @@
       "docs"
     ]
   },
+  "usage": {
+    "scanTranscripts": false,
+    "_comment": "Set scanTranscripts to true to let the Value page reconstruct per-ticket time and tokens from your LOCAL Claude Code session transcripts. Reading is read-only and only aggregates are kept - never prompts, responses, commands or source. Off by default because it reads files outside the repo."
+  },
   "roster": [
     "orchestrator",
     "principal-engineer",

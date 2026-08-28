@@ -66,6 +66,7 @@ import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { eligibleTickets } from "./board-core.mjs";
+import { runStage as runStageRaw } from "./run-stage.mjs";
 import { boardVersion } from "./board-io.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planIsGating, scopeVerdict } from "./plan-core.mjs";
@@ -75,11 +76,10 @@ const KIT_ROOT = resolve(__dir, "..");
 const NODE = process.execPath;
 const RUNTIME_ADAPTERS = new Set(["claude", "codex"]);
 
-// Codex has no haiku/sonnet/opus model alias — Maestro's tiers map to its reasoning-effort
-// config instead, and the model itself is left at whatever the caller's own Codex config
-// already selects. See docs/MODEL-ROUTING.md. (Pass a literal Codex model via --codex-flag -m
-// <model> if you want one selected explicitly.)
-const CODEX_EFFORT = { haiku: "low", sonnet: "medium", opus: "high" };
+// Codex's haiku/sonnet/opus -> reasoning-effort mapping lives with the adapter invocation in
+// scripts/run-stage.mjs (CODEX_EFFORT). It is deliberately NOT restated here: a second copy of
+// the mapping is a second answer to "what does `opus` mean on Codex", free to drift from the
+// one that actually runs. See docs/MODEL-ROUTING.md.
 
 function die(msg) {
   console.error(`✗ ${msg}`);
@@ -157,6 +157,8 @@ const repoDir = gitToplevel(resolve(flag("repo", process.cwd())));
 const dataPath = resolve(flag("board", join(process.cwd(), "board", "data.json")));
 const archivePath = resolve(flag("archive", join(dirname(dataPath), "archive.json")));
 const configPath = resolve(flag("config", join(dirname(dirname(dataPath)), "config.json")));
+// Run telemetry sits with the board's other live, local-only data.
+const boardDirPath = dirname(dataPath);
 const autoMerge = has("auto-merge");
 const dryRun = has("dry-run");
 const resume = has("resume");
@@ -352,24 +354,22 @@ function assertCleanCommittedWorktree(cwd, baseBranch) {
   if (commits.status !== 0 || Number(commits.stdout.trim()) < 1) die("Developer handoff contains no committed change relative to the default branch.");
 }
 
-/** Run one agent stage headlessly in `cwd` and return its final response text. */
-function runAgent(runtime, model, prompt, extraFlags, cwd, envOverride) {
-  const cmd = runtime === "claude" ? "claude" : "codex";
-  const codexModelArgs = CODEX_EFFORT[model]
-    ? ["-c", `model_reasoning_effort=${CODEX_EFFORT[model]}`]
-    : ["-m", model];
-  const args = runtime === "claude"
-    ? ["-p", prompt, "--model", model, ...extraFlags]
-    : ["exec", prompt, ...codexModelArgs, ...extraFlags];
-  const env = envOverride ? { ...process.env, ...envOverride } : process.env;
-  const r = spawnSync(cmd, args, {
-    cwd, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "inherit"], env,
-  });
-  if (r.error) die(`Failed to run "${cmd}": ${r.error.message}`);
-  if (r.signal === "SIGTERM") die(`${cmd} timed out after ${timeoutMs / 1000}s (--timeout to change it).`);
-  if (r.status !== 0) die(`${cmd} exited ${r.status}. Its output:\n${r.stdout || "(none)"}`);
-  return r.stdout || "";
+/**
+ * runStage, with this script's exit behaviour. The measurement and the adapter invocation live
+ * in scripts/run-stage.mjs so they can be exercised without a GitHub remote and a second
+ * account's token; all this adds is turning a failed stage into a clean CLI error.
+ */
+function runStage(stage, runtime, model, prompt, extraFlags, cwd, envOverride) {
+  try {
+    return runStageRaw({
+      boardDir: boardDirPath, ticketId, stage, runtime, model, prompt,
+      extraFlags, cwd, env: envOverride ? { ...process.env, ...envOverride } : process.env, timeoutMs,
+    });
+  } catch (e) {
+    const err = /** @type {any} */ (e);
+    if (err?.stageFailure) die(err.message);
+    throw e;
+  }
 }
 
 function devPrompt() {
@@ -431,7 +431,7 @@ if (!prUrl) {
   if (wt.status !== 0) die(`git worktree add failed (see above) — ${ticketId} is left "in-progress".`);
   installDeps(worktreeDir);
 
-  runAgent(devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
+  runStage("dev", devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
 
   assertCleanCommittedWorktree(worktreeDir, defaultBranch);
   runTests(worktreeDir);
@@ -486,7 +486,7 @@ const priorReviewerReviews = (ghPrJson(prUrl, "reviews")?.reviews || [])
   .filter((review) => review.author?.login === reviewerLogin).length;
 const reviewerHeadBefore = git(worktreeDir, ["rev-parse", "HEAD"]).stdout.trim();
 const reviewerStatusBefore = git(worktreeDir, ["status", "--porcelain"]).stdout;
-runAgent(reviewerRuntime, reviewerModel, reviewerPrompt(prUrl), flagAll(reviewerRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir, reviewerEnv);
+runStage("reviewer", reviewerRuntime, reviewerModel, reviewerPrompt(prUrl), flagAll(reviewerRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir, reviewerEnv);
 const reviewerHeadAfter = git(worktreeDir, ["rev-parse", "HEAD"]).stdout.trim();
 const reviewerStatusAfter = git(worktreeDir, ["status", "--porcelain"]).stdout;
 if (reviewerHeadAfter !== reviewerHeadBefore || reviewerStatusAfter !== reviewerStatusBefore) {

@@ -25,6 +25,7 @@
     "!board/archive.json",
     "!board/plan.json",
     "!board/plan.md",
+    "!board/telemetry.jsonl",
     "!board/specs",
     "!board/reports",
     "cockpit",

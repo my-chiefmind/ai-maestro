@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "The SHAPE of a real `claude -p --output-format json` envelope, reduced to the fields",
+    "scripts/run-stage.mjs actually reads, with synthetic values.",
+    "",
+    "Field NAMES are the point and are reproduced exactly: `usage` reports snake_case while",
+    "`modelUsage` reports camelCase, and only `usage` carries a reasoning count. Reading one",
+    "spelling for both wrote a telemetry record stamped usageSource 'provider' with every",
+    "counter at zero, which claims a stage was free.",
+    "",
+    "Every number is invented and each is distinct, so a mismapped field fails loudly instead",
+    "of coincidentally matching. Nothing from the captured run survives: no prompt, no result",
+    "text, no real session id, no cwd, username, repository content, credentials, or cost."
+  ],
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "duration_ms": 1000,
+  "usage": {
+    "input_tokens": 11,
+    "output_tokens": 22,
+    "cache_read_input_tokens": 3300,
+    "cache_creation_input_tokens": 440,
+    "output_tokens_details": {
+      "thinking_tokens": 7
+    }
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 55,
+      "outputTokens": 66,
+      "cacheReadInputTokens": 7700,
+      "cacheCreationInputTokens": 880
+    }
+  }
+}

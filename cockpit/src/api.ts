@@ -1,4 +1,4 @@
-import type { Board, BoardEpic, BoardTicket, ProjectConfig, Roster, DocSection, PortfolioToday, ReportInfo, PlanResponse, PlanCompleteness, Plan } from './types';
+import type { Board, BoardEpic, BoardTicket, ProjectConfig, Roster, DocSection, PortfolioToday, ReportInfo, PlanResponse, PlanCompleteness, Plan, UsageReport } from './types';
 
 // ── Portfolio scope ─────────────────────────────────────────────────────────────
 // Which registry project every call below addresses. Null (the default) means the single
@@ -204,4 +204,40 @@ export async function hasHelpGuide(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ── Ticket usage ────────────────────────────────────────────────────────────────
+export async function getUsage(refresh = false): Promise<UsageReport> {
+  const qs = scopeQS();
+  const sep = qs ? '&' : '?';
+  const r = await fetch(`/api/usage${qs}${refresh ? `${sep}refresh=1` : ''}`, { cache: 'no-store' });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `usage load failed (${r.status})`);
+  }
+  return r.json();
+}
+
+// The same report merged across every registry project. Returns null when the cockpit was not
+// started with a registry — the caller hides the scope toggle rather than showing an error for
+// a mode that simply isn't configured.
+export async function getPortfolioUsage(refresh = false): Promise<UsageReport | null> {
+  const r = await fetch(`/api/portfolio/usage${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' });
+  if (r.status === 404) return null;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `portfolio usage failed (${r.status})`);
+  }
+  return r.json();
+}
+
+export function portfolioUsageExportUrl(format: 'json' | 'csv' | 'html', view = 'tickets'): string {
+  return `/api/portfolio/usage/export?format=${format}&view=${encodeURIComponent(view)}`;
+}
+
+// A plain URL rather than a fetch: the browser's own download machinery handles the
+// Content-Disposition the server sets, so the export never has to be buffered in the tab.
+export function usageExportUrl(format: 'json' | 'csv' | 'html', view = 'tickets'): string {
+  const qs = scopeQS(false);
+  return `/api/usage/export?format=${format}&view=${encodeURIComponent(view)}${qs}`;
 }

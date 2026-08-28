@@ -1,0 +1,481 @@
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import {
+  Box, Button, Card, Chip, Container, LinearProgress, Stack, Table, TableBody, TableCell,
+  TableHead, TableRow, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
+} from '@mui/material';
+import type { UsageBucket, UsageReport, UsageTicket, UsageTokens } from './types';
+import { getUsage, getPortfolioUsage, usageExportUrl, portfolioUsageExportUrl } from './api';
+
+// The Value page: what each ticket cost in time and tokens, and how much of that is measured
+// rather than inferred. Every number here is served by scripts/usage-core.mjs — this file
+// formats, it never computes — so the page, the CSV export, the snapshot and `maestro usage`
+// cannot quote different figures for the same ticket.
+//
+// Two honesty rules shape the layout. Provenance is visible per row, not buried in a footnote:
+// a measured ticket and an inferred one never look alike. And unattributed work gets its own
+// panel with its reasons, because spreading it across tickets would make every row look
+// precise and be wrong.
+
+const DIMENSIONS = ['model', 'agent', 'runtime', 'stage', 'date'] as const;
+type Dimension = typeof DIMENSIONS[number] | 'project';
+
+const DIMENSION_HINT: Record<string, string> = {
+  project: 'Each project measured by its own board, then summed. A repo nested inside another keeps its own tokens.',
+  model: 'Which model tier the tokens actually went to.',
+  agent: 'The main session versus each subagent the roster spawned.',
+  runtime: 'Claude Code or Codex. Historical rows are Claude only — Codex writes no local transcript to read.',
+  stage: 'Pipeline stage. Only measured runs carry one; inferred turns show as unknown.',
+  date: 'Day by day, UTC.',
+};
+
+const REASON_LABEL: Record<string, string> = {
+  'no-ticket-in-session': 'No ticket named anywhere in the session',
+  'before-first-signal': "Before the session's first ticket signal",
+  'signal-expired': 'Signal went stale with several tickets in play',
+};
+
+const TOKEN_CLASSES: Array<{ key: keyof UsageTokens; label: string; color: string }> = [
+  { key: 'input', label: 'Input', color: '#3aa7b0' },
+  { key: 'output', label: 'Output', color: '#1d6b76' },
+  { key: 'cacheWrite', label: 'Cache write', color: '#7fb3b6' },
+  { key: 'cacheRead', label: 'Cache read', color: '#4a5b5e' },
+];
+
+// Every category is shown as its own column, not just as a proportion bar: they are billed and
+// cached differently, and one blended "tokens" figure hides which of them a ticket actually
+// spent. `thinking` sits apart because it is a SUBSET of output, reported by the API under
+// output_tokens_details — adding it to the total would count reasoning twice.
+const TOKEN_COLUMNS: Array<{ key: keyof UsageTokens; head: string; title: string }> = [
+  { key: 'input', head: 'In', title: 'Input tokens' },
+  { key: 'output', head: 'Out', title: 'Output tokens (includes reasoning)' },
+  { key: 'cacheRead', head: 'C·rd', title: 'Cache read tokens' },
+  { key: 'cacheWrite', head: 'C·wr', title: 'Cache write tokens' },
+  { key: 'thinking', head: 'Think', title: 'Reasoning tokens — a subset of output, not added to the total' },
+];
+
+const TOTAL_RULE = 'Total = input + output + cache read + cache write. Reasoning is a subset of output and is never added in.';
+
+function fmtTokens(n: number): string {
+  if (!n) return '0';
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
+  return String(n);
+}
+
+function fmtDuration(ms: number): string {
+  if (!ms) return '—';
+  const h = ms / 3600000;
+  if (h >= 48) return `${(h / 24).toFixed(1)}d`;
+  if (h >= 1) return `${h.toFixed(1)}h`;
+  const m = ms / 60000;
+  if (m >= 1) return `${m.toFixed(0)}m`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+const shortModel = (m: string) => m.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+
+// A stacked proportion bar. Shape compares tickets of very different sizes; the absolute
+// figure sits in the column beside it.
+function TokenBar({ tokens, width = 118 }: { tokens: UsageTokens; width?: number }) {
+  const total = tokens.total || 1;
+  return (
+    <Tooltip title={TOKEN_CLASSES.map((c) => `${c.label} ${fmtTokens(tokens[c.key])}`).join(' · ')}>
+      <Box sx={{ display: 'flex', width, height: 9, borderRadius: 0.5, overflow: 'hidden', bgcolor: 'action.hover' }}>
+        {TOKEN_CLASSES.map((c) => {
+          const pct = (tokens[c.key] / total) * 100;
+          return pct > 0.05 ? <Box key={c.key} sx={{ width: `${pct}%`, bgcolor: c.color }} /> : null;
+        })}
+      </Box>
+    </Tooltip>
+  );
+}
+
+// Provenance as form, not just a word: solid = measured from run telemetry, dashed = inferred
+// from transcripts, split = both. Someone scanning the column sees the difference without
+// reading it.
+function TimingStripe({ timing }: { timing: UsageTicket['timing'] }) {
+  const dashed = 'repeating-linear-gradient(180deg, currentColor 0 3px, transparent 3px 6px)';
+  return (
+    <Tooltip title={timing === 'exact' ? 'Measured from run telemetry'
+      : timing === 'mixed' ? 'Part measured, part inferred from transcripts'
+        : 'Inferred from session transcripts'}>
+      <Box component="span" sx={{
+        display: 'inline-block', width: 3, height: 18, mr: 1, verticalAlign: 'middle', borderRadius: 0.5,
+        color: timing === 'estimated' ? 'text.disabled' : 'primary.main',
+        background: timing === 'exact' ? 'currentColor'
+          : timing === 'mixed' ? `linear-gradient(180deg, currentColor 0 50%, transparent 50%), ${dashed}`
+            : dashed,
+      }} />
+    </Tooltip>
+  );
+}
+
+const CONFIDENCE_COLOR: Record<string, 'success' | 'primary' | 'warning' | 'default'> = {
+  exact: 'success', high: 'primary', medium: 'warning', unassigned: 'default',
+};
+
+function Meter({ label, value, note, accent }: { label: string; value: string; note?: string; accent?: boolean }) {
+  return (
+    <Card sx={{ p: 1.8, flex: '1 1 165px', minWidth: 150 }}>
+      <Typography sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'text.secondary' }}>
+        {label}
+      </Typography>
+      <Typography sx={{ fontSize: 26, fontWeight: 800, lineHeight: 1.15, fontVariantNumeric: 'tabular-nums', color: accent ? 'primary.main' : 'text.primary' }}>
+        {value}
+      </Typography>
+      {note && <Typography sx={{ fontSize: 12, color: 'text.secondary' }}>{note}</Typography>}
+    </Card>
+  );
+}
+
+function BucketTable({ rows, dense }: { rows: UsageBucket[]; dense?: boolean }) {
+  const max = rows[0]?.tokens.total || 1;
+  return (
+    <Table size="small">
+      <TableBody>
+        {rows.slice(0, dense ? 6 : 12).map((r) => (
+          <TableRow key={r.key}>
+            <TableCell sx={{ border: 0, py: 0.35, fontSize: 13 }}>{shortModel(r.key)}</TableCell>
+            <TableCell align="right" sx={{ border: 0, py: 0.35, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+              {fmtTokens(r.tokens.total)}
+            </TableCell>
+            <TableCell align="right" sx={{ border: 0, py: 0.35, fontSize: 13, color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+              {fmtDuration(r.estimatedActiveMs + r.exactMs)}
+            </TableCell>
+            <TableCell sx={{ border: 0, py: 0.35, width: '32%' }}>
+              <LinearProgress variant="determinate" value={(r.tokens.total / max) * 100}
+                sx={{ height: 6, borderRadius: 1, opacity: 0.55 }} />
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+export default function ValuePage() {
+  const [report, setReport] = useState<UsageReport | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [dim, setDim] = useState<Dimension>('model');
+  const [open, setOpen] = useState<string | null>(null);
+  // 'all' is offered only when the cockpit was started with a registry; without one the
+  // portfolio endpoint 404s and the toggle simply isn't there.
+  const [scope, setScope] = useState<'board' | 'all'>('board');
+  const [hasPortfolio, setHasPortfolio] = useState(false);
+
+  const load = (refresh = false, which: 'board' | 'all' = scope) => {
+    setBusy(true);
+    (which === 'all' ? getPortfolioUsage(refresh).then((r) => r ?? null) : getUsage(refresh))
+      .then((r) => { if (r) { setReport(r); setError(null); } })
+      .catch((e) => setError(String(e.message || e)))
+      .finally(() => setBusy(false));
+  };
+  useEffect(() => { load(false, 'board'); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { getPortfolioUsage(false).then((r) => setHasPortfolio(Boolean(r))).catch(() => setHasPortfolio(false)); }, []);
+  useEffect(() => { if (dim === 'project' && scope !== 'all') setDim('model'); }, [scope, dim]);
+
+  const attributedPct = useMemo(() => {
+    if (!report || !report.totals.tokens.total) return 0;
+    return ((report.totals.tokens.total - report.unassigned.tokens.total) / report.totals.tokens.total) * 100;
+  }, [report]);
+
+  if (error) return <Container sx={{ py: 8 }}><Typography color="error">{error}</Typography></Container>;
+  if (!report) return <Container sx={{ py: 8 }}><Typography>Reading usage…</Typography></Container>;
+
+  const { coverage: c, totals: t } = report;
+  const workingMs = t.estimatedActiveMs + t.exactMs;
+  const isPortfolio = report.kind === 'portfolio';
+  // Historical working time is INFERRED from the spacing of turns in a transcript. Timestamps
+  // cannot tell agent work from a human reading their phone, so it is never presented as
+  // measured: only the part backed by run telemetry (exactMs) is.
+  const anyExact = t.exactMs > 0;
+  const workingLabel = anyExact ? 'Working time' : 'Working time (est.)';
+  const workingNote = anyExact
+    ? `${fmtDuration(t.exactMs)} measured · ${fmtDuration(t.estimatedActiveMs)} estimated`
+    : 'estimated from gaps between turns';
+  const exportUrl = isPortfolio ? portfolioUsageExportUrl : usageExportUrl;
+  const dims: Dimension[] = isPortfolio ? ['project', ...DIMENSIONS] : [...DIMENSIONS];
+  const workingHead = anyExact ? 'Working' : 'Working (est.)';
+  const cols = (isPortfolio ? 10 : 9) + TOKEN_COLUMNS.length;
+
+  return (
+    <Container maxWidth="xl" sx={{ py: 3, display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+      <Box>
+        <Typography variant="h5" sx={{ fontWeight: 800 }}>Value</Typography>
+        <Typography sx={{ color: 'text.secondary', fontSize: 14, maxWidth: '70ch' }}>
+          What each ticket cost, start to finish — time, tokens, and which models and agents spent them.
+          Rows measured by run telemetry are marked; the rest are inferred from local session transcripts
+          and carry the confidence of that inference.
+        </Typography>
+        <Typography sx={{ mt: 0.8, fontSize: 11.5, color: 'text.disabled', fontFamily: 'monospace' }}>
+          {report.dateRange.from?.slice(0, 10) || '—'} → {report.dateRange.to?.slice(0, 10) || '—'}
+          {' · '}transcripts {report.enabled.transcripts ? `on (${c.transcriptSessions} sessions)` : 'off — opt-in'}
+          {' · '}{c.exactRuns} measured runs
+          {' · '}generated {report.generatedAt.slice(0, 16).replace('T', ' ')}Z
+        </Typography>
+      </Box>
+
+      {!report.enabled.transcripts && (
+        <Card sx={{ p: 2, borderLeft: '3px solid', borderColor: 'warning.main' }}>
+          <Typography sx={{ fontSize: 14, fontWeight: 700 }}>Transcript reading is off</Typography>
+          <Typography sx={{ fontSize: 13.5, color: 'text.secondary', maxWidth: '78ch' }}>
+            Only measured <code>maestro run</code> telemetry is shown. To also reconstruct the history already on
+            disk, set <code>"usage": {'{'} "scanTranscripts": true {'}'}</code> in <code>config.json</code>, or start the
+            cockpit with <code>MAESTRO_USAGE_SCAN=1</code>. Reading is local and read-only, and only aggregates are
+            kept — never prompts, responses, commands or source.
+          </Typography>
+        </Card>
+      )}
+
+      <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+        <Meter accent label="Total tokens" value={fmtTokens(t.tokens.total)} note={`in ${fmtTokens(t.tokens.input)} · out ${fmtTokens(t.tokens.output)} · cache ${fmtTokens(t.tokens.cacheRead + t.tokens.cacheWrite)}`} />
+        <Meter label="Reasoning tokens" value={fmtTokens(t.tokens.thinking)} note="subset of output, not in the total" />
+        <Meter label={workingLabel} value={fmtDuration(workingMs)} note={workingNote} />
+        <Meter label="Tokens attributed" value={`${attributedPct.toFixed(0)}%`} note={`${fmtTokens(t.tokens.total - report.unassigned.tokens.total)} of ${fmtTokens(t.tokens.total)} tokens`} />
+        <Meter label="Tickets with usage" value={String(c.ticketsWithUsage)} note={`of ${c.ticketsOnBoard} on the board`} />
+      </Stack>
+
+      <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+        {hasPortfolio && (
+          <ToggleButtonGroup exclusive size="small" value={scope}
+            onChange={(_, v) => { if (v) { setScope(v); load(false, v); } }}>
+            <ToggleButton value="board" sx={{ textTransform: 'none', px: 1.5 }}>This board</ToggleButton>
+            <ToggleButton value="all" sx={{ textTransform: 'none', px: 1.5 }}>All projects</ToggleButton>
+          </ToggleButtonGroup>
+        )}
+        <Button size="small" variant="outlined" disabled={busy} onClick={() => load(true)}>
+          {busy ? 'Reading…' : 'Refresh'}
+        </Button>
+        <Box sx={{ flex: 1 }} />
+        <Typography sx={{ fontSize: 11.5, color: 'text.disabled' }}>Export</Typography>
+        <Button size="small" href={exportUrl('csv', 'tickets')}>CSV</Button>
+        <Button size="small" href={exportUrl('json')}>JSON</Button>
+        <Tooltip title="A self-contained page with these aggregates — safe to share, no transcript content in it">
+          <Button size="small" href={exportUrl('html')}>Snapshot</Button>
+        </Tooltip>
+      </Stack>
+
+      {isPortfolio && report.projects && (
+        <Card sx={{ overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 780 }}>
+            <TableHead>
+              <TableRow>
+                {['Project', 'In', 'Out', 'C·rd', 'C·wr', 'Think', 'Total', 'Mix', workingHead, 'Turns', 'Tickets w/ usage', 'Tokens attributed', 'Top ticket'].map((h) => (
+                  <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>{h}</TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {report.projects.map((p) => !p.ok || !p.totals || !p.coverage ? (
+                <TableRow key={p.path}>
+                  <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600 }}>{p.name}</TableCell>
+                  <TableCell colSpan={12} sx={{ color: 'text.disabled', fontSize: 12.5 }}>{p.error || 'could not be read'}</TableCell>
+                </TableRow>
+              ) : (
+                <TableRow key={p.path} hover>
+                  <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    {p.name}
+                    {p.template && <Chip size="small" variant="outlined" label="starter board" sx={{ ml: 0.6, fontSize: 9, height: 16 }} />}
+                  </TableCell>
+                  {TOKEN_COLUMNS.map((col) => (
+                    <TableCell key={col.key} align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5, color: col.key === 'thinking' ? 'text.disabled' : 'text.secondary', whiteSpace: 'nowrap' }}>
+                      {fmtTokens(p.totals!.tokens[col.key])}
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>{fmtTokens(p.totals.tokens.total)}</TableCell>
+                  <TableCell><TokenBar tokens={p.totals.tokens} width={90} /></TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>{fmtDuration(p.totals.estimatedActiveMs + p.totals.exactMs)}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>{p.totals.turns.toLocaleString('en-US')}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>{p.coverage.ticketsWithUsage} / {p.coverage.ticketsOnBoard}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
+                    {p.totals.tokens.total ? `${(((p.totals.tokens.total - p.coverage.unassignedTokens) / p.totals.tokens.total) * 100).toFixed(0)}%` : '—'}
+                  </TableCell>
+                  <TableCell sx={{ fontSize: 12, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                    {p.topTicket ? `${p.topTicket.id} · ${fmtTokens(p.topTicket.total)}` : '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+
+      <Card sx={{ overflowX: 'auto' }}>
+        <Table size="small" sx={{ minWidth: 900 }}>
+          <TableHead>
+            <TableRow>
+              {['Ticket', ...(isPortfolio ? ['Project'] : []), 'Name', 'Confidence'].map((h) => (
+                <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {h}
+                </TableCell>
+              ))}
+              {TOKEN_COLUMNS.map((col) => (
+                <Tooltip key={col.key} title={col.title}>
+                  <TableCell align="right" sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: col.key === 'thinking' ? 'text.disabled' : 'text.secondary', whiteSpace: 'nowrap' }}>
+                    {col.head}
+                  </TableCell>
+                </Tooltip>
+              ))}
+              {['Total', 'Mix', workingHead, 'Elapsed', 'Turns', 'Models'].map((h) => (
+                <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {h}
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {report.tickets.length === 0 && (
+              <TableRow><TableCell colSpan={cols} sx={{ color: 'text.secondary', py: 4 }}>
+                No usage could be tied to a ticket yet.
+              </TableCell></TableRow>
+            )}
+            {report.tickets.map((tk) => (
+              <Fragment key={tk.id}>
+                <TableRow hover sx={{ cursor: 'pointer' }} onClick={() => setOpen(open === tk.id ? null : tk.id)}>
+                  <TableCell sx={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontWeight: 600 }}>
+                    <TimingStripe timing={tk.timing} />{tk.id}
+                  </TableCell>
+                  {isPortfolio && (
+                    <TableCell sx={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 11.5, color: 'text.secondary' }}>
+                      {tk.project || '—'}
+                    </TableCell>
+                  )}
+                  <TableCell sx={{ minWidth: 220 }}>
+                    <Typography sx={{ fontSize: 13.5, lineHeight: 1.3 }}>{tk.name || <em>untitled</em>}</Typography>
+                    <Typography sx={{ fontSize: 10.5, color: 'text.disabled', fontFamily: 'monospace' }}>
+                      {tk.area || '—'} · {tk.status || '—'}{tk.boardModel ? ` · board model ${tk.boardModel}` : ''}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Tooltip title={tk.evidence.join(', ') || 'no evidence recorded'}>
+                      <Chip size="small" variant="outlined" label={tk.confidence} color={CONFIDENCE_COLOR[tk.confidence] || 'default'} sx={{ fontSize: 10, height: 20 }} />
+                    </Tooltip>
+                  </TableCell>
+                  {TOKEN_COLUMNS.map((col) => (
+                    <TableCell key={col.key} align="right"
+                      sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', fontSize: 12.5,
+                        color: col.key === 'thinking' ? 'text.disabled' : 'text.secondary' }}>
+                      {fmtTokens(tk.metrics.tokens[col.key])}
+                    </TableCell>
+                  ))}
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {fmtTokens(tk.metrics.tokens.total)}
+                  </TableCell>
+                  <TableCell><TokenBar tokens={tk.metrics.tokens} /></TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                    {fmtDuration(tk.metrics.estimatedActiveMs + tk.metrics.exactMs)}
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                    {tk.cycleMs !== null ? fmtDuration(tk.cycleMs) : fmtDuration(tk.metrics.spanMs)}
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
+                    {tk.metrics.turns || '—'}{tk.metrics.runs ? ` +${tk.metrics.runs}r` : ''}
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                    {tk.breakdown.model.slice(0, 3).map((m) => (
+                      <Chip key={m.key} size="small" variant="outlined" label={shortModel(m.key)} sx={{ fontSize: 9.5, height: 18, mr: 0.4 }} />
+                    ))}
+                  </TableCell>
+                </TableRow>
+                {open === tk.id && (
+                  <TableRow>
+                    <TableCell colSpan={cols} sx={{ bgcolor: 'action.hover', py: 1.5 }}>
+                      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0,1fr))' }, gap: 2 }}>
+                        {(['agent', 'model', 'date'] as Dimension[]).map((d) => (
+                          <Box key={d}>
+                            <Typography sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', mb: 0.5 }}>
+                              By {d}
+                            </Typography>
+                            <BucketTable rows={tk.breakdown[d] || []} dense />
+                          </Box>
+                        ))}
+                      </Box>
+                      <Typography sx={{ mt: 1, fontSize: 11.5, color: 'text.disabled', fontFamily: 'monospace' }}>
+                        evidence: {tk.evidence.join(', ') || '—'}
+                        {tk.cycleMs !== null && ` · measured cycle ${fmtDuration(tk.cycleMs)}`}
+                        {` · elapsed ${fmtDuration(tk.metrics.spanMs)}`}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
+            ))}
+            {report.unassigned.turns > 0 && (
+              <TableRow sx={{ '& td': { borderTop: '2px solid', borderColor: 'divider' } }}>
+                <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                  Unassigned
+                </TableCell>
+                {isPortfolio && <TableCell />}
+                <TableCell sx={{ fontSize: 12.5, color: 'text.secondary' }}>
+                  Real usage that no ticket could be justified for — kept, never discarded or forced onto a weak match
+                </TableCell>
+                <TableCell>
+                  <Chip size="small" variant="outlined" label="unassigned" sx={{ fontSize: 10, height: 20 }} />
+                </TableCell>
+                {TOKEN_COLUMNS.map((col) => (
+                  <TableCell key={col.key} align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5, color: 'text.disabled', whiteSpace: 'nowrap' }}>
+                    {fmtTokens(report.unassigned.tokens[col.key])}
+                  </TableCell>
+                ))}
+                <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {fmtTokens(report.unassigned.tokens.total)}
+                </TableCell>
+                <TableCell><TokenBar tokens={report.unassigned.tokens} /></TableCell>
+                <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {fmtDuration(report.unassigned.estimatedActiveMs + report.unassigned.exactMs)}
+                </TableCell>
+                <TableCell />
+                <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
+                  {report.unassigned.turns.toLocaleString('en-US')}
+                </TableCell>
+                <TableCell />
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </Card>
+      <Typography sx={{ fontSize: 11.5, color: 'text.disabled' }}>{TOTAL_RULE}</Typography>
+
+      <Box>
+        <ToggleButtonGroup exclusive size="small" value={dim} onChange={(_, v) => v && setDim(v)} sx={{ mb: 1 }}>
+          {dims.map((d) => <ToggleButton key={d} value={d} sx={{ textTransform: 'none', px: 1.5 }}>{d}</ToggleButton>)}
+        </ToggleButtonGroup>
+        <Card sx={{ p: 2 }}>
+          <Typography sx={{ fontSize: 12.5, color: 'text.secondary', mb: 1 }}>{DIMENSION_HINT[dim]}</Typography>
+          <BucketTable rows={report.breakdown[dim] || []} />
+          <Box sx={{ mt: 1 }}>
+            <Button size="small" href={exportUrl('csv', dim)}>Export this view as CSV</Button>
+          </Box>
+        </Card>
+      </Box>
+
+      <Card sx={{ p: 2, borderLeft: '3px solid', borderColor: 'primary.main' }}>
+        <Typography sx={{ fontSize: 14, fontWeight: 700 }}>Unassigned</Typography>
+        <Typography sx={{ fontSize: 13.5, color: 'text.secondary', maxWidth: '78ch' }}>
+          <strong>{fmtTokens(report.unassigned.tokens.total)} tokens over {report.unassigned.turns.toLocaleString('en-US')} turns</strong>{' '}
+          are real usage no ticket could be justified for. They are <strong>kept and counted in the totals</strong> —
+          never discarded, and never forced onto a weak match. Distributing them across tickets would make every
+          row above look precise and be wrong. The reasons mean different things: work that never named a ticket
+          is a fact about how the work ran, not a limit of the reading.
+        </Typography>
+        <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.4, maxWidth: 560 }}>
+          {Object.entries(c.unassignedReasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+            <Box key={k} sx={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, borderBottom: '1px dotted', borderColor: 'divider', pb: 0.3 }}>
+              <span>{REASON_LABEL[k] || k}</span>
+              <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.75 }}>{v.toLocaleString('en-US')} turns</span>
+            </Box>
+          ))}
+        </Box>
+      </Card>
+
+      <Typography sx={{ fontSize: 11.5, color: 'text.disabled', fontFamily: 'monospace', maxWidth: '92ch' }}>
+        {TOTAL_RULE} Historical working time is ESTIMATED: it sums gaps between consecutive turns, capped at
+        5 minutes, because a transcript timestamp cannot tell agent work from an idle gap. Only time backed by
+        run telemetry is measured. Token counts only — no cost is shown, because rates vary by account and a
+        subscription has no per-token price.
+      </Typography>
+    </Container>
+  );
+}

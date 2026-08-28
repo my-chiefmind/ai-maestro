@@ -20,6 +20,7 @@ npm-debug.log*
 /board/plan.json
 /board/plan.md
 /board/parked.json
+/board/telemetry.jsonl
 /board/specs/
 /board/reports/
 
