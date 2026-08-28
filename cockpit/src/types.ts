@@ -1,6 +1,12 @@
 export interface BoardEpic {
   id: string;
   name: string;
+  /**
+   * The plan initiative this epic delivers. Absent on a legacy board and while an epic is
+   * between assignments. A ticket has no initiative field of its own — it derives one through
+   * its epic, so this is the only place the link is stored.
+   */
+  initiativeId?: string;
   desc?: string;
   collapsed?: boolean;
   traces_to?: string[];

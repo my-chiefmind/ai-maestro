@@ -21,7 +21,7 @@ import {
   ownershipVerdict, epicOwnershipVerdict, initiativeModeActive, crossInitiativeConflicts,
 } from "../scripts/board-core.mjs";
 import { assignLanes } from "../scripts/lane-core.mjs";
-import { emptyPlan } from "../scripts/plan-core.mjs";
+import { emptyPlan, TRACEABLE_PREFIXES } from "../scripts/plan-core.mjs";
 
 /** A plan with two initiatives, one owned requirement each, and one project-wide NFR. */
 function plan({ initiatives = true } = {}) {
@@ -212,6 +212,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const KIT_SRC = join(KIT, "cockpit", "src");
 
 test("a live ticket under an ARCHIVED epic is still ownership-checked at pick time", () => {
   const archivedEpics = [{ id: "eA", initiativeId: "I-1", name: "Landed registration" }];
@@ -320,4 +321,50 @@ test("a sample epic is exempt from the dangling check, as it is from the rest", 
   gone.sections.initiatives = [];
   const b = { epics: [{ id: "e9", initiativeId: "I-1", name: "Sample", sample: true }], tickets: [] };
   assert.deepEqual(validateBoard(b, { plan: gone }).errors, []);
+});
+
+// ── The cockpit's client-side preview must mirror these rules ───────────────────
+
+test("usePlanScope mirrors the ownership rules it previews", () => {
+  // cockpit/src/usePlanScope.ts restates the gate on purpose — its own docstring says the
+  // authority stays server-side and the copy exists only to spare a save-and-see round trip.
+  // A preview that disagrees is worse than none: a picker offering an option the save then
+  // rejects teaches people to ignore it. Typecheck cannot catch a divergence in the RULE, so
+  // this reads the file and pins the facts both sides have to agree on.
+  const src = readFileSync(join(KIT_SRC, "usePlanScope.ts"), "utf8");
+
+  // 1. The same traceable prefixes.
+  const listed = src.match(/const TRACEABLE = \[([^\]]*)\]/)?.[1] ?? "";
+  assert.deepEqual(
+    listed.split(",").map((x) => x.trim().replace(/['"]/g, "")).filter(Boolean).sort(),
+    [...TRACEABLE_PREFIXES].sort(),
+    "TRACEABLE in usePlanScope.ts has drifted from TRACEABLE_PREFIXES",
+  );
+
+  // 2. Project-wide items (owner null) are available to every initiative — the rule that
+  //    decides whether a shared NFR can be traced from anywhere.
+  assert.match(src, /o\.initiativeId && o\.initiativeId !== \(own \?\? null\)/,
+    "the foreign-item rule must treat a null owner as available to everyone");
+
+  // 3. Ownership is checked after scope and is NOT cleared by a scope exception. Compared
+  //    inside the verdict BODY — the state union at the top of the file mentions
+  //    'cross-initiative' first, which would make a naive indexOf pass for the wrong reason.
+  const body = src.slice(src.indexOf("const verdict ="));
+  const exceptionAt = body.indexOf("scope_exception");
+  const ownershipAt = body.indexOf("state: 'cross-initiative'");
+  assert.ok(exceptionAt > -1 && ownershipAt > exceptionAt,
+    "ownership must be evaluated after the exception branch, so an exception cannot clear it");
+});
+
+test("the states usePlanScope can report are states board-core also produces", () => {
+  const src = readFileSync(join(KIT_SRC, "usePlanScope.ts"), "utf8");
+  for (const state of ["unassigned-epic", "cross-initiative"]) {
+    assert.ok(src.includes(`'${state}'`), `usePlanScope must be able to report ${state}`);
+  }
+  // And the server really does produce them, so the preview is not inventing verdicts.
+  const p = plan();
+  const b = board({ tickets: [ticket({ id: "T-1", epicId: "e3", traces_to: ["NFR-1"] })] });
+  assert.equal(ownershipVerdict(b.tickets[0], { plan: p, data: b }).state, "unassigned-epic");
+  const b2 = board({ tickets: [ticket({ id: "T-2", epicId: "e2", traces_to: ["FR-1"] })] });
+  assert.equal(ownershipVerdict(b2.tickets[0], { plan: p, data: b2 }).state, "cross-initiative");
 });
