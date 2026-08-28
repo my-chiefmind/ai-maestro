@@ -43,27 +43,41 @@ export const DEFAULT_CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects"
 export const DEFAULT_CACHE_FILE = join(homedir(), ".maestro", "usage-cache.json");
 
 /** Bump when `distill()`'s output shape changes, so stale caches are re-read, not trusted. */
-export const CACHE_SCHEMA = 3;
+export const CACHE_SCHEMA = 5;
 
 /** Claude Code's own bookkeeping pseudo-model — retries and errors, never real inference. */
 const SYNTHETIC_MODEL = "<synthetic>";
 
-/** Ticket ids are `T-` + digits. Anchored so `T-1` inside `PART-12` can't match. */
-const TICKET_RE = /\bT-\d+\b/g;
+/**
+ * Ticket-SHAPED identifiers: a short alphanumeric prefix, a hyphen, digits.
+ *
+ * Deliberately not `T-\d+`. Boards choose their own id prefixes — this kit uses `T-`, but
+ * lense-kit uses `kit-096` and applicify used `tl-226`, and a hardcoded `T-` reported 0% of
+ * 142 real tickets as unattributable. The prefix belongs to the board, not to this scanner.
+ *
+ * Being generous here is safe and being narrow is not: attribution accepts an id ONLY if the
+ * board defines it (see usage-attribute.mjs), so noise like `UTF-8` or `ISO-8601` is matched,
+ * carried, and then refused. A missed prefix, by contrast, is silently unrecoverable.
+ */
+const TICKET_RE = /\b[A-Za-z][A-Za-z0-9]{0,7}-\d{1,5}\b/g;
+
+/** Ticket-shaped ids per record, so a pathological line cannot bloat the cache. */
+const MAX_MENTIONS_PER_EVENT = 16;
 
 /**
  * Commands that prove a session was working a specific ticket, rather than merely naming one.
  * Matched against tool INPUT strings only. Each entry reduces a command to (verb, ticket id);
  * the command itself is never retained.
  */
+const ID = "([A-Za-z][A-Za-z0-9]{0,7}-\\d{1,5})";
 const COMMAND_PATTERNS = [
-  { verb: "set-status", re: /board-write\.mjs\b[^\n]*?\bset-status\s+(T-\d+)/g },
-  { verb: "set-status", re: /\bmaestro\s+ticket\s+set-status\s+(T-\d+)/g },
-  { verb: "archive", re: /board-write\.mjs\b[^\n]*?\barchive\s+(T-\d+)/g },
-  { verb: "archive", re: /\bmaestro\s+ticket\s+archive\s+(T-\d+)/g },
-  { verb: "block", re: /board-write\.mjs\b[^\n]*?\bblock\s+(T-\d+)/g },
-  { verb: "run", re: /\bmaestro\s+run\s+(T-\d+)/g },
-  { verb: "spec", re: /board\/specs\/(T-\d+)\.md/g },
+  { verb: "set-status", re: new RegExp(`board-write\\.mjs\\b[^\\n]*?\\bset-status\\s+${ID}`, "g") },
+  { verb: "set-status", re: new RegExp(`\\bmaestro\\s+ticket\\s+set-status\\s+${ID}`, "g") },
+  { verb: "archive", re: new RegExp(`board-write\\.mjs\\b[^\\n]*?\\barchive\\s+${ID}`, "g") },
+  { verb: "archive", re: new RegExp(`\\bmaestro\\s+ticket\\s+archive\\s+${ID}`, "g") },
+  { verb: "block", re: new RegExp(`board-write\\.mjs\\b[^\\n]*?\\bblock\\s+${ID}`, "g") },
+  { verb: "run", re: new RegExp(`\\bmaestro\\s+run\\s+${ID}`, "g") },
+  { verb: "spec", re: new RegExp(`board/specs/${ID}\\.md`, "g") },
 ];
 
 /** @typedef {{ input: number, output: number, cacheRead: number, cacheWrite: number, thinking: number }} Usage */
@@ -137,7 +151,7 @@ export function transcriptDirsFor(projectsDir, roots) {
  */
 function mentionsIn(s) {
   const m = s.match(TICKET_RE);
-  return m ? [...new Set(m)] : [];
+  return m ? [...new Set(m)].slice(0, MAX_MENTIONS_PER_EVENT) : [];
 }
 
 /**
@@ -188,7 +202,7 @@ function evidenceText(rec) {
 
 /**
  * @typedef {{
- *   ts: number, kind: "turn" | "evidence", branch: string | null, sessionId: string,
+ *   ts: number, kind: "turn" | "evidence", cwd: string, branch: string | null, sessionId: string,
  *   agentId: string | null, agentType: string | null,
  *   model?: string, usage?: Usage,
  *   mentions: string[], commands: Array<{ verb: string, id: string }>,
@@ -198,13 +212,18 @@ function evidenceText(rec) {
 /**
  * Distil one transcript file into ordered events. Content in, aggregates out — this is the
  * only function in the kit that ever sees transcript text, and it returns none of it.
+ *
+ * Note what it does NOT do: filter by repo. Each event carries the `cwd` the record reported
+ * and the caller decides who owns it (`eventsForRoots`). That split is what makes the on-disk
+ * cache independent of which project is being reported on — bake a root filter in here and the
+ * cache is only valid for the one question it was first asked, which breaks the moment a
+ * portfolio rollup asks about two overlapping repos.
  * @param {string} filePath
- * @param {{ agentType?: string | null, roots?: string[] }} [opts]
+ * @param {{ agentType?: string | null }} [opts]
  * @returns {UsageEvent[]}
  */
 export function distill(filePath, opts = {}) {
   const agentType = opts.agentType ?? null;
-  const roots = opts.roots ?? null;
   /** @type {UsageEvent[]} */
   const events = [];
   let text;
@@ -216,10 +235,6 @@ export function distill(filePath, opts = {}) {
     try { rec = JSON.parse(line); } catch { continue; }
     const ts = typeof rec?.timestamp === "string" ? Date.parse(rec.timestamp) : NaN;
     if (!Number.isFinite(ts)) continue;
-    // A session can `cd` elsewhere mid-run; bucket by the cwd the record itself reports so a
-    // detour into another repo is not billed to this one.
-    if (roots && typeof rec.cwd === "string" && !roots.some((r) => rec.cwd === r || rec.cwd.startsWith(`${r}/`))) continue;
-
     const { text: prose, toolText } = evidenceText(rec);
     const mentions = mentionsIn(`${prose}\n${toolText}`);
     const commands = commandsIn(toolText);
@@ -232,6 +247,7 @@ export function distill(filePath, opts = {}) {
     events.push({
       ts,
       kind: isTurn ? "turn" : "evidence",
+      cwd: typeof rec.cwd === "string" ? rec.cwd : "",
       branch: typeof rec.gitBranch === "string" ? rec.gitBranch : null,
       sessionId: typeof rec.sessionId === "string" ? rec.sessionId : basename(filePath, ".jsonl"),
       agentId: typeof rec.agentId === "string" ? rec.agentId : null,
@@ -242,6 +258,39 @@ export function distill(filePath, opts = {}) {
     });
   }
   return events;
+}
+
+/**
+ * Does `cwd` belong to `root` — and not to a MORE SPECIFIC root that also contains it?
+ *
+ * This is the whole of nested-repo correctness. `~/source/lense-kit` and
+ * `~/source/lense-kit/applicify-group/applicify` are both real projects with their own boards,
+ * and plain prefix matching puts the inner repo's every turn on BOTH of them. In a portfolio
+ * rollup that is not a rounding error: the nested project's tokens are counted twice and the
+ * parent is credited with work it never did.
+ *
+ * So ownership goes to the longest matching root, and `excludeRoots` carries the other
+ * projects' roots. A root is only excluded when it is strictly deeper than this one, so a
+ * sibling project can never suppress work that is genuinely ours.
+ * @param {string} cwd
+ * @param {string[]} roots
+ * @param {string[]} excludeRoots
+ */
+export function ownsCwd(cwd, roots, excludeRoots = []) {
+  const under = (/** @type {string} */ r) => cwd === r || cwd.startsWith(`${r}/`);
+  const mine = roots.filter(under);
+  if (!mine.length) return false;
+  const deepest = Math.max(...mine.map((r) => r.length));
+  return !excludeRoots.some((r) => under(r) && r.length > deepest);
+}
+
+/**
+ * @param {UsageEvent[]} events
+ * @param {string[]} roots
+ * @param {string[]} [excludeRoots]
+ */
+export function eventsForRoots(events, roots, excludeRoots = []) {
+  return events.filter((e) => ownsCwd(e.cwd, roots, excludeRoots));
 }
 
 /** @param {string} cacheFile */
@@ -265,7 +314,7 @@ function saveCache(cacheFile, cache) {
 
 /**
  * Read every transcript belonging to `roots`, using and refreshing the on-disk cache.
- * @param {{ roots: string[], projectsDir?: string, cacheFile?: string, useCache?: boolean }} opts
+ * @param {{ roots: string[], excludeRoots?: string[], projectsDir?: string, cacheFile?: string, useCache?: boolean }} opts
  * @returns {{ events: UsageEvent[], sessions: number, files: number, agentTypes: Record<string, number> }}
  */
 export function scanTranscripts(opts) {
@@ -273,6 +322,7 @@ export function scanTranscripts(opts) {
   const cacheFile = opts.cacheFile ?? DEFAULT_CACHE_FILE;
   const useCache = opts.useCache !== false;
   const roots = opts.roots;
+  const excludeRoots = opts.excludeRoots ?? [];
   const cache = useCache ? loadCache(cacheFile) : { schema: CACHE_SCHEMA, files: {} };
   let dirty = false;
 
@@ -293,12 +343,13 @@ export function scanTranscripts(opts) {
     if (cached && cached.sig === sig) {
       distilled = cached.events;
     } else {
-      distilled = distill(filePath, { agentType, roots });
+      distilled = distill(filePath, { agentType });
       cache.files[filePath] = { sig, events: distilled };
       dirty = true;
     }
     files++;
-    for (const e of distilled) {
+    // Ownership is decided here, not in distill, so one cached parse serves every caller.
+    for (const e of eventsForRoots(distilled, roots, excludeRoots)) {
       events.push(e);
       sessions.add(e.sessionId);
       if (e.kind === "turn") {

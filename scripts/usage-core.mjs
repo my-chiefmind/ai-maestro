@@ -126,7 +126,7 @@ export function rootsForBoard(boardDir) {
  * @param {{
  *   boardDir: string,
  *   data?: any, archive?: any, config?: any,
- *   roots?: string[], projectsDir?: string, cacheFile?: string,
+ *   roots?: string[], excludeRoots?: string[], projectsDir?: string, cacheFile?: string,
  *   env?: NodeJS.ProcessEnv, useCache?: boolean,
  *   tuning?: Partial<typeof DEFAULTS>,
  * }} opts
@@ -141,6 +141,9 @@ export function buildUsageReport(opts) {
   const config = opts.config !== undefined ? opts.config : readJson(resolve(boardDir, "..", "config.json"));
   const index = ticketIndex(data, archive);
   const roots = opts.roots || rootsForBoard(boardDir);
+  // Other projects' roots, so a repo nested inside this one keeps its own tokens. See
+  // ownsCwd() in usage-scan.mjs — without this a portfolio rollup double-counts.
+  const excludeRoots = opts.excludeRoots || [];
 
   // ── Exact half ────────────────────────────────────────────────────────────────────────
   const { runs, skipped: telemetrySkipped } = readRuns(boardDir);
@@ -175,6 +178,7 @@ export function buildUsageReport(opts) {
   if (scanning) {
     const scan = scanTranscripts({
       roots,
+      excludeRoots,
       projectsDir: opts.projectsDir,
       cacheFile: opts.cacheFile,
       useCache: opts.useCache,
@@ -291,6 +295,7 @@ export function buildUsageReport(opts) {
     project: config?.project?.name || basename(resolve(boardDir, "..")),
     boardDir,
     roots,
+    excludeRoots,
     dateRange: { from: from ? new Date(from).toISOString() : null, to: to ? new Date(to).toISOString() : null },
     enabled: { transcripts: scanning, telemetry: true },
     coverage: {
@@ -328,13 +333,18 @@ const csv = (header, rows) => [header, ...rows].map((r) => r.map(csvCell).join("
  */
 export function usageToCsv(report, opts = {}) {
   const view = opts.view || "tickets";
+  // A portfolio report carries a `project` on every ticket and an extra `project` breakdown;
+  // the single-board shape has neither. One exporter handles both rather than a second that
+  // could round or label differently.
+  const isPortfolio = /** @type {any} */ (report).kind === "portfolio";
   if (view === "tickets") {
     return csv(
-      ["ticket", "name", "status", "area", "epic", "board_model", "timing", "confidence",
+      [...(isPortfolio ? ["project"] : []), "ticket", "name", "status", "area", "epic", "board_model", "timing", "confidence",
        "input", "output", "cache_read", "cache_write", "thinking", "total_tokens",
        "turns", "runs", "estimated_active_minutes", "exact_run_minutes", "exact_cycle_hours", "span_hours",
        "models", "agents", "first", "last"],
       report.tickets.map((t) => [
+        ...(isPortfolio ? [/** @type {any} */ (t).project || ""] : []),
         t.id, t.name, t.status, t.area, t.epicName || t.epicId, t.boardModel, t.timing, t.confidence,
         t.metrics.tokens.input, t.metrics.tokens.output, t.metrics.tokens.cacheRead,
         t.metrics.tokens.cacheWrite, t.metrics.tokens.thinking, t.metrics.tokens.total,

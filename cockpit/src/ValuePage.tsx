@@ -4,7 +4,7 @@ import {
   TableHead, TableRow, ToggleButton, ToggleButtonGroup, Tooltip, Typography,
 } from '@mui/material';
 import type { UsageBucket, UsageReport, UsageTicket, UsageTokens } from './types';
-import { getUsage, usageExportUrl } from './api';
+import { getUsage, getPortfolioUsage, usageExportUrl, portfolioUsageExportUrl } from './api';
 
 // The Value page: what each ticket cost in time and tokens, and how much of that is measured
 // rather than inferred. Every number here is served by scripts/usage-core.mjs — this file
@@ -17,9 +17,10 @@ import { getUsage, usageExportUrl } from './api';
 // precise and be wrong.
 
 const DIMENSIONS = ['model', 'agent', 'runtime', 'stage', 'date'] as const;
-type Dimension = typeof DIMENSIONS[number];
+type Dimension = typeof DIMENSIONS[number] | 'project';
 
-const DIMENSION_HINT: Record<Dimension, string> = {
+const DIMENSION_HINT: Record<string, string> = {
+  project: 'Each project measured by its own board, then summed. A repo nested inside another keeps its own tokens.',
   model: 'Which model tier the tokens actually went to.',
   agent: 'The main session versus each subagent the roster spawned.',
   runtime: 'Claude Code or Codex. Historical rows are Claude only — Codex writes no local transcript to read.',
@@ -145,15 +146,21 @@ export default function ValuePage() {
   const [busy, setBusy] = useState(false);
   const [dim, setDim] = useState<Dimension>('model');
   const [open, setOpen] = useState<string | null>(null);
+  // 'all' is offered only when the cockpit was started with a registry; without one the
+  // portfolio endpoint 404s and the toggle simply isn't there.
+  const [scope, setScope] = useState<'board' | 'all'>('board');
+  const [hasPortfolio, setHasPortfolio] = useState(false);
 
-  const load = (refresh = false) => {
+  const load = (refresh = false, which: 'board' | 'all' = scope) => {
     setBusy(true);
-    getUsage(refresh)
-      .then((r) => { setReport(r); setError(null); })
+    (which === 'all' ? getPortfolioUsage(refresh).then((r) => r ?? null) : getUsage(refresh))
+      .then((r) => { if (r) { setReport(r); setError(null); } })
       .catch((e) => setError(String(e.message || e)))
       .finally(() => setBusy(false));
   };
-  useEffect(() => { load(false); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { load(false, 'board'); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { getPortfolioUsage(false).then((r) => setHasPortfolio(Boolean(r))).catch(() => setHasPortfolio(false)); }, []);
+  useEffect(() => { if (dim === 'project' && scope !== 'all') setDim('model'); }, [scope, dim]);
 
   const attributedPct = useMemo(() => {
     if (!report || !report.totals.tokens.total) return 0;
@@ -165,6 +172,9 @@ export default function ValuePage() {
 
   const { coverage: c, totals: t } = report;
   const workingMs = t.estimatedActiveMs + t.exactMs;
+  const isPortfolio = report.kind === 'portfolio';
+  const exportUrl = isPortfolio ? portfolioUsageExportUrl : usageExportUrl;
+  const dims: Dimension[] = isPortfolio ? ['project', ...DIMENSIONS] : [...DIMENSIONS];
 
   return (
     <Container maxWidth="xl" sx={{ py: 3, display: 'flex', flexDirection: 'column', gap: 2.5 }}>
@@ -204,23 +214,70 @@ export default function ValuePage() {
       </Stack>
 
       <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+        {hasPortfolio && (
+          <ToggleButtonGroup exclusive size="small" value={scope}
+            onChange={(_, v) => { if (v) { setScope(v); load(false, v); } }}>
+            <ToggleButton value="board" sx={{ textTransform: 'none', px: 1.5 }}>This board</ToggleButton>
+            <ToggleButton value="all" sx={{ textTransform: 'none', px: 1.5 }}>All projects</ToggleButton>
+          </ToggleButtonGroup>
+        )}
         <Button size="small" variant="outlined" disabled={busy} onClick={() => load(true)}>
           {busy ? 'Reading…' : 'Refresh'}
         </Button>
         <Box sx={{ flex: 1 }} />
         <Typography sx={{ fontSize: 11.5, color: 'text.disabled' }}>Export</Typography>
-        <Button size="small" href={usageExportUrl('csv', 'tickets')}>CSV</Button>
-        <Button size="small" href={usageExportUrl('json')}>JSON</Button>
+        <Button size="small" href={exportUrl('csv', 'tickets')}>CSV</Button>
+        <Button size="small" href={exportUrl('json')}>JSON</Button>
         <Tooltip title="A self-contained page with these aggregates — safe to share, no transcript content in it">
-          <Button size="small" href={usageExportUrl('html')}>Snapshot</Button>
+          <Button size="small" href={exportUrl('html')}>Snapshot</Button>
         </Tooltip>
       </Stack>
+
+      {isPortfolio && report.projects && (
+        <Card sx={{ overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 780 }}>
+            <TableHead>
+              <TableRow>
+                {['Project', 'Tokens', 'Mix', 'Working', 'Turns', 'Tickets w/ usage', 'Tied', 'Top ticket'].map((h) => (
+                  <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>{h}</TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {report.projects.map((p) => !p.ok || !p.totals || !p.coverage ? (
+                <TableRow key={p.path}>
+                  <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600 }}>{p.name}</TableCell>
+                  <TableCell colSpan={7} sx={{ color: 'text.disabled', fontSize: 12.5 }}>{p.error || 'could not be read'}</TableCell>
+                </TableRow>
+              ) : (
+                <TableRow key={p.path} hover>
+                  <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    {p.name}
+                    {p.template && <Chip size="small" variant="outlined" label="starter board" sx={{ ml: 0.6, fontSize: 9, height: 16 }} />}
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>{fmtTokens(p.totals.tokens.total)}</TableCell>
+                  <TableCell><TokenBar tokens={p.totals.tokens} width={90} /></TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>{fmtDuration(p.totals.estimatedActiveMs + p.totals.exactMs)}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>{p.totals.turns.toLocaleString('en-US')}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>{p.coverage.ticketsWithUsage} / {p.coverage.ticketsOnBoard}</TableCell>
+                  <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
+                    {p.totals.tokens.total ? `${(((p.totals.tokens.total - p.coverage.unassignedTokens) / p.totals.tokens.total) * 100).toFixed(0)}%` : '—'}
+                  </TableCell>
+                  <TableCell sx={{ fontSize: 12, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                    {p.topTicket ? `${p.topTicket.id} · ${fmtTokens(p.topTicket.total)}` : '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
 
       <Card sx={{ overflowX: 'auto' }}>
         <Table size="small" sx={{ minWidth: 900 }}>
           <TableHead>
             <TableRow>
-              {['Ticket', 'Name', 'Confidence', 'Tokens', 'Mix', 'Working', 'Elapsed', 'Turns', 'Models'].map((h) => (
+              {['Ticket', ...(isPortfolio ? ['Project'] : []), 'Name', 'Confidence', 'Tokens', 'Mix', 'Working', 'Elapsed', 'Turns', 'Models'].map((h) => (
                 <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                   {h}
                 </TableCell>
@@ -229,7 +286,7 @@ export default function ValuePage() {
           </TableHead>
           <TableBody>
             {report.tickets.length === 0 && (
-              <TableRow><TableCell colSpan={9} sx={{ color: 'text.secondary', py: 4 }}>
+              <TableRow><TableCell colSpan={isPortfolio ? 10 : 9} sx={{ color: 'text.secondary', py: 4 }}>
                 No usage could be tied to a ticket yet.
               </TableCell></TableRow>
             )}
@@ -239,6 +296,11 @@ export default function ValuePage() {
                   <TableCell sx={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontWeight: 600 }}>
                     <TimingStripe timing={tk.timing} />{tk.id}
                   </TableCell>
+                  {isPortfolio && (
+                    <TableCell sx={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 11.5, color: 'text.secondary' }}>
+                      {tk.project || '—'}
+                    </TableCell>
+                  )}
                   <TableCell sx={{ minWidth: 220 }}>
                     <Typography sx={{ fontSize: 13.5, lineHeight: 1.3 }}>{tk.name || <em>untitled</em>}</Typography>
                     <Typography sx={{ fontSize: 10.5, color: 'text.disabled', fontFamily: 'monospace' }}>
@@ -271,7 +333,7 @@ export default function ValuePage() {
                 </TableRow>
                 {open === tk.id && (
                   <TableRow>
-                    <TableCell colSpan={9} sx={{ bgcolor: 'action.hover', py: 1.5 }}>
+                    <TableCell colSpan={isPortfolio ? 10 : 9} sx={{ bgcolor: 'action.hover', py: 1.5 }}>
                       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0,1fr))' }, gap: 2 }}>
                         {(['agent', 'model', 'date'] as Dimension[]).map((d) => (
                           <Box key={d}>
@@ -298,13 +360,13 @@ export default function ValuePage() {
 
       <Box>
         <ToggleButtonGroup exclusive size="small" value={dim} onChange={(_, v) => v && setDim(v)} sx={{ mb: 1 }}>
-          {DIMENSIONS.map((d) => <ToggleButton key={d} value={d} sx={{ textTransform: 'none', px: 1.5 }}>{d}</ToggleButton>)}
+          {dims.map((d) => <ToggleButton key={d} value={d} sx={{ textTransform: 'none', px: 1.5 }}>{d}</ToggleButton>)}
         </ToggleButtonGroup>
         <Card sx={{ p: 2 }}>
           <Typography sx={{ fontSize: 12.5, color: 'text.secondary', mb: 1 }}>{DIMENSION_HINT[dim]}</Typography>
           <BucketTable rows={report.breakdown[dim] || []} />
           <Box sx={{ mt: 1 }}>
-            <Button size="small" href={usageExportUrl('csv', dim)}>Export this view as CSV</Button>
+            <Button size="small" href={exportUrl('csv', dim)}>Export this view as CSV</Button>
           </Box>
         </Card>
       </Box>

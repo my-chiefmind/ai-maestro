@@ -86,11 +86,18 @@ function dimensionPanel(rows, label) {
 }
 
 /**
- * @param {ReturnType<import("./usage-core.mjs").buildUsageReport>} report
+ * Renders either shape — a single board's report or a portfolio merged from several. They
+ * share every field this uses; the portfolio adds `kind`, `projects` and a `project`
+ * breakdown, which is why the parameter is typed loosely rather than pinned to one of them.
+ * @param {any} report  from buildUsageReport() or buildPortfolioUsage()
  * @param {{ top?: number }} [opts]
  */
 export function renderUsageSnapshot(report, opts = {}) {
   const top = opts.top ?? 40;
+  // One renderer, two shapes: a single board, or a portfolio merged from several. The
+  // portfolio adds a project column and a project breakdown and changes nothing else — a
+  // second renderer would be a second place for the numbers to drift.
+  const isPortfolio = report.kind === "portfolio";
   const c = report.coverage;
   const t = report.totals;
   const attributedTokens = t.tokens.total - report.unassigned.tokens.total;
@@ -103,10 +110,12 @@ export function renderUsageSnapshot(report, opts = {}) {
     "signal-expired": "Signal went stale, several tickets in play",
   });
 
-  const rows = report.tickets.slice(0, top).map((tk) => {
+  const projectRows = isPortfolio ? (report.projects || []) : [];
+  const rows = report.tickets.slice(0, top).map((/** @type {any} */ tk) => {
     const time = tk.metrics.estimatedActiveMs + tk.metrics.exactMs;
     return `<tr class="row row--${esc(tk.timing)}">
       <td class="id"><span class="stripe stripe--${esc(tk.timing)}" title="${tk.timing === "exact" ? "Measured from run telemetry" : tk.timing === "mixed" ? "Part measured, part inferred" : "Inferred from transcripts"}"></span>${esc(tk.id)}</td>
+      ${isPortfolio ? `<td class="proj">${esc(tk.project || "—")}</td>` : ""}
       <td class="name"><span class="ttl">${esc(tk.name) || "<em>untitled</em>"}</span><span class="meta">${esc(tk.area || "—")} · ${esc(tk.status || "—")}${tk.boardModel ? ` · board model ${esc(tk.boardModel)}` : ""}</span></td>
       <td><span class="chip chip--${esc(tk.confidence)}">${esc(tk.confidence)}</span></td>
       <td class="num strong">${fmtTokens(tk.metrics.tokens.total)}</td>
@@ -236,6 +245,7 @@ table.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; min-wi
 .seg--cacheWrite { background: var(--tok-cw); } .seg--cacheRead { background: var(--tok-cr); }
 .runs { color: var(--ok); margin-left: 4px; }
 .models { white-space: nowrap; }
+.proj { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
 .mdl { font-family: var(--mono); font-size: 10px; color: var(--ink-2); border: 1px solid var(--edge); border-radius: 2px; padding: 1px 5px; margin-right: 3px; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
@@ -259,7 +269,7 @@ h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 0 0 2
 </style>
 <div class="wrap">
   <header>
-    <span class="eyebrow">${esc(report.project)} · agent ledger</span>
+    <span class="eyebrow">${esc(isPortfolio ? `${projectRows.filter((/** @type {any} */ p) => p.ok).length} projects` : report.project)} · agent ledger</span>
     <h1>What each ticket <em>actually</em> cost</h1>
     <p class="sub">Time and tokens per ticket, broken down by agent, model, runtime and stage. Rows marked <strong>measured</strong> come from run telemetry; the rest are inferred from local session transcripts and labelled with how confident that inference is.</p>
     <div class="provenance">
@@ -292,15 +302,39 @@ h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 0 0 2
     <div class="tablewrap">
       <table class="ledger">
         <thead><tr>
-          <th>Ticket</th><th>Name</th><th>Confidence</th><th>Tokens</th><th>Mix</th>
+          <th>Ticket</th>${isPortfolio ? "<th>Project</th>" : ""}<th>Name</th><th>Confidence</th><th>Tokens</th><th>Mix</th>
           <th>Working</th><th>Elapsed</th><th>Turns</th><th>Models</th>
         </tr></thead>
         <tbody>
-${rows || '<tr><td colspan="9" class="muted" style="padding:24px">No usage recorded yet.</td></tr>'}
+${rows || `<tr><td colspan="${isPortfolio ? 10 : 9}" class="muted" style="padding:24px">No usage recorded yet.</td></tr>`}
         </tbody>
       </table>
     </div>
   </section>
+
+  ${isPortfolio ? `<section class="sec">
+    <div class="sechead">
+      <h2>By project</h2>
+      <p>Each project measured by its own board, then summed. A repo nested inside another keeps its own tokens — ownership goes to the deepest matching root, never to both.</p>
+    </div>
+    <div class="tablewrap">
+      <table class="ledger">
+        <thead><tr><th>Project</th><th>Tokens</th><th>Mix</th><th>Working</th><th>Turns</th><th>Tickets w/ usage</th><th>Tied to a ticket</th><th>Top ticket</th></tr></thead>
+        <tbody>
+        ${projectRows.map((/** @type {any} */ p) => p.ok ? `<tr>
+          <td class="id">${esc(p.name)}</td>
+          <td class="num strong">${fmtTokens(p.totals.tokens.total)}</td>
+          <td class="barcell">${bar(p.totals.tokens)}</td>
+          <td class="num">${fmtDuration(p.totals.estimatedActiveMs + p.totals.exactMs)}</td>
+          <td class="num muted">${p.totals.turns.toLocaleString("en-US")}</td>
+          <td class="num muted">${p.coverage.ticketsWithUsage} / ${p.coverage.ticketsOnBoard}</td>
+          <td class="num muted">${p.totals.tokens.total ? (((p.totals.tokens.total - p.coverage.unassignedTokens) / p.totals.tokens.total) * 100).toFixed(0) : 0}%</td>
+          <td class="muted" style="font-size:12px">${p.topTicket ? `${esc(p.topTicket.id)} · ${fmtTokens(p.topTicket.total)}` : "—"}</td>
+        </tr>` : `<tr><td class="id">${esc(p.name)}</td><td colspan="7" class="muted" style="font-size:12px">${esc(p.error || "could not be read")}</td></tr>`).join("\n        ")}
+        </tbody>
+      </table>
+    </div>
+  </section>` : ""}
 
   <section class="sec">
     <div class="sechead">
@@ -308,6 +342,7 @@ ${rows || '<tr><td colspan="9" class="muted" style="padding:24px">No usage recor
       <p>The same totals cut five ways. Tokens first, working time second.</p>
     </div>
     <div class="grid">
+      ${isPortfolio ? dimensionPanel(/** @type {any[]} */ (report.breakdown.project), "By project") : ""}
       ${dimensionPanel(/** @type {any[]} */ (report.breakdown.model), "By model")}
       ${dimensionPanel(/** @type {any[]} */ (report.breakdown.agent), "By agent")}
       ${dimensionPanel(/** @type {any[]} */ (report.breakdown.runtime), "By runtime")}

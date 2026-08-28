@@ -259,6 +259,16 @@ export interface UsageTicket {
   /** First measured stage start to last measured stage end. Null when nothing was measured. */
   cycleMs: number | null;
   breakdown: Record<string, UsageBucket[]>;
+  /** Set only on a portfolio report, where one table spans several boards. */
+  project?: string;
+}
+export interface UsageProjectRow {
+  name: string; path: string; boardDir?: string; ok: boolean; error?: string;
+  /** The board holds nothing but starter samples — it exists, no work has been booked to it. */
+  template?: boolean;
+  totals?: UsageMetrics;
+  coverage?: { turns: number; attributed: number; exactRuns: number; ticketsOnBoard: number; ticketsWithUsage: number; unassignedTokens: number };
+  topTicket?: { id: string; name: string; total: number } | null;
 }
 export interface UsageReport {
   generatedAt: string; schema: number; project: string; boardDir: string; roots: string[];
@@ -278,4 +288,7 @@ export interface UsageReport {
   unassigned: UsageMetrics;
   tickets: UsageTicket[];
   breakdown: Record<string, UsageBucket[]>;
+  /** 'portfolio' when merged across boards; absent for a single board. */
+  kind?: string;
+  projects?: UsageProjectRow[];
 }

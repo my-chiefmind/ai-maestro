@@ -74,9 +74,12 @@ export function ticketIndex(data, archive) {
   for (const src of [data, archive]) {
     for (const e of src?.epics || []) if (e?.id) epics.set(e.id, e.name || e.id);
   }
+  /** Lowercased id -> canonical id, so a branch's `t-029` resolves to the board's `T-029`. */
+  const byLower = new Map();
   for (const [src, archived] of /** @type {const} */ ([[data, false], [archive, true]])) {
     for (const t of src?.tickets || []) {
       if (!t?.id || byId.has(t.id)) continue;
+      byLower.set(String(t.id).toLowerCase(), t.id);
       byId.set(t.id, {
         id: t.id,
         name: t.name || "",
@@ -94,18 +97,44 @@ export function ticketIndex(data, archive) {
       });
     }
   }
+  // Carried on the Map so every consumer resolves ids the same way without a second argument.
+  /** @type {any} */ (byId).byLower = byLower;
   return byId;
 }
 
 /**
- * Pull a ticket id out of a branch name (`codex/t-029-initiative-plan-core` -> `T-029`).
- * Case-insensitive because branch conventions vary; the board's ids are uppercase.
- * @param {string | null} branch
+ * Resolve a possibly differently-cased id to the board's own spelling, or null.
+ * @param {Map<string, any>} index @param {string} id
  */
-export function ticketFromBranch(branch) {
+export function canonicalId(index, id) {
+  if (index.has(id)) return id;
+  const lower = /** @type {any} */ (index).byLower;
+  return lower?.get(String(id).toLowerCase()) ?? null;
+}
+
+/**
+ * Pull a ticket id out of a branch name (`codex/t-029-initiative-plan-core` -> `T-029`,
+ * `feature/kit-096-fix` -> `kit-096`).
+ *
+ * The prefix is whatever the board uses, so candidates are matched loosely and then resolved
+ * against the index — a branch cannot invent a ticket. Case-insensitive, because branch
+ * conventions lowercase ids that the board spells in caps.
+ * @param {string | null} branch
+ * @param {Map<string, any>} [index]
+ */
+export function ticketFromBranch(branch, index) {
   if (!branch) return null;
-  const m = branch.match(/\bt-(\d+)\b/i);
-  return m ? `T-${m[1]}` : null;
+  const candidates = branch.match(/[A-Za-z][A-Za-z0-9]{0,7}-\d{1,5}/g);
+  if (!candidates) return null;
+  if (!index) {
+    const t = candidates.find((c) => /^t-\d+$/i.test(c));
+    return t ? `T-${t.split("-")[1]}` : null;
+  }
+  for (const c of candidates) {
+    const id = canonicalId(index, c);
+    if (id) return id;
+  }
+  return null;
 }
 
 /**
@@ -146,8 +175,8 @@ export function attribute(events, index, opts = {}) {
     // mention is unambiguous rather than a guess; two or more and the TTL does its job.
     const candidates = new Set();
     for (const e of stream) {
-      for (const id of e.mentions) if (index.has(id)) candidates.add(id);
-      for (const c of e.commands) if (index.has(c.id)) candidates.add(c.id);
+      for (const raw of e.mentions) { const id = canonicalId(index, raw); if (id) candidates.add(id); }
+      for (const c of e.commands) { const id = canonicalId(index, c.id); if (id) candidates.add(id); }
     }
     const soleCandidate = candidates.size === 1;
 
@@ -163,16 +192,17 @@ export function attribute(events, index, opts = {}) {
       prevTs = e.ts;
 
       // Branch: structural, and re-read on every event so a mid-session checkout is honoured.
-      const fromBranch = ticketFromBranch(e.branch);
-      branchTicket = fromBranch && index.has(fromBranch) ? fromBranch : null;
+      branchTicket = ticketFromBranch(e.branch, index);
 
       for (const c of e.commands) {
-        if (!index.has(c.id)) continue;
-        if (STRONG_VERBS.has(c.verb)) command = { id: c.id, verb: c.verb, ts: e.ts };
-        else mention = { id: c.id, ts: e.ts, turns: 0 };
+        const id = canonicalId(index, c.id);
+        if (!id) continue;
+        if (STRONG_VERBS.has(c.verb)) command = { id, verb: c.verb, ts: e.ts };
+        else mention = { id, ts: e.ts, turns: 0 };
       }
-      for (const id of e.mentions) {
-        if (index.has(id)) mention = { id, ts: e.ts, turns: 0 };
+      for (const raw of e.mentions) {
+        const id = canonicalId(index, raw);
+        if (id) mention = { id, ts: e.ts, turns: 0 };
       }
 
       if (e.kind !== "turn" || !e.usage || !e.model) continue;

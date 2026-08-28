@@ -24,10 +24,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { distill, scanTranscripts, normaliseUsage, totalTokens, encodeProjectDir, transcriptDirsFor } from "../scripts/usage-scan.mjs";
+import { distill, normaliseUsage, totalTokens, encodeProjectDir, transcriptDirsFor, ownsCwd, eventsForRoots } from "../scripts/usage-scan.mjs";
 import { attribute, ticketIndex, ticketFromBranch } from "../scripts/usage-attribute.mjs";
 import { appendRun, readRuns, validateRun, telemetryPath } from "../scripts/telemetry-io.mjs";
 import { buildUsageReport, transcriptScanEnabled, usageToCsv } from "../scripts/usage-core.mjs";
+import { buildPortfolioUsage, discoverProjects } from "../scripts/usage-portfolio.mjs";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "maestro-usage-"));
 
@@ -81,7 +82,7 @@ test("distill keeps token counts and ticket ids, and no transcript text whatsoev
     user(0, { text: `Please work on T-010. ${secret}` }),
     turn(1000, { text: `Reading ${secret} now`, tool: { command: `echo ${secret}` } }),
   ]);
-  const events = distill(p, { roots: [ROOT] });
+  const events = distill(p);
   const serialised = JSON.stringify(events);
   assert.ok(!serialised.includes("AKIA_SECRET_KEY"), "secret text must never survive distillation");
   assert.ok(!serialised.includes("private file"), "prose must never survive distillation");
@@ -98,17 +99,35 @@ test("mentions are read from prompts and tool inputs, never from tool results", 
     user(0, { toolResult: JSON.stringify(BOARD) }),
     turn(1000, {}),
   ]);
-  const events = distill(p, { roots: [ROOT] });
+  const events = distill(p);
   assert.deepEqual(events.flatMap((e) => e.mentions), [], "a tool result is not evidence");
 });
 
-test("distill ignores turns whose cwd is a different repo", () => {
+test("a turn from a different repo is not this board's, and ownership is decided outside distill", () => {
+  // distill keeps every event with its cwd so ONE cached parse can serve any caller; the
+  // caller filters. Baking the filter in would make the cache valid for only the first
+  // question it was asked.
   const p = transcript([
     JSON.stringify({ type: "assistant", timestamp: at(0), cwd: "/elsewhere", sessionId: "s1", gitBranch: "main", message: { model: "claude-sonnet-5", content: [], usage: { input_tokens: 999, output_tokens: 999 } } }),
     turn(1000, {}),
   ]);
-  const events = distill(p, { roots: [ROOT] });
-  assert.equal(events.filter((e) => e.kind === "turn").length, 1);
+  const events = distill(p);
+  assert.equal(events.filter((e) => e.kind === "turn").length, 2, "distill keeps both, tagged by cwd");
+  assert.equal(eventsForRoots(events, [ROOT]).filter((e) => e.kind === "turn").length, 1);
+});
+
+test("a repo nested inside another belongs to the deeper one only, never to both", () => {
+  // ~/source/lense-kit and ~/source/lense-kit/applicify-group/applicify are both real boards.
+  // Plain prefix matching bills the inner repo's turns to BOTH — in a portfolio rollup that
+  // double-counts the nested project and credits the parent with work it never did.
+  const outer = "/src/kit";
+  const inner = "/src/kit/group/app";
+  assert.equal(ownsCwd(`${inner}/x`, [outer], [inner]), false, "the parent must not claim the child");
+  assert.equal(ownsCwd(`${inner}/x`, [inner], [outer]), true, "the child claims itself");
+  assert.equal(ownsCwd(`${outer}/x`, [outer], [inner]), true, "the parent keeps its own work");
+  assert.equal(ownsCwd("/src/other/x", [outer], [inner]), false);
+  // A sibling project can never suppress work that is genuinely ours.
+  assert.equal(ownsCwd(`${outer}/x`, [outer], ["/src/sibling"]), true);
 });
 
 test("the <synthetic> pseudo-model and malformed lines are skipped, not fatal", () => {
@@ -117,14 +136,14 @@ test("the <synthetic> pseudo-model and malformed lines are skipped, not fatal", 
     JSON.stringify({ type: "assistant", timestamp: at(0), cwd: ROOT, sessionId: "s1", message: { model: "<synthetic>", content: [], usage: { input_tokens: 5 } } }),
     turn(1000, {}),
   ]);
-  assert.equal(distill(p, { roots: [ROOT] }).filter((e) => e.kind === "turn").length, 1);
+  assert.equal(distill(p).filter((e) => e.kind === "turn").length, 1);
 });
 
 // ── Attribution ladder ────────────────────────────────────────────────────────────────────
 
 test("a branch naming the ticket attributes at high confidence", () => {
   const p = transcript([turn(0, { branch: "codex/t-010-guarded-writes" })]);
-  const { turns } = attribute(distill(p, { roots: [ROOT] }), INDEX);
+  const { turns } = attribute(distill(p), INDEX);
   assert.equal(turns[0].ticketId, "T-010");
   assert.equal(turns[0].confidence, "high");
   assert.equal(turns[0].evidence, "branch");
@@ -133,7 +152,7 @@ test("a branch naming the ticket attributes at high confidence", () => {
 test("a board write attributes at high confidence and outlives the mention TTL", () => {
   const lines = [user(0, { text: "let's go" }), turn(100, { tool: { command: "node scripts/board-write.mjs set-status T-010 in-progress" } })];
   for (let i = 1; i <= 60; i++) lines.push(turn(100 + i * 60_000));
-  const { turns } = attribute(distill(transcript(lines), { roots: [ROOT] }), INDEX);
+  const { turns } = attribute(distill(transcript(lines)), INDEX);
   const last = turns[turns.length - 1];
   assert.equal(last.ticketId, "T-010");
   assert.equal(last.confidence, "high");
@@ -144,7 +163,7 @@ test("an id that is not on the board is refused outright", () => {
   // T-042 is an example in run-ticket.mjs's own header; T-999 is a test fixture. Neither is
   // work, and both looked entirely credible to a naive matcher.
   const p = transcript([user(0, { text: "see maestro run T-042 and the T-999 fixture" }), turn(1000)]);
-  const { turns } = attribute(distill(p, { roots: [ROOT] }), INDEX);
+  const { turns } = attribute(distill(p), INDEX);
   assert.equal(turns[0].ticketId, null);
   assert.equal(turns[0].confidence, "unassigned");
 });
@@ -153,7 +172,7 @@ test("a bare mention expires once several tickets are in play", () => {
   const lines = [user(0, { text: "compare T-010 with T-011" }), turn(100)];
   // Well past mentionTtlMs with no further mention of either.
   lines.push(turn(100 + 45 * 60_000));
-  const { turns } = attribute(distill(transcript(lines), { roots: [ROOT] }), INDEX);
+  const { turns } = attribute(distill(transcript(lines)), INDEX);
   assert.equal(turns[0].confidence, "medium");
   assert.equal(turns[turns.length - 1].ticketId, null, "a stale mention must stop attributing");
   assert.equal(turns[turns.length - 1].evidence, "signal-expired");
@@ -162,7 +181,7 @@ test("a bare mention expires once several tickets are in play", () => {
 test("a session naming exactly one real ticket holds it without expiring, still at medium", () => {
   const lines = [user(0, { text: "work on T-010" }), turn(100)];
   for (let i = 1; i <= 60; i++) lines.push(turn(100 + i * 60_000));
-  const { turns } = attribute(distill(transcript(lines), { roots: [ROOT] }), INDEX);
+  const { turns } = attribute(distill(transcript(lines)), INDEX);
   const last = turns[turns.length - 1];
   assert.equal(last.ticketId, "T-010");
   assert.equal(last.confidence, "medium", "one candidate is an absence of ambiguity, not proof");
@@ -181,7 +200,7 @@ test("working time counts the gap since the previous turn, capped, and survives 
   // The gap must be credited even though the previous turn was unassigned — gating on the two
   // turns sharing a ticket silently discarded most of the clock.
   const lines = [turn(0), user(1000, { text: "do T-010" }), turn(60_000), turn(60_000 + 3 * 60 * 60_000)];
-  const { turns } = attribute(distill(transcript(lines), { roots: [ROOT] }), INDEX);
+  const { turns } = attribute(distill(transcript(lines)), INDEX);
   assert.equal(turns[0].activeMs, 0, "the first turn has no predecessor");
   assert.equal(turns[1].activeMs, 60_000, "a one-minute gap counts in full");
   assert.equal(turns[2].activeMs, 0, "a three-hour gap is an idle reset, not work");
@@ -326,4 +345,141 @@ test("CSV export carries the same figures and escapes a comma in a ticket name",
   const byStage = usageToCsv(report, { view: "stage" }).trim().split("\n");
   assert.equal(byStage[0].split(",")[0], "stage");
   assert.ok(byStage[1].startsWith("dev,"));
+});
+
+// ── Board-defined id prefixes ─────────────────────────────────────────────────────────────
+
+test("a board's own id prefix is honoured, not a hardcoded T-", () => {
+  // lense-kit numbers its tickets kit-096 and applicify used tl-226. Hardcoding `T-\d+`
+  // reported 0% of one board's 142 real tickets as unattributable, which reads as "no work
+  // happened here" rather than "this reader only knows one prefix".
+  const board = { tickets: [{ id: "kit-096", name: "Shared CDK", status: "done" }], epics: [] };
+  const index = ticketIndex(board, null);
+  const p = transcript([user(0, { text: "picking up kit-096 now" }), turn(1000)]);
+  const { turns } = attribute(distill(p), index);
+  assert.equal(turns[0].ticketId, "kit-096");
+  assert.equal(turns[0].confidence, "medium");
+});
+
+test("a branch resolves to the board's own spelling of the id", () => {
+  const index = ticketIndex({ tickets: [{ id: "T-029" }, { id: "kit-096" }], epics: [] }, null);
+  assert.equal(ticketFromBranch("codex/t-029-docs", index), "T-029", "the board spells it T-029");
+  assert.equal(ticketFromBranch("feature/KIT-096-fix", index), "kit-096");
+  assert.equal(ticketFromBranch("feature/kit-777-nope", index), null, "a branch cannot invent a ticket");
+  assert.equal(ticketFromBranch("main", index), null);
+});
+
+test("ticket-shaped noise is matched then refused, so a loose pattern stays safe", () => {
+  const index = ticketIndex({ tickets: [{ id: "T-010" }], epics: [] }, null);
+  const p = transcript([user(0, { text: "encoding is UTF-8 per ISO-8601, unrelated to PROJ-42" }), turn(1000)]);
+  const { turns } = attribute(distill(p), index);
+  assert.equal(turns[0].ticketId, null, "only ids the board defines may attribute");
+});
+
+// ── Portfolio rollup ──────────────────────────────────────────────────────────────────────
+
+/** A project laid out the way `maestro setup` produces: the kit vendored at <project>/maestro. */
+function vendoredProject(root, name, board) {
+  const dir = join(root, name);
+  const boardDir = join(dir, "maestro", "board");
+  mkdirSync(boardDir, { recursive: true });
+  writeFileSync(join(boardDir, "data.json"), JSON.stringify(board), "utf8");
+  writeFileSync(join(boardDir, "archive.json"), JSON.stringify({ epics: [], tickets: [] }), "utf8");
+  return { dir, boardDir };
+}
+
+test("discovery does not register <project>/maestro as a project of its own", () => {
+  // It holds board/data.json, so it looks exactly like a project — a first pass produced 21
+  // separate entries all named "maestro", each sharing its parent's board and roots.
+  const root = tmp();
+  vendoredProject(root, "alpha", BOARD);
+  const found = discoverProjects(root, { depth: 3 });
+  assert.deepEqual(found.map((p) => p.name), ["alpha"]);
+  assert.ok(found[0].kitDir.endsWith(join("alpha", "maestro")));
+});
+
+test("discovery keeps looking inside a project, so a nested board is not missed", () => {
+  const root = tmp();
+  vendoredProject(root, "outer", BOARD);
+  vendoredProject(join(root, "outer"), "inner", BOARD);
+  const names = discoverProjects(root, { depth: 4 }).map((p) => p.name).sort();
+  assert.deepEqual(names, ["inner", "outer"]);
+});
+
+test("a board of nothing but starter samples is flagged, never dropped", () => {
+  // "This project exists and no work has been booked to it" is a real answer. Hiding it would
+  // repeat the mistake the unattributed panel exists to avoid: silence reading as zero.
+  const root = tmp();
+  vendoredProject(root, "fresh", { epics: [], tickets: [{ id: "T-1", status: "todo", sample: true }] });
+  const [p] = discoverProjects(root, { depth: 3 });
+  assert.equal(p.name, "fresh");
+  assert.equal(p.template, true);
+});
+
+test("a repo nested in another is counted once, on the deeper project only", () => {
+  const root = tmp();
+  const outer = vendoredProject(root, "outer", { epics: [], tickets: [{ id: "T-010", name: "outer work", status: "done" }] });
+  const inner = vendoredProject(join(root, "outer"), "inner", { epics: [], tickets: [{ id: "T-011", name: "inner work", status: "done" }] });
+
+  // One session in each repo, 100 output tokens apiece.
+  const projectsDir = tmp();
+  const mk = (cwd, id, session) => {
+    const d = join(projectsDir, encodeProjectDir(cwd));
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, `${session}.jsonl`), [
+      JSON.stringify({ type: "user", timestamp: at(0), cwd, sessionId: session, gitBranch: "main", message: { role: "user", content: `work on ${id}` } }),
+      JSON.stringify({ type: "assistant", timestamp: at(1000), cwd, sessionId: session, gitBranch: "main", message: { model: "claude-sonnet-5", content: [], usage: { input_tokens: 0, output_tokens: 100 } } }),
+    ].join("\n") + "\n", "utf8");
+  };
+  mk(outer.dir, "T-010", "s-outer");
+  mk(inner.dir, "T-011", "s-inner");
+
+  const report = buildPortfolioUsage({
+    projects: discoverProjects(root, { depth: 4 }).map((p) => ({ name: p.name, path: p.path, kitDir: p.kitDir })),
+    projectsDir, cacheFile: join(tmp(), "cache.json"), useCache: false,
+    config: { usage: { scanTranscripts: true } },
+  });
+
+  const byName = Object.fromEntries(report.projects.map((p) => [p.name, p]));
+  assert.equal(byName.inner.totals.tokens.total, 100, "the nested repo keeps its own tokens");
+  assert.equal(byName.outer.totals.tokens.total, 100, "and the parent is not credited with them");
+  assert.equal(report.totals.tokens.total, 200, "200, not 300 — the inner repo is counted once");
+  assert.deepEqual(report.tickets.map((t) => `${t.project}/${t.id}`).sort(), ["inner/T-011", "outer/T-010"]);
+  assert.ok(report.breakdown.project.length === 2, "the portfolio adds a project dimension");
+});
+
+test("two projects sharing a name are kept apart, not collapsed onto one", () => {
+  // Roots keyed by name silently merge them; every duplicate then inherits the last one's
+  // roots, excludes its own work, and reports a confident zero.
+  const root = tmp();
+  const a = vendoredProject(join(root, "groupA"), "app", { epics: [], tickets: [{ id: "T-010", status: "done" }] });
+  const b = vendoredProject(join(root, "groupB"), "app", { epics: [], tickets: [{ id: "T-011", status: "done" }] });
+  const projectsDir = tmp();
+  for (const [dir, id, session] of [[a.dir, "T-010", "sa"], [b.dir, "T-011", "sb"]]) {
+    const d = join(projectsDir, encodeProjectDir(dir));
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, `${session}.jsonl`), [
+      JSON.stringify({ type: "user", timestamp: at(0), cwd: dir, sessionId: session, gitBranch: "main", message: { role: "user", content: `do ${id}` } }),
+      JSON.stringify({ type: "assistant", timestamp: at(1000), cwd: dir, sessionId: session, gitBranch: "main", message: { model: "claude-sonnet-5", content: [], usage: { input_tokens: 0, output_tokens: 50 } } }),
+    ].join("\n") + "\n", "utf8");
+  }
+  const report = buildPortfolioUsage({
+    projects: discoverProjects(root, { depth: 4 }).map((p) => ({ name: p.name, path: p.path, kitDir: p.kitDir })),
+    projectsDir, cacheFile: join(tmp(), "cache.json"), useCache: false,
+    config: { usage: { scanTranscripts: true } },
+  });
+  assert.equal(report.projects.length, 2);
+  for (const p of report.projects) assert.equal(p.totals.tokens.total, 50, `${p.path} must keep its own work`);
+  assert.equal(report.totals.tokens.total, 100);
+});
+
+test("a project that cannot be read is reported as a failed row, never dropped", () => {
+  // A portfolio that silently omits a board reads as "that project did no work".
+  const report = buildPortfolioUsage({
+    projects: [{ name: "ghost", path: "/nowhere/ghost", kitDir: null }],
+    config: null, env: {},
+  });
+  assert.equal(report.projects.length, 1);
+  assert.equal(report.projects[0].ok, false);
+  assert.match(report.projects[0].error, /not set up/);
 });

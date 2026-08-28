@@ -28,6 +28,7 @@
  *   GET  /api/docs/render      -> { path, html }             (?path=<root-relative .md>)
  *   GET  /api/usage            -> the ticket usage report (see scripts/usage-core.mjs)
  *   GET  /api/usage/export     -> ?format=json|csv|html [&view=tickets|model|agent|...]
+ *   GET  /api/portfolio/usage  -> the same report merged across every registry project
  *   GET  /api/reports          -> { reports: [{ name, mtime, size }] }   (board/reports/)
  *   GET  /api/reports/render   -> { name, kind, html } for .md; sandboxed file for .html
  *
@@ -56,6 +57,7 @@ import { neuterRawHtml } from "./sanitize.mjs";
 import { findFreePort } from "./ports.mjs";
 import { loadPortfolio, readPortfolioBoards, survey as portfolioSurvey } from "./portfolio.mjs";
 import { buildUsageReport, usageToCsv, DIMENSIONS } from "../../scripts/usage-core.mjs";
+import { buildPortfolioUsage, projectsFromRegistry } from "../../scripts/usage-portfolio.mjs";
 import { renderUsageSnapshot } from "../../scripts/usage-snapshot.mjs";
 
 // Raw HTML in a doc must not pass through to the UI's dangerouslySetInnerHTML untouched:
@@ -956,6 +958,53 @@ app.get("/api/usage", (req, res) => {
   } catch (e) {
     res.status(500).json({ error: errMessage(e) });
   }
+});
+
+// The same report, merged across every project in the registry. Registry-only on purpose:
+// the cockpit already defines "the set of projects" that way, and a second definition here
+// would be a second answer to "which projects am I looking at".
+/** @type {{ at: number, report: any } | null} */
+let portfolioUsageMemo = null;
+
+app.get("/api/portfolio/usage", (req, res) => {
+  if (!REGISTRY_PATH) {
+    return res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+  }
+  const fresh = req.query.refresh === "1";
+  if (!fresh && portfolioUsageMemo && Date.now() - portfolioUsageMemo.at < USAGE_TTL_MS) {
+    return res.json(portfolioUsageMemo.report);
+  }
+  try {
+    const report = buildPortfolioUsage({ projects: projectsFromRegistry(REGISTRY_PATH) });
+    portfolioUsageMemo = { at: Date.now(), report };
+    res.json(report);
+  } catch (e) {
+    res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+app.get("/api/portfolio/usage/export", (req, res) => {
+  if (!REGISTRY_PATH) return res.status(404).json({ error: "Portfolio mode is not configured." });
+  const format = String(req.query.format || "json");
+  const view = String(req.query.view || "tickets");
+  let report;
+  try {
+    report = portfolioUsageMemo?.report || buildPortfolioUsage({ projects: projectsFromRegistry(REGISTRY_PATH) });
+  } catch (e) { return res.status(500).json({ error: errMessage(e) }); }
+  const base = `portfolio-usage-${report.generatedAt.slice(0, 10)}`;
+  if (format === "csv") {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}-${view}.csv"`);
+    return res.send(usageToCsv(report, { view: /** @type {any} */ (view) }));
+  }
+  if (format === "html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.html"`);
+    return res.send(renderUsageSnapshot(report));
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${base}.json"`);
+  res.send(JSON.stringify(report, null, 2));
 });
 
 app.get("/api/usage/export", (req, res) => {

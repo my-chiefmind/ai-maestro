@@ -72,6 +72,15 @@ The on-disk cache holds only that output, so it is aggregate-only by constructio
 promise. Mentions are deliberately **not** harvested from tool *results* — reading `archive.json`
 into one would otherwise "mention" every archived ticket at once.
 
+### Ticket ids come from the board, not from this reader
+
+Boards choose their own id prefixes — this kit uses `T-`, but other boards use `kit-096` or
+`tl-226`. The scanner therefore matches anything ticket-SHAPED (a short prefix, a hyphen,
+digits) and attribution accepts it **only if that board defines it**. Being generous in the
+match is safe; being narrow is not. A hardcoded `T-` reported 0% of one board's 142 real
+tickets as unattributable, which reads as "no work happened here" rather than "this reader only
+knows one prefix". Noise like `UTF-8` is matched, carried, and then refused.
+
 ### The confidence ladder
 
 Every turn lands with a confidence and the evidence that produced it. A turn that can't be justified
@@ -136,6 +145,34 @@ A `maestro run` leaves **both** a telemetry record and a transcript. The record 
 `sessionId`, so that session is excluded from the transcript pass and the measurement wins; the
 count of turns dropped that way is reported as `coverage.skippedExact` rather than silently
 swallowed.
+
+## Across every project
+
+```bash
+maestro usage --all --registry ~/source/maestro-registry.json
+maestro usage --discover ~/source        # ad-hoc, no registry file needed
+maestro usage --all --html portfolio.html
+```
+
+In the cockpit, start with `--registry <file>` (or `MAESTRO_REGISTRY`) and the Value page gains
+an **All projects** toggle: a project table, a `project` breakdown alongside the others, and the
+per-ticket table spanning every board.
+
+It is a **merge, not a second aggregation** — each project is measured by the same
+`buildUsageReport()` its own page uses, and the rollup only sums the results, so a portfolio
+total and a project's own page cannot disagree.
+
+Three things the rollup has to get right, each of which a first pass got wrong:
+
+| Trap | What goes wrong | How it's handled |
+| --- | --- | --- |
+| **Nested repos** | A group checkout with its own board sits inside a kit that also has one. Both match on a path prefix, so the inner project is counted twice and the outer is credited with work it never did. | Ownership goes to the **deepest** matching root; every project is reported with the others' roots as `excludeRoots`. |
+| **The vendored kit dir** | `<project>/maestro` holds `board/data.json`, so it looks exactly like a project. Discovery produced 21 entries all named `maestro`. | The kit dir is **consumed** by the project that owns it and never walked into again. Discovery still descends elsewhere, so a genuinely nested board is not missed. |
+| **Same-named projects** | Two groups can each hold an `app`. Keying roots by name collapses them; every duplicate inherits the last one's roots, excludes its own work, and reports a confident zero. | Roots are keyed by **path**. |
+
+A project whose board is nothing but starter samples is **flagged, not dropped** — "this project
+exists and no work has been booked to it" is a real answer, and hiding it would repeat the
+mistake the unattributed panel exists to avoid.
 
 ## Limits worth knowing
 

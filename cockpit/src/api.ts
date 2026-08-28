@@ -218,6 +218,23 @@ export async function getUsage(refresh = false): Promise<UsageReport> {
   return r.json();
 }
 
+// The same report merged across every registry project. Returns null when the cockpit was not
+// started with a registry — the caller hides the scope toggle rather than showing an error for
+// a mode that simply isn't configured.
+export async function getPortfolioUsage(refresh = false): Promise<UsageReport | null> {
+  const r = await fetch(`/api/portfolio/usage${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' });
+  if (r.status === 404) return null;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `portfolio usage failed (${r.status})`);
+  }
+  return r.json();
+}
+
+export function portfolioUsageExportUrl(format: 'json' | 'csv' | 'html', view = 'tickets'): string {
+  return `/api/portfolio/usage/export?format=${format}&view=${encodeURIComponent(view)}`;
+}
+
 // A plain URL rather than a fetch: the browser's own download machinery handles the
 // Content-Disposition the server sets, so the export never has to be buffered in the tab.
 export function usageExportUrl(format: 'json' | 'csv' | 'html', view = 'tickets'): string {
