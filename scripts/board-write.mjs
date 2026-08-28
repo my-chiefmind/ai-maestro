@@ -41,13 +41,13 @@ const KIT_ROOT = resolve(__dir, "..");
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
-  "set-status", "set-routing", "set-testcmd", "block", "archive", "version",
+  "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "version",
   "add", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
 // add-epic) or take a file path (import), and must not be forced through the id guard below.
-const OPS_TAKING_ID = new Set(["set-status", "set-routing", "set-testcmd", "block", "archive", "retrace", "drop", "edit-epic"]);
+const OPS_TAKING_ID = new Set(["set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "retrace", "drop", "edit-epic"]);
 
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -88,6 +88,7 @@ function usage() {
     maestro ticket next-id [--count N]        allocate free ids (add --epics for epic ids)
     maestro ticket set-status <id> <status>   move a ticket between statuses
     maestro ticket set-routing <id>           set/clear cross-review role routing
+    maestro ticket set-epic <id>              move a ticket to another epic
     maestro ticket set-testcmd <id>           set/clear the ticket's test command
     maestro ticket retrace <id>               set the plan items a ticket serves
     maestro ticket block <id>                 mark blocked and file a blocker ticket
@@ -126,6 +127,12 @@ function usage() {
   set-routing flags:
     --dev-runtime <id>  --dev-model <id>  --reviewer-runtime <id>  --reviewer-model <id>
     --clear             remove all four cross-review overrides (project defaults may apply)
+
+  set-epic flags:
+    --epic <epic-id>    the epic to move the ticket under (required unless --clear)
+    --clear             detach the ticket from its epic
+    Refused if the epic does not exist, or if the move would leave the ticket tracing across
+    initiative ownership — the same rule edit-epic enforces from the epic's side.
 
   set-testcmd flags:
     --cmd <command>     (required unless --clear)
@@ -373,6 +380,63 @@ const RUN = {
       result: { id: ticketId, dev_runtime: t.dev_runtime, dev_model: t.dev_model,
         reviewer_runtime: t.reviewer_runtime, reviewer_model: t.reviewer_model },
       human: `${ticketId}: cross-review routing ${has("clear") ? "cleared" : "updated"}`,
+    };
+  },
+
+  /**
+   * Move a ticket to another epic.
+   *
+   * `edit-epic` changes an EPIC; nothing changed a TICKET's epicId, so the only ways to
+   * re-home a ticket were the cockpit or a hand edit — and hand-editing a board is forbidden
+   * by the kit's own rules, which left a headless or CI context with no path at all (T-036).
+   *
+   * Everything that makes a board write safe — the directory lock, validateBoard,
+   * --expect-version, --dry-run, the atomic replace — comes from mutateBoard, the same as
+   * every other op here. What this adds is the two refusals specific to re-homing.
+   */
+  "set-epic": ({ data, archive }) => {
+    const t = find(data.tickets, ticketId);
+    if (!t) {
+      const archived = (archive.tickets ?? []).some((x) => x.id === ticketId);
+      throw usageError(archived
+        ? `Ticket ${ticketId} is archived. Archived work is history — it is not edited in place.`
+        : `Ticket ${ticketId} is not on the active board at ${dataPath}.`);
+    }
+    const epicId = flag("epic");
+    const clear = has("clear");
+    if (epicId == null && !clear) throw usageError("set-epic needs --epic <epic-id>, or --clear.");
+    if (epicId != null && clear) throw usageError("--epic and --clear contradict each other.");
+
+    const from = t.epicId ?? null;
+    if (clear) {
+      // Legal for the same reason clearing an epic's initiative is: a board mid-migration has
+      // to be representable. The validator warns and the scope gate does the rest, which stops
+      // the work without bricking the board.
+      delete t.epicId;
+    } else {
+      const epic = (data.epics ?? []).find((e) => e.id === epicId);
+      if (!epic) {
+        const known = (data.epics ?? []).map((e) => e.id);
+        throw usageError(
+          `Epic ${epicId} does not exist on this board. Live epics: ${known.join(", ") || "(none)"}. ` +
+          `File one with 'maestro ticket add-epic'.`);
+      }
+      t.epicId = epicId;
+    }
+
+    // Judged against the board AS IT WOULD BE. A ticket's ownership is its epic's initiative,
+    // so re-homing it can put its own traces on the wrong side of an initiative boundary —
+    // the same violation edit-epic refuses from the other direction (FR-2). Nothing has been
+    // written at this point; mutateBoard only persists what this returns.
+    assertNoCrossInitiative(data, archive.epics ?? [], `ticket ${ticketId}`);
+
+    const to = t.epicId ?? null;
+    return {
+      data,
+      result: { id: ticketId, from, to, unchanged: from === to },
+      human: from === to
+        ? `${ticketId}: already ${to ? `under ${to}` : "detached from any epic"} — nothing to change`
+        : `${ticketId}: ${from || "(no epic)"} → ${to || "(no epic)"}`,
     };
   },
 
