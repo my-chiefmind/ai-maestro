@@ -578,31 +578,45 @@ test("a temporary registry file drives the rollup, so no permanent one has to ex
 // ── The runtime envelope, against a real one ──────────────────────────────────────────────
 
 test("both usage spellings are read — the envelope's snake_case and modelUsage's camelCase", () => {
-  // test/fixtures/claude-json-envelope.json is a REAL `claude -p --output-format json` result.
-  // Reading only snake_case wrote a telemetry record stamped usageSource "provider" with every
-  // counter at zero — worse than no record, because it claims the stage was free. No invented
-  // fixture caught that; running the real binary did.
+  // The fixture reproduces a real envelope's field NAMES with invented values. Reading only
+  // snake_case wrote a telemetry record stamped usageSource "provider" with every counter at
+  // zero — worse than no record, because it claims the stage was free. Every number below is
+  // distinct, so a mismapped field fails loudly rather than coincidentally matching.
   const envelope = JSON.parse(readFileSync(join(FIXTURES, "claude-json-envelope.json"), "utf8"));
 
   const top = normaliseUsage(envelope.usage);
-  assert.equal(top.input, 10);
-  assert.equal(top.output, 42);
-  assert.equal(top.cacheRead, 18052);
-  assert.equal(top.cacheWrite, 7743);
-  assert.equal(top.thinking, 35, "only the top-level block reports reasoning");
+  assert.equal(top.input, 11);
+  assert.equal(top.output, 22);
+  assert.equal(top.cacheRead, 3300);
+  assert.equal(top.cacheWrite, 440);
+  assert.equal(top.thinking, 7, "only the top-level block reports reasoning");
 
   const perModel = normaliseUsage(Object.values(envelope.modelUsage)[0]);
-  assert.equal(perModel.input, 907, "modelUsage spells it inputTokens");
-  assert.equal(perModel.cacheRead, 18052, "...and cacheReadInputTokens");
-  assert.equal(perModel.cacheWrite, 7743);
+  assert.equal(perModel.input, 55, "modelUsage spells it inputTokens");
+  assert.equal(perModel.output, 66, "...and outputTokens");
+  assert.equal(perModel.cacheRead, 7700, "...and cacheReadInputTokens");
+  assert.equal(perModel.cacheWrite, 880, "...and cacheCreationInputTokens");
   assert.equal(perModel.thinking, 0, "modelUsage carries no reasoning count at all");
+});
+
+test("the fixture carries no captured content — only the shape the parser reads", () => {
+  // A fixture is a file that gets committed and read by anyone. This one came from a real run,
+  // so it is asserted to be free of everything that run could have carried.
+  const raw = readFileSync(join(FIXTURES, "claude-json-envelope.json"), "utf8");
+  const j = JSON.parse(raw);
+  for (const banned of ["result", "uuid", "total_cost_usd", "permission_denials", "cwd"]) {
+    assert.ok(!(banned in j), `the fixture must not carry ${banned}`);
+  }
+  assert.ok(!("costUSD" in Object.values(j.modelUsage)[0]), "no per-model cost either");
+  assert.equal(j.session_id, "00000000-0000-0000-0000-000000000000", "the session id is synthetic");
+  assert.ok(!/saeedpourali|\/Users\/|sk-|ghp_|@/.test(raw), "no path, username, handle or credential shape");
 });
 
 test("the envelope yields the session id that keeps a measured run from being double-counted", () => {
   const envelope = readFileSync(join(FIXTURES, "claude-json-envelope.json"), "utf8");
   const parsed = parseClaudeEnvelope(envelope);
   assert.equal(parsed.sessionId, "00000000-0000-0000-0000-000000000000");
-  assert.ok(parsed.usage && parsed.usage.output === 42);
+  assert.ok(parsed.usage && parsed.usage.output === 22);
   assert.ok(parsed.modelUsage && Object.keys(parsed.modelUsage).length === 1);
 });
 

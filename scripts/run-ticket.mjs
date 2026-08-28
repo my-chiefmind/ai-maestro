@@ -76,11 +76,10 @@ const KIT_ROOT = resolve(__dir, "..");
 const NODE = process.execPath;
 const RUNTIME_ADAPTERS = new Set(["claude", "codex"]);
 
-// Codex has no haiku/sonnet/opus model alias — Maestro's tiers map to its reasoning-effort
-// config instead, and the model itself is left at whatever the caller's own Codex config
-// already selects. See docs/MODEL-ROUTING.md. (Pass a literal Codex model via --codex-flag -m
-// <model> if you want one selected explicitly.)
-const CODEX_EFFORT = { haiku: "low", sonnet: "medium", opus: "high" };
+// Codex's haiku/sonnet/opus -> reasoning-effort mapping lives with the adapter invocation in
+// scripts/run-stage.mjs (CODEX_EFFORT). It is deliberately NOT restated here: a second copy of
+// the mapping is a second answer to "what does `opus` mean on Codex", free to drift from the
+// one that actually runs. See docs/MODEL-ROUTING.md.
 
 function die(msg) {
   console.error(`✗ ${msg}`);
@@ -355,7 +354,6 @@ function assertCleanCommittedWorktree(cwd, baseBranch) {
   if (commits.status !== 0 || Number(commits.stdout.trim()) < 1) die("Developer handoff contains no committed change relative to the default branch.");
 }
 
-/** Run one agent stage headlessly in `cwd` and return its final response text. */
 /**
  * runStage, with this script's exit behaviour. The measurement and the adapter invocation live
  * in scripts/run-stage.mjs so they can be exercised without a GitHub remote and a second
