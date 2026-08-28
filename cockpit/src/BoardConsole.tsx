@@ -123,7 +123,7 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
     (!f.priority || t.priority === f.priority) &&
     (!f.area || t.area === f.area) &&
     (!f.epic || t.epicId === f.epic) &&
-    (!f.initiative || initiativeOfTicket(t) === f.initiative) &&
+    (!f.initiative || (f.initiative === NO_INITIATIVE ? !initiativeOfTicket(t) : initiativeOfTicket(t) === f.initiative)) &&
     (!f.q || `${t.id} ${t.name} ${t.desc || ''} ${t.area || ''} ${planLabel(t)} ${epicName(board, t.epicId)}`
       .toLowerCase().includes(f.q.toLowerCase()));
 
@@ -189,10 +189,17 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
   };
   const addTicket = () => {
     const id = nextTicketId(board);
+    // The epic decides the ticket's initiative, so the default must respect the active
+    // initiative filter. Falling back to board.epics[0] would file a ticket into a DIFFERENT
+    // initiative than the one being looked at, and the only sign would be a cross-initiative
+    // refusal later.
+    const inInitiative = f.initiative && f.initiative !== NO_INITIATIVE
+      ? board.epics.filter((e) => e.initiativeId === f.initiative)
+      : f.initiative === NO_INITIATIVE ? board.epics.filter((e) => !e.initiativeId) : board.epics;
     update((b) => {
       b.tickets.unshift({
         id, name: 'New ticket', desc: '', status: 'backlog', priority: 'P2',
-        epicId: f.epic || board.epics[0]?.id || '', area: config?.areas?.[0] || '',
+        epicId: f.epic || inInitiative[0]?.id || '', area: config?.areas?.[0] || '',
         depends_on: [], agent_plan: [], model: config?.models?.[1] || 'sonnet',
       });
       return b;
@@ -252,6 +259,10 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
           <TextField select label="Initiative" value={f.initiative} onChange={(e) => setF({ ...f, initiative: e.target.value, epic: '' })} sx={{ minWidth: 150 }}>
             <MenuItem value="">All</MenuItem>
             {planScope.initiatives.map((i) => <MenuItem key={i.id} value={i.id}>{i.id} — {i.name}</MenuItem>)}
+            {/* Selectable, not just a sidebar heading: unassigned epics are the ones whose
+                tickets the orchestrator refuses, so "show me those" is the query that matters
+                most during a migration. */}
+            <MenuItem value={NO_INITIATIVE}>— No initiative —</MenuItem>
           </TextField>
         )}
         <Button size="small" onClick={clear}>Clear</Button>
@@ -365,7 +376,7 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
 
       <TicketDrawer board={board} config={config} ticket={selTicket || null} onClose={() => setSel(null)}
         onPatch={(patch) => sel && patchTicket(sel, patch)} onDelete={() => sel && deleteTicket(sel)} />
-      <EpicsDialog board={board} open={epicsOpen} onClose={() => setEpicsOpen(false)} update={update} />
+      <EpicsDialog board={board} open={epicsOpen} onClose={() => setEpicsOpen(false)} update={update} defaultInitiative={f.initiative} />
     </Container>
   );
 }
@@ -537,7 +548,7 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
   // does. A ticket has no initiative field of its own, and adding one would be a second source
   // of truth that drifts the first time an epic moves.
   const ticketEpic = t?.epicId ? [...board.epics, ...board.archivedEpics].find((e) => e.id === t.epicId) : null;
-  const verdict = t ? scope.verdict(t, ticketEpic ?? null) : null;
+  const verdict = t ? scope.verdict(t, { epics: board.epics, archivedEpics: board.archivedEpics }) : null;
   const foreign = scope.foreignFor(ticketEpic?.initiativeId ?? null);
 
   // Load the ticket's spec whenever the open ticket changes.
@@ -788,6 +799,9 @@ function SpecEditor({ spec, setSpec, onSave, state, setState }: {
  * tickets are refused at pick time, so burying it is the opposite of useful — it is the group
  * someone needs to see.
  */
+/** Filter sentinel for "epics that belong to no initiative" — distinct from "no filter". */
+export const NO_INITIATIVE = '_none';
+
 function groupEpicsByInitiative(epics: BoardEpic[], initiatives: { id: string; name: string }[]) {
   const groups = initiatives.map((i) => ({ id: i.id as string | null, name: i.name, epics: epics.filter((e) => e.initiativeId === i.id) }));
   const known = new Set(initiatives.map((i) => i.id));
@@ -796,8 +810,9 @@ function groupEpicsByInitiative(epics: BoardEpic[], initiatives: { id: string; n
   return groups.filter((g) => g.epics.length);
 }
 
-function EpicsDialog({ board, open, onClose, update }: {
+function EpicsDialog({ board, open, onClose, update, defaultInitiative }: {
   board: Board; open: boolean; onClose: () => void; update: (fn: (b: Board) => Board) => void;
+  defaultInitiative?: string;
 }) {
   const [newName, setNewName] = useState('');
   const scope = usePlanScope();
@@ -819,9 +834,11 @@ function EpicsDialog({ board, open, onClose, update }: {
     const name = newName.trim();
     if (!name) return;
     const id = nextEpicId(board);
-    // A new epic inherits the initiative currently filtered to, when there is exactly one
-    // sensible answer; otherwise it starts unassigned and the validator says so.
-    update((b) => { b.epics.push({ id, name }); return b; });
+    // Inherit the initiative currently being looked at. Creating an epic from inside I-2 and
+    // getting an unassigned one is a silent trap: it validates, then its tickets are refused
+    // at pick time for a reason nothing on this screen explained.
+    const initiativeId = defaultInitiative && defaultInitiative !== NO_INITIATIVE ? defaultInitiative : undefined;
+    update((b) => { b.epics.push(initiativeId ? { id, name, initiativeId } : { id, name }); return b; });
     setNewName('');
   };
 

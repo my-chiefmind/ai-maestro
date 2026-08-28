@@ -21,7 +21,7 @@ import {
   ownershipVerdict, epicOwnershipVerdict, initiativeModeActive, crossInitiativeConflicts,
 } from "../scripts/board-core.mjs";
 import { assignLanes } from "../scripts/lane-core.mjs";
-import { emptyPlan, TRACEABLE_PREFIXES } from "../scripts/plan-core.mjs";
+import { emptyPlan, scopeVerdict, planIsGating } from "../scripts/plan-core.mjs";
 
 /** A plan with two initiatives, one owned requirement each, and one project-wide NFR. */
 function plan({ initiatives = true } = {}) {
@@ -323,48 +323,86 @@ test("a sample epic is exempt from the dangling check, as it is from the rest", 
   assert.deepEqual(validateBoard(b, { plan: gone }).errors, []);
 });
 
-// ── The cockpit's client-side preview must mirror these rules ───────────────────
+// ── The rules the cockpit's preview runs, executably ───────────────────────────
+//
+// usePlanScope.ts no longer restates these — it imports scopeVerdict and ownershipVerdict from
+// scripts/ and composes them exactly as eligibleTickets does. That is the fix for two
+// divergences a source-ordering check could not see, and these tests pin the COMPOSED
+// behaviour rather than the arrangement of the source.
 
-test("usePlanScope mirrors the ownership rules it previews", () => {
-  // cockpit/src/usePlanScope.ts restates the gate on purpose — its own docstring says the
-  // authority stays server-side and the copy exists only to spare a save-and-see round trip.
-  // A preview that disagrees is worse than none: a picker offering an option the save then
-  // rejects teaches people to ignore it. Typecheck cannot catch a divergence in the RULE, so
-  // this reads the file and pins the facts both sides have to agree on.
-  const src = readFileSync(join(KIT_SRC, "usePlanScope.ts"), "utf8");
+/** The composition usePlanScope performs: scope first, then ownership; neither clears the other. */
+function preview(ticket, { plan: p, data, archivedEpics = [] }) {
+  const scope = scopeVerdict(ticket, p);
+  const own = ownershipVerdict(ticket, { plan: p, data, archivedEpics });
+  if (scope.blocks) return scope;
+  if (own.blocks) return own;
+  return scope;
+}
 
-  // 1. The same traceable prefixes.
-  const listed = src.match(/const TRACEABLE = \[([^\]]*)\]/)?.[1] ?? "";
-  assert.deepEqual(
-    listed.split(",").map((x) => x.trim().replace(/['"]/g, "")).filter(Boolean).sort(),
-    [...TRACEABLE_PREFIXES].sort(),
-    "TRACEABLE in usePlanScope.ts has drifted from TRACEABLE_PREFIXES",
-  );
+test("a scope exception does NOT clear ownership in the preview", () => {
+  // The bug: the hand-written preview returned early on scope_exception, so a ticket with an
+  // exception showed as runnable while the server refused it. An exception is a decision about
+  // project SCOPE; it says nothing about which initiative a requirement belongs to.
+  const p = plan();
+  const b = board({ tickets: [ticket({ id: "T-1", epicId: "e2", traces_to: ["FR-1"], scope_exception: "owner said so" })] });
 
-  // 2. Project-wide items (owner null) are available to every initiative — the rule that
-  //    decides whether a shared NFR can be traced from anywhere.
-  assert.match(src, /o\.initiativeId && o\.initiativeId !== \(own \?\? null\)/,
-    "the foreign-item rule must treat a null owner as available to everyone");
-
-  // 3. Ownership is checked after scope and is NOT cleared by a scope exception. Compared
-  //    inside the verdict BODY — the state union at the top of the file mentions
-  //    'cross-initiative' first, which would make a naive indexOf pass for the wrong reason.
-  const body = src.slice(src.indexOf("const verdict ="));
-  const exceptionAt = body.indexOf("scope_exception");
-  const ownershipAt = body.indexOf("state: 'cross-initiative'");
-  assert.ok(exceptionAt > -1 && ownershipAt > exceptionAt,
-    "ownership must be evaluated after the exception branch, so an exception cannot clear it");
+  assert.equal(scopeVerdict(b.tickets[0], p).state, "exception", "scope alone is satisfied");
+  assert.equal(scopeVerdict(b.tickets[0], p).blocks, false);
+  const v = preview(b.tickets[0], { plan: p, data: b });
+  assert.equal(v.state, "cross-initiative");
+  assert.equal(v.blocks, true, "the preview must agree with the server, which still refuses it");
+  // And the server does refuse it, which is what makes the preview correct rather than merely strict.
+  assert.deepEqual(eligibleTickets(b, [], { plan: p }).map((t) => t.id), []);
 });
 
-test("the states usePlanScope can report are states board-core also produces", () => {
-  const src = readFileSync(join(KIT_SRC, "usePlanScope.ts"), "utf8");
-  for (const state of ["unassigned-epic", "cross-initiative"]) {
-    assert.ok(src.includes(`'${state}'`), `usePlanScope must be able to report ${state}`);
-  }
-  // And the server really does produce them, so the preview is not inventing verdicts.
+test("ownership still applies when the ordinary scope gate is OFF", () => {
+  // The bug: the preview short-circuited on "no plan yet" — computed from D/UC/FR — so a plan
+  // that defines initiatives and only NFRs turned ownership off in the UI while the server
+  // kept enforcing it. planIsGating and initiativeModeActive are independent switches.
+  const p = emptyPlan();
+  p.sections.initiatives = [
+    { id: "I-1", name: "A", outcome: "x", scope: { in: [], out: [] }, metrics: [], depends_on: [] },
+    { id: "I-2", name: "B", outcome: "y", scope: { in: [], out: [] }, metrics: [], depends_on: [] },
+  ];
+  p.sections.nonFunctional = [{ id: "NFR-1", initiativeId: "I-1", text: "No PII", budget: "zero" }];
+
+  assert.equal(planIsGating(p), false, "no deliverable, use case or functional requirement");
+  assert.equal(initiativeModeActive(p), true, "but the plan does define initiatives");
+
+  const b = {
+    epics: [{ id: "e2", initiativeId: "I-2", name: "Billing" }],
+    tickets: [ticket({ id: "T-1", epicId: "e2", traces_to: ["NFR-1"] })],
+  };
+  assert.equal(scopeVerdict(b.tickets[0], p).state, "no-plan", "the scope gate really is off");
+  const v = preview(b.tickets[0], { plan: p, data: b });
+  assert.equal(v.state, "cross-initiative");
+  assert.equal(v.blocks, true);
+  assert.deepEqual(eligibleTickets(b, [], { plan: p }).map((t) => t.id), [], "the server refuses it too");
+});
+
+test("the preview reports the same verdicts the server acts on, across the states", () => {
   const p = plan();
-  const b = board({ tickets: [ticket({ id: "T-1", epicId: "e3", traces_to: ["NFR-1"] })] });
-  assert.equal(ownershipVerdict(b.tickets[0], { plan: p, data: b }).state, "unassigned-epic");
-  const b2 = board({ tickets: [ticket({ id: "T-2", epicId: "e2", traces_to: ["FR-1"] })] });
-  assert.equal(ownershipVerdict(b2.tickets[0], { plan: p, data: b2 }).state, "cross-initiative");
+  const cases = [
+    ["own initiative", { id: "T-1", epicId: "e1", traces_to: ["FR-1"] }, "in-scope", false],
+    ["project-wide item", { id: "T-2", epicId: "e1", traces_to: ["NFR-1"] }, "in-scope", false],
+    ["another initiative's item", { id: "T-3", epicId: "e2", traces_to: ["FR-1"] }, "cross-initiative", true],
+    ["unassigned epic", { id: "T-4", epicId: "e3", traces_to: ["NFR-1"] }, "unassigned-epic", true],
+    ["untraced", { id: "T-5", epicId: "e1", traces_to: [] }, "untraced", true],
+  ];
+  for (const [label, t, state, blocks] of cases) {
+    const b = board({ tickets: [ticket(t)] });
+    const v = preview(b.tickets[0], { plan: p, data: b });
+    assert.equal(v.state, state, `${label}: expected ${state}, got ${v.state}`);
+    assert.equal(v.blocks, blocks, label);
+    // Whatever the preview says about blocking, the orchestrator must do.
+    assert.equal(eligibleTickets(b, [], { plan: p }).length, blocks ? 0 : 1, `${label}: server disagrees`);
+  }
+});
+
+test("the cockpit imports those rules rather than restating them", () => {
+  // Structural, not a rule mirror: the point is that there is no second copy left to drift.
+  const src = readFileSync(join(KIT_SRC, "usePlanScope.ts"), "utf8");
+  assert.match(src, /from '\.\.\/\.\.\/scripts\/plan-core\.mjs'/);
+  assert.match(src, /from '\.\.\/\.\.\/scripts\/board-core\.mjs'/);
+  assert.ok(!src.includes("const TRACEABLE = ["), "the restated prefix list must be gone");
 });
