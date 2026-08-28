@@ -30,19 +30,22 @@
 
 import { existsSync, readFileSync } from "fs";
 import { spawnSync } from "child_process";
-import { resolve, join } from "path";
+import { resolve, join, dirname } from "path";
 import {
   PLAN_SECTIONS, SECTION_BY_KEY, SECTION_KEYS, QUESTION_SECTIONS, GAP_NEEDS, GAP_STATUSES,
   planCompleteness, planCoverage, planItems, planIsGating, enforceableItems, nextId, nextOutId,
   sectionForId, validatePlan, isPlaceholder, TRACEABLE_PREFIXES,
+  initiativeMap, initiativeProgress, projectWideProgress, normalisePlan, OWNED_SECTIONS,
 } from "./plan-core.mjs";
 import { planPaths, readPlan, planVersion, mutatePlan } from "./plan-io.mjs";
 import { BoardConflictError, BoardLockError } from "./board-io.mjs";
+import { epicOwnershipVerdict, ownershipVerdict, initiativeModeActive } from "./board-core.mjs";
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
   "init", "show", "status", "questions", "coverage", "gate", "check",
   "set-goal", "scope", "add", "edit", "remove",
+  "initiative-add", "initiative-edit", "initiative-remove",
   "gap-add", "gap-set", "render", "version",
 ]);
 
@@ -94,9 +97,13 @@ function usage() {
     maestro plan init                       create an empty plan
     maestro plan set-goal --text <t> [--metric <m>]...
     maestro plan scope [--in <t>]... [--out <t>]...
-    maestro plan add <section> --text <t> [field flags]
-    maestro plan edit <ID> [field flags]
+    maestro plan add <section> --text <t> [field flags] [--initiative I-1]
+    maestro plan edit <ID> [field flags] [--initiative I-2 | --clear-initiative]
     maestro plan remove <ID>
+    maestro plan initiative-add    --name <t> --outcome <t> [--metric <m>]... [--in <t>]...
+                                   [--out <t>]... [--depends-on I-n]...
+    maestro plan initiative-edit <I-n> [same flags — list flags REPLACE, never append]
+    maestro plan initiative-remove <I-n>   refused while anything still references it
     maestro plan gap-add --text <t> --need required|optional [--from <skill>]
     maestro plan gap-set <G-ID> --status open|accepted|declined [--resolved-as <ID>]
     maestro plan render                     rewrite plan.md from plan.json
@@ -168,6 +175,114 @@ function itemPatch(section) {
   return patch;
 }
 
+
+/**
+ * The board beside this plan, or null. Read-only, and a missing or unreadable board is never an
+ * error: writing a plan must not require a board to exist.
+ */
+function boardForPreflight() {
+  if (!existsSync(DATA_PATH)) return null;
+  try {
+    const data = JSON.parse(readFileSync(DATA_PATH, "utf8"));
+    let archive = { epics: [], tickets: [] };
+    const archivePath = join(dirname(DATA_PATH), "archive.json");
+    if (existsSync(archivePath)) {
+      try { archive = JSON.parse(readFileSync(archivePath, "utf8")); } catch { /* keep the empty one */ }
+    }
+    return { data, archivedEpics: archive.epics ?? [], archivedTickets: archive.tickets ?? [] };
+  } catch {
+    return null; // an unreadable board is the board validator's problem, not this op's
+  }
+}
+
+/**
+ * REVERSE PREFLIGHT: refuse a plan write that would invalidate the board.
+ *
+ * plan.json and data.json are separate files behind separate locks with no cross-file
+ * transaction, so `maestro plan edit FR-3 --initiative I-1` can succeed on its own terms and
+ * leave a ticket in an I-2 epic tracing FR-3 — a board that is now invalid, and nothing caught
+ * it. The board CLI already reads the plan for the forward direction (board-write.mjs); this is
+ * the symmetric read.
+ *
+ * It is NOT atomic across the two files and does not pretend to be: it checks the board as it
+ * is right now, and a concurrent board write could still race it. That is why the board's own
+ * validator stays the backstop. This exists so the common case fails at the moment someone
+ * makes the mistake, naming every id, rather than surfacing later as a refused ticket run.
+ *
+ * @param {any} nextPlan the plan as it WOULD be after this write
+ * @param {string} subject what is being changed, for the message
+ */
+function assertBoardSurvives(nextPlan, subject) {
+  const board = boardForPreflight();
+  if (!board || !initiativeModeActive(nextPlan)) return;
+  const { data, archivedEpics, archivedTickets } = board;
+  const conflicts = [];
+  for (const e of data.epics ?? []) {
+    const v = epicOwnershipVerdict(e, nextPlan);
+    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(v.reason);
+  }
+  for (const e of archivedEpics) {
+    const v = epicOwnershipVerdict(e, nextPlan);
+    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(`archive: ${v.reason}`);
+  }
+  for (const t of data.tickets ?? []) {
+    const v = ownershipVerdict(t, { plan: nextPlan, data, archivedEpics });
+    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(v.reason);
+  }
+  // ARCHIVED TICKETS COUNT. A landed ticket's traces are not decoration — planCoverage reads
+  // them, and initiativeProgress groups those rows by the ITEM's owner. So moving FR-1 to I-2
+  // while an archived ticket delivered it under an I-1 epic silently re-attributes finished
+  // work to an initiative that never did it, and the delivery percentages both initiatives
+  // report are wrong from then on. There is no way to re-trace an archived ticket afterwards
+  // either — archived work is history and has no editing op — so the only place this can be
+  // caught is here, before the plan moves.
+  //
+  // The same live+archived epic index resolves them, because an archived ticket's epic is
+  // usually archived too but does not have to be.
+  for (const t of archivedTickets) {
+    const v = ownershipVerdict(t, { plan: nextPlan, data, archivedEpics });
+    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(`archive: ${v.reason}`);
+  }
+  if (conflicts.length) {
+    die(`Refusing to change ${subject} — ${conflicts.length} board reference(s) would break and ` +
+        `nothing has been written:\n${conflicts.map((c) => `  • ${c}`).join("\n")}\n` +
+        `Reassign or re-trace them first ('maestro ticket edit-epic' / 'maestro ticket retrace').`, 1);
+  }
+}
+
+/** Every place an initiative id is referenced, across the plan and the board. */
+function referencesToInitiative(plan, id) {
+  const refs = [];
+  for (const s of PLAN_SECTIONS) {
+    if (s.kind !== "list") continue;
+    for (const item of plan.sections[s.key] ?? []) {
+      if (item.initiativeId === id) refs.push(`plan item ${item.id}`);
+    }
+  }
+  for (const other of plan.sections.initiatives ?? []) {
+    if ((other.depends_on ?? []).includes(id)) refs.push(`initiative ${other.id} depends_on it`);
+  }
+  const board = boardForPreflight();
+  if (board) {
+    for (const e of board.data.epics ?? []) if (e.initiativeId === id) refs.push(`epic ${e.id}`);
+    for (const e of board.archivedEpics) if (e.initiativeId === id) refs.push(`archived epic ${e.id}`);
+  }
+  return refs;
+}
+
+/** The initiative flags an item op accepts: `--initiative I-1` or `--clear-initiative`. */
+function initiativePatch(plan) {
+  const id = flag("initiative");
+  if (id != null && has("clear-initiative")) die("--initiative and --clear-initiative contradict each other.");
+  if (id != null && !initiativeMap(plan).has(id)) {
+    const known = [...initiativeMap(plan).keys()];
+    die(`The plan does not define initiative ${id} (known: ${known.join(", ") || "none yet"}). ` +
+        `Create it with 'maestro plan initiative-add --name … --outcome …'.`);
+  }
+  if (has("clear-initiative")) return { clear: true };
+  return id == null ? null : { initiativeId: id };
+}
+
 function write(mutate, op) {
   if (DRY_RUN) {
     const before = readPlan(PLAN_PATH);
@@ -209,6 +324,19 @@ function renderStatus(plan) {
     const count = s.count ? ` (${s.count})` : "";
     const note = s.detail ? `  ${s.detail}` : "";
     out(`   ${mark} ${s.label.padEnd(30)}${count.padEnd(6)}${note}`);
+  }
+  const board = existsSync(DATA_PATH) ? JSON.parse(readFileSync(DATA_PATH, "utf8")) : { tickets: [] };
+  const archPath0 = join(paths.boardDir, "archive.json");
+  const archive0 = existsSync(archPath0) ? JSON.parse(readFileSync(archPath0, "utf8")) : { tickets: [] };
+  const progress = initiativeProgress(plan, board.tickets ?? [], archive0.tickets ?? []);
+  if (progress.length) {
+    out("");
+    out("  Initiatives — delivery is derived from the board, not declared here:");
+    for (const p of progress) {
+      out(`   ${p.id.padEnd(5)} ${p.name.slice(0, 28).padEnd(30)} ${String(p.percent).padStart(3)}% delivered  (${p.done}/${p.total})`);
+    }
+    const g = projectWideProgress(plan, board.tickets ?? [], archive0.tickets ?? []);
+    if (g.total) out(`   ${"—".padEnd(5)} ${"Project-wide".padEnd(30)} ${String(g.percent).padStart(3)}% delivered  (${g.done}/${g.total})`);
   }
   if (c.requiredGaps.length) {
     out("");
@@ -284,6 +412,39 @@ function currentFor(plan, key) {
   return v;
 }
 
+/**
+ * Per-initiative delivery, grouped under each initiative with the project-wide items in their
+ * own bucket. The marks say what a reader has to act on: a landed ticket (done), one in flight
+ * (has a ticket), or nothing at all.
+ */
+function renderInitiativeCoverage(plan, rows, tickets, archived) {
+  const progress = initiativeProgress(plan, tickets, archived);
+  if (!progress.length) return false;
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const line = (r) => {
+    const mark = r.done ? "✓" : r.tickets.length ? "◐" : "○";
+    const who = r.done ? r.tickets.join(", ") : r.tickets.length ? `${r.tickets.join(", ")} active` : "no ticket";
+    return `     ${mark} ${r.id.padEnd(7)} ${r.text.slice(0, 52).padEnd(54)} ${who}`;
+  };
+  for (const p of progress) {
+    out("");
+    out(`  ${p.id} ${p.name} — ${p.percent}% delivered  (${p.done}/${p.total} items${p.milestones.length ? `, ${p.milestones.length} milestone(s)` : ""})`);
+    const owned = rows.filter((r) => r.initiativeId === p.id);
+    if (!owned.length) out("     _No plan items owned yet._");
+    for (const r of owned) out(line(r));
+  }
+  const global = projectWideProgress(plan, tickets, archived);
+  const globalRows = rows.filter((r) => r.initiativeId == null);
+  if (globalRows.length) {
+    out("");
+    out(`  Project-wide — ${global.percent}% delivered  (${global.done}/${global.total} items)`);
+    out(`     Owned by no single initiative; they apply to every one.`);
+    for (const r of globalRows) out(line(r));
+  }
+  void byId;
+  return true;
+}
+
 function renderCoverage(plan) {
   const board = existsSync(DATA_PATH) ? JSON.parse(readFileSync(DATA_PATH, "utf8")) : { tickets: [] };
   const archPath = join(paths.boardDir, "archive.json");
@@ -291,11 +452,27 @@ function renderCoverage(plan) {
   const rows = planCoverage(plan, board.tickets ?? [], archive.tickets ?? []);
   const uncovered = rows.filter((r) => !r.tickets.length);
 
-  if (JSON_OUT) return ok({ rows, uncovered: uncovered.map((r) => r.id) });
+  const byInitiative = initiativeProgress(plan, board.tickets ?? [], archive.tickets ?? []);
+  if (JSON_OUT) {
+    return ok({
+      rows,
+      uncovered: uncovered.map((r) => r.id),
+      initiatives: byInitiative,
+      projectWide: byInitiative.length ? projectWideProgress(plan, board.tickets ?? [], archive.tickets ?? []) : null,
+    });
+  }
 
   out("");
   if (!rows.length) {
     out("  The plan names no deliverables, use cases, requirements, or milestones yet — nothing to cover.");
+    out("");
+    process.exit(0);
+  }
+  if (renderInitiativeCoverage(plan, rows, board.tickets ?? [], archive.tickets ?? [])) {
+    out("");
+    out(uncovered.length
+      ? `  ${uncovered.length} plan item(s) with no ticket: ${uncovered.map((r) => r.id).join(", ")}`
+      : "  Every plan item has a ticket.");
     out("");
     process.exit(0);
   }
@@ -495,6 +672,97 @@ switch (op) {
     break;
   }
 
+  case "initiative-add": {
+    const name = flag("name");
+    const outcome = flag("outcome");
+    if (!name || isPlaceholder(name)) die("--name is required, and must say something.");
+    if (!outcome || isPlaceholder(outcome)) {
+      die("--outcome is required: what is true for someone once this lands. An initiative without one is a folder, which is the thing this layer is not.");
+    }
+    let id;
+    const r = write((p) => {
+      id = nextId(p, "initiatives");
+      const deps = flagAll("depends-on");
+      for (const d of deps) {
+        // THROW, never die(): this runs inside the board lock, and die() calls process.exit,
+        // which skips the finally that releases it — leaving a stale lock the next writer has
+        // to wait ten seconds for and then steal. A thrown error unwinds properly.
+        if (!p.sections.initiatives.some((i) => i.id === d)) throw new Error(`--depends-on ${d} is not an initiative in this plan.`);
+      }
+      p.sections.initiatives.push({
+        id, name, outcome,
+        scope: { in: flagAll("in"), out: flagAll("out") },
+        metrics: flagAll("metric"),
+        depends_on: deps,
+        ...(flag("notes") ? { notes: flag("notes") } : {}),
+      });
+      return p;
+    }, "plan-initiative-add");
+    ok({ version: r.version, id }, `${id} added — ${name}.`);
+    break;
+  }
+
+  case "initiative-edit": {
+    const id = argv[1];
+    if (!id) die("Which initiative? `maestro plan initiative-edit <I-n> --name ...`");
+    // Repeatable list flags REPLACE rather than append: "set the metrics to these three" is
+    // the operation people mean, and an appending flag has no way to remove one.
+    const patch = {};
+    if (flag("name") != null) patch.name = flag("name");
+    if (flag("outcome") != null) patch.outcome = flag("outcome");
+    if (flag("notes") != null) patch.notes = flag("notes");
+    const lists = { metrics: flagAll("metric"), depends_on: flagAll("depends-on") };
+    const scopeIn = flagAll("in"), scopeOut = flagAll("out");
+    if (!Object.keys(patch).length && !lists.metrics.length && !lists.depends_on.length && !scopeIn.length && !scopeOut.length) {
+      die("Nothing to change — pass --name, --outcome, --notes, --metric, --in, --out or --depends-on.");
+    }
+    const r = write((p) => {
+      const init = p.sections.initiatives.find((i) => i.id === id);
+      if (!init) throw new Error(`${id} is not an initiative in this plan.`);
+      Object.assign(init, patch);
+      if (lists.metrics.length) init.metrics = lists.metrics;
+      if (lists.depends_on.length) {
+        for (const d of lists.depends_on) {
+          // Thrown, not die()'d — see the note in initiative-add: this is inside the lock.
+          if (d === id) throw new Error(`${id} cannot depend on itself.`);
+          if (!p.sections.initiatives.some((i) => i.id === d)) throw new Error(`--depends-on ${d} is not an initiative in this plan.`);
+        }
+        init.depends_on = lists.depends_on;
+      }
+      if (scopeIn.length) init.scope = { ...init.scope, in: scopeIn };
+      if (scopeOut.length) init.scope = { ...init.scope, out: scopeOut };
+      return p;
+    }, "plan-initiative-edit");
+    ok({ version: r.version, id }, `${id} updated.`);
+    break;
+  }
+
+  case "initiative-remove": {
+    const id = argv[1];
+    if (!id) die("Which initiative? `maestro plan initiative-remove <I-n>`");
+    const current = normalisePlan(readPlan(PLAN_PATH));
+    if (!current.sections.initiatives.some((i) => i.id === id)) die(`${id} is not an initiative in this plan.`);
+
+    // NO --force. Every other removal in this CLI has one, because a dangling `traces_to` is a
+    // recoverable state the orchestrator simply refuses. A dangling initiative is not: epics
+    // would point at something that no longer exists, and every ticket beneath them would
+    // inherit it. There is no reading under which that is what someone wanted, so the only
+    // honest answer is to say what still references it and let them unwire it first.
+    const refs = referencesToInitiative(current, id);
+    if (refs.length) {
+      die(`${id} is still referenced by ${refs.length}: ${refs.join(", ")}. ` +
+          `Reassign or clear them first ('maestro plan edit <ID> --clear-initiative', ` +
+          `'maestro ticket edit-epic <id> --initiative <I-n>'). There is no --force: leaving a ` +
+          `dangling initiative reference is never what someone wanted.`, 1);
+    }
+    const r = write((p) => {
+      p.sections.initiatives = p.sections.initiatives.filter((i) => i.id !== id);
+      return p;
+    }, "plan-initiative-remove");
+    ok({ version: r.version, id }, `${id} removed.`);
+    break;
+  }
+
   case "add": {
     const key = argv[1];
     const section = SECTION_BY_KEY.get(key);
@@ -504,9 +772,13 @@ switch (op) {
     const patch = itemPatch(section);
     if (!patch.text || isPlaceholder(patch.text)) die("--text is required, and must say something (a placeholder like \"TBD\" would count as filled without being filled).");
     let id;
+    const own = initiativePatch(normalisePlan(readPlan(PLAN_PATH)));
+    if (own && !OWNED_SECTIONS.has(key)) {
+      die(`Initiative ownership does not apply to "${key}". Only ${[...OWNED_SECTIONS].join(", ")} can belong to an initiative — gaps and open questions stay project-level.`);
+    }
     const r = write((p) => {
       id = nextId(p, key);
-      p.sections[key].push({ id, ...patch });
+      p.sections[key].push({ id, ...patch, ...(own?.initiativeId ? { initiativeId: own.initiativeId } : {}) });
       return p;
     }, `plan-add-${key}`);
     const c = planCompleteness(r.plan);
@@ -521,11 +793,31 @@ switch (op) {
     if (!key || key === "scopeOut") die(`"${id}" is not an editable plan item id.`);
     const section = SECTION_BY_KEY.get(key);
     const patch = itemPatch(section);
-    if (!Object.keys(patch).length) die(`Nothing to change — pass at least one of: ${["text", ...(section.fields ?? []), "notes"].map((f) => `--${f}`).join(" ")}.`);
+    const current = normalisePlan(readPlan(PLAN_PATH));
+    const own = initiativePatch(current);
+    if (own && !OWNED_SECTIONS.has(key)) {
+      die(`Initiative ownership does not apply to "${key}". Only ${[...OWNED_SECTIONS].join(", ")} can belong to an initiative — gaps and open questions stay project-level.`);
+    }
+    if (!Object.keys(patch).length && !own) {
+      die(`Nothing to change — pass at least one of: ${["text", ...(section.fields ?? []), "notes"].map((f) => `--${f}`).join(" ")} --initiative --clear-initiative.`);
+    }
+
+    // Ownership is the one edit here that can invalidate the BOARD, so it is the one that gets
+    // the reverse preflight. Changing an item's text cannot strand a trace; re-homing it can.
+    if (own) {
+      const preview = structuredClone(current);
+      const target = preview.sections[key].find((i) => i.id === id);
+      if (!target) die(`${id} is not in the plan.`);
+      if (own.clear) delete target.initiativeId; else target.initiativeId = own.initiativeId;
+      assertBoardSurvives(preview, id);
+    }
+
     const r = write((p) => {
       const item = p.sections[key].find((i) => i.id === id);
       if (!item) throw new Error(`${id} is not in the plan.`);
       Object.assign(item, patch);
+      if (own?.clear) delete item.initiativeId;
+      else if (own?.initiativeId) item.initiativeId = own.initiativeId;
       return p;
     }, "plan-edit");
     ok({ version: r.version, id, percent: planCompleteness(r.plan).percent }, `${id} updated.`);
