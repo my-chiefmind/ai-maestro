@@ -187,6 +187,48 @@ export function ownershipVerdict(ticket, opts = {}) {
 }
 
 /**
+ * Every cross-initiative or dangling-initiative conflict a board holds against a given plan.
+ *
+ * ONE implementation, shared by the plan CLI's reverse preflight and the cockpit's plan-write
+ * route. These are the same question asked from two directions — "would this plan write break
+ * the board?" — and the whole reason the preflight exists is that a second copy of a rule
+ * drifts from the first. That is the defect class this module has already produced twice.
+ *
+ * Archived epics AND archived tickets are included. A landed ticket's traces are load-bearing:
+ * planCoverage reads them and initiativeProgress groups those rows by the ITEM's owner, so a
+ * plan move can silently re-attribute finished work to an initiative that never did it — and
+ * archived work has no editing op, so it cannot be corrected afterwards.
+ *
+ * @param {any} plan
+ * @param {{data?: any, archivedEpics?: any[], archivedTickets?: any[]}} [board]
+ * @returns {string[]} one human-readable reason per conflict, `archive:`-prefixed where the
+ *          subject is archived. Empty when the board is consistent with the plan.
+ */
+export function crossInitiativeConflicts(plan, { data = null, archivedEpics = [], archivedTickets = [] } = {}) {
+  if (!initiativeModeActive(plan)) return [];
+  const board = data ?? { epics: [], tickets: [] };
+  const broken = (v) => v.state === "cross-initiative" || v.state === "unknown-initiative";
+  const out = [];
+  for (const e of board.epics ?? []) {
+    const v = epicOwnershipVerdict(e, plan);
+    if (broken(v)) out.push(v.reason);
+  }
+  for (const e of archivedEpics) {
+    const v = epicOwnershipVerdict(e, plan);
+    if (broken(v)) out.push(`archive: ${v.reason}`);
+  }
+  for (const t of board.tickets ?? []) {
+    const v = ownershipVerdict(t, { plan, data: board, archivedEpics });
+    if (broken(v)) out.push(v.reason);
+  }
+  for (const t of archivedTickets) {
+    const v = ownershipVerdict(t, { plan, data: board, archivedEpics });
+    if (broken(v)) out.push(`archive: ${v.reason}`);
+  }
+  return out;
+}
+
+/**
  * The same question for an EPIC, which has an initiative of its own rather than a derived one.
  * Epics are never picked, so this only ever feeds the validator.
  */

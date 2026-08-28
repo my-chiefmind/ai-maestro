@@ -92,6 +92,12 @@ export interface PlanItem {
   id: string;
   text: string;
   notes?: string;
+  /**
+   * The initiative that owns this item, or absent for a project-wide item that applies to every
+   * one. Legal on deliverables, useCases, functional, nonFunctional, milestones and risks only —
+   * OWNED_SECTIONS in scripts/plan-core.mjs. Gaps and open questions stay project-level.
+   */
+  initiativeId?: string;
   actor?: string;
   verify?: string;
   budget?: string;
@@ -105,6 +111,36 @@ export interface PlanItem {
 }
 
 export interface PlanGoal { text: string; metrics: string[] }
+
+/**
+ * A scoped mini-plan: an independently valuable outcome delivered by several epics. It OWNS
+ * plan items rather than nesting copies of them, so ids stay globally unique. Initiatives are
+ * never traceable themselves — a ticket traces to a requirement and derives its initiative
+ * through its epic.
+ */
+export interface PlanInitiative {
+  id: string;
+  name: string;
+  outcome: string;
+  scope: { in: string[]; out: string[] };
+  metrics: string[];
+  /** Planning metadata only — never read by ticket eligibility or lane assignment. */
+  depends_on: string[];
+  notes?: string;
+}
+
+/** Delivery derived from the board, never declared. `percent` is done ÷ total, rounded. */
+export interface InitiativeProgress {
+  id: string | null;
+  name: string;
+  total: number;
+  covered: number;
+  done: number;
+  uncovered: string[];
+  incomplete: string[];
+  milestones: string[];
+  percent: number;
+}
 export interface PlanScope { in: string[]; out: { id: string; text: string }[] }
 
 export interface Plan {
@@ -112,6 +148,7 @@ export interface Plan {
   sections: {
     goal: PlanGoal;
     scope: PlanScope;
+    initiatives: PlanInitiative[];
     deliverables: PlanItem[];
     useCases: PlanItem[];
     functional: PlanItem[];
@@ -129,7 +166,7 @@ export type PlanSectionKey = keyof Plan['sections'];
 export interface PlanSectionMeta {
   key: string;
   label: string;
-  kind: 'prose' | 'scope' | 'list' | 'gaps';
+  kind: 'prose' | 'scope' | 'list' | 'gaps' | 'initiatives';
   prefix: string | null;
   weight: number;
   heading: string;
@@ -166,6 +203,8 @@ export interface PlanCoverageRow {
   text: string;
   tickets: string[];
   done: boolean;
+  /** null for a project-wide item. */
+  initiativeId?: string | null;
 }
 
 export interface PlanResponse {
@@ -177,5 +216,8 @@ export interface PlanResponse {
   sections: PlanSectionMeta[];
   completeness: PlanCompleteness;
   coverage: PlanCoverageRow[];
+  /** Empty unless the plan defines initiatives — the cockpit hides the whole layer when it is. */
+  initiatives: InitiativeProgress[];
+  projectWide: InitiativeProgress;
   warnings: string[];
 }
