@@ -8,7 +8,7 @@
   "properties": {
     "planVersion": {
       "type": "integer",
-      "description": "Schema generation of this file. 1 today; bumped only by a migrating release."
+      "description": "Schema generation of this file. Still 1: the initiatives layer is purely additive — a plan written before it stays valid and is never rewritten merely because it was read — so there is nothing for a migrating release to migrate."
     },
     "sections": {
       "type": "object",
@@ -16,7 +16,8 @@
       "properties": {
         "goal":          { "$ref": "#/$defs/goal" },
         "scope":         { "$ref": "#/$defs/scope" },
-        "deliverables":  { "type": "array", "items": { "$ref": "#/$defs/item" } },
+        "initiatives":   { "type": "array", "items": { "$ref": "#/$defs/initiative" }, "description": "Independently valuable outcomes, each owning several epics. OPTIONAL and absent from most plans — a project with no initiative behaves exactly as it did before this section existed. Never required here: legacy plans must stay valid." },
+        "deliverables":  { "type": "array", "items": { "$ref": "#/$defs/ownedItem" } },
         "useCases":      { "type": "array", "items": { "$ref": "#/$defs/useCase" } },
         "functional":    { "type": "array", "items": { "$ref": "#/$defs/requirement" } },
         "nonFunctional": { "type": "array", "items": { "$ref": "#/$defs/nfr" } },
@@ -59,11 +60,47 @@
     },
     "item": {
       "type": "object",
+      "description": "A plain id'd item with no initiative ownership. Used by `openQuestions`, which stays project-level: a question owed by a human is not owned by a slice of the plan. Deliverables use `ownedItem` instead — the two were one definition until initiatives landed, and merging them again would silently make ownership legal on open questions.",
       "required": ["id", "text"],
       "properties": {
         "id":    { "type": "string" },
         "text":  { "type": "string" },
         "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ownedItem": {
+      "type": "object",
+      "description": "An id'd item that an initiative may own. Ownership is legal on exactly six sections — deliverables, useCases, functional, nonFunctional, milestones, risks — and validatePlan()'s OWNED_SECTIONS is the check that actually runs. The two must agree.",
+      "required": ["id", "text"],
+      "properties": {
+        "id":    { "type": "string" },
+        "text":  { "type": "string" },
+        "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The initiative that owns this item. Omit it for a project-wide item that applies to every initiative. An epic or ticket may trace only to a project-wide item or to one owned by its own initiative." },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "initiative": {
+      "type": "object",
+      "description": "A scoped mini-plan: an independently valuable outcome delivered by several epics. It OWNS deliverables and requirements rather than nesting copies of them, so plan ids stay globally unique and every existing `traces_to` keeps working. Initiatives are never traceable themselves — a ticket traces to the requirement it implements and derives its initiative through its epic.",
+      "required": ["id", "name", "outcome"],
+      "properties": {
+        "id":         { "type": "string", "pattern": "^I-[0-9]+$" },
+        "name":       { "type": "string", "description": "Short name. Never a technical layer — \"Customer onboarding\", not \"Backend\"." },
+        "outcome":    { "type": "string", "description": "What is true for someone once this lands. An initiative without one is a folder, which is the thing this layer is not." },
+        "scope": {
+          "type": "object",
+          "description": "This initiative's boundary. Narrative only — unlike the project's scope, these carry no ids and the scope gate does not read them. The enforceable boundary is the project's.",
+          "properties": {
+            "in":  { "type": "array", "items": { "type": "string" } },
+            "out": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "metrics":    { "type": "array", "items": { "type": "string" }, "description": "Measurable signals that this initiative's outcome was reached." },
+        "depends_on": { "type": "array", "items": { "type": "string", "pattern": "^I-[0-9]+$" }, "description": "Other initiatives this one assumes. PLANNING METADATA ONLY: validated for existence and cycles, and deliberately never read by ticket eligibility or lane assignment. Scheduling stays the board's job — same-epic, same-area, depends_on, and touches." },
+        "notes":      { "type": "string" }
       },
       "additionalProperties": false
     },
@@ -74,6 +111,7 @@
         "id":    { "type": "string", "pattern": "^UC-[0-9]+$" },
         "actor": { "type": "string", "description": "Who performs it. Blank is allowed but weakens the use case." },
         "text":  { "type": "string", "description": "What the actor does, and why it matters to them." },
+        "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The initiative that owns this item. Omit it for a project-wide item that applies to every initiative. An epic or ticket may trace only to a project-wide item or to one owned by its own initiative." },
         "notes": { "type": "string" }
       },
       "additionalProperties": false
@@ -85,6 +123,7 @@
         "id":     { "type": "string", "pattern": "^FR-[0-9]+$" },
         "text":   { "type": "string", "description": "One behaviour the system must have. One requirement per entry — an entry with 'and' in it is usually two." },
         "verify": { "type": "string", "description": "How it is demonstrated: a test command, a manual check, a metric. The release gate reads this." },
+        "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The initiative that owns this item. Omit it for a project-wide item that applies to every initiative. An epic or ticket may trace only to a project-wide item or to one owned by its own initiative." },
         "enforce": { "type": "string", "minLength": 1, "description": "A command that MUST exit 0. The difference between a rule agents are asked to honour and one they cannot violate: `verify` is read and judged, `enforce` is executed. `maestro plan check` runs every one of these (wire it into CI); the release gate runs those a ticket traces to, and a non-zero exit is a hard no-go, never a judgment call." },
         "notes":  { "type": "string" }
       },
@@ -97,6 +136,7 @@
         "id":     { "type": "string", "pattern": "^NFR-[0-9]+$" },
         "text":   { "type": "string", "description": "The quality attribute: performance, security, availability, accessibility, compliance, operability." },
         "budget": { "type": "string", "description": "The measurable bar — 'p95 < 300ms', 'WCAG 2.2 AA', '99.9% monthly'. An NFR with no budget cannot be gated." },
+        "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The initiative that owns this item. Omit it for a project-wide item that applies to every initiative. An epic or ticket may trace only to a project-wide item or to one owned by its own initiative." },
         "verify": { "type": "string", "description": "How the budget is measured. The release gate requires evidence against this for any ticket tracing here." },
         "enforce": { "type": "string", "minLength": 1, "description": "A command that MUST exit 0, encoding this quality bar as a check rather than an instruction — a forbidden-pattern grep, a lint rule, a budget assertion, a privacy invariant. Run by `maestro plan check` and by the release gate for any ticket tracing here." },
         "notes":  { "type": "string" }
@@ -110,6 +150,7 @@
         "id":     { "type": "string", "pattern": "^M-[0-9]+$" },
         "text":   { "type": "string" },
         "target": { "type": "string", "description": "Optional date or condition. Free text — the kit never schedules from it." },
+        "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The initiative that owns this item. Omit it for a project-wide item that applies to every initiative. An epic or ticket may trace only to a project-wide item or to one owned by its own initiative." },
         "notes":  { "type": "string" }
       },
       "additionalProperties": false
@@ -121,6 +162,7 @@
         "id":         { "type": "string", "pattern": "^R-[0-9]+$" },
         "text":       { "type": "string" },
         "mitigation": { "type": "string" },
+        "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The initiative that owns this item. Omit it for a project-wide item that applies to every initiative. An epic or ticket may trace only to a project-wide item or to one owned by its own initiative." },
         "notes":      { "type": "string" }
       },
       "additionalProperties": false
