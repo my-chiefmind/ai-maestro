@@ -805,6 +805,94 @@ export function planCoverage(planRaw, tickets = [], archived = []) {
   return [...byId.values()];
 }
 
+// ── Initiative progress ─────────────────────────────────────────────────────────
+
+/** Every initiative in the plan, by id. Order follows the plan array, never a Map's insertion quirk. */
+export function initiativeMap(planRaw) {
+  return new Map(normalisePlan(planRaw).sections.initiatives.filter((i) => i.id).map((i) => [i.id, i]));
+}
+
+/**
+ * The id of the initiative that owns a plan item, or null.
+ *
+ * null means project-wide — the item applies to every initiative. An id the plan does not
+ * define also yields null, because "nobody owns it" is the truthful answer either way;
+ * callers that need to distinguish an unknown item ask planItems, which is the register of
+ * what exists.
+ */
+export function initiativeForItem(planRaw, itemId) {
+  return planItems(planRaw).get(itemId)?.initiativeId ?? null;
+}
+
+/**
+ * The sections whose items count toward an initiative's delivery percentage.
+ *
+ * Milestones are deliberately absent. A milestone is a checkpoint, not a thing that is built,
+ * so counting one as delivered work would let an initiative read 60% because someone named
+ * three dates. They are still reported per initiative — see the `milestones` field — just not
+ * scored.
+ */
+const PROGRESS_SECTIONS = new Set(["deliverables", "useCases", "functional", "nonFunctional"]);
+
+/**
+ * Turn coverage rows into one progress record. The shared shape behind both an initiative's
+ * progress and the project-wide bucket, so "covered" cannot come to mean two things.
+ *
+ * `percent` is done ÷ total, rounded — the share of this initiative's scored items that a
+ * landed ticket has actually delivered, NOT the share that has a ticket filed against it.
+ * Filing tickets must never move the number on its own.
+ */
+function progressFrom(id, name, rows) {
+  const scored = rows.filter((r) => PROGRESS_SECTIONS.has(r.section));
+  const covered = scored.filter((r) => r.tickets.length);
+  const done = scored.filter((r) => r.done);
+  return {
+    id,
+    name,
+    total: scored.length,
+    covered: covered.length,
+    done: done.length,
+    // No ticket at all, versus has a ticket that has not landed. Different problems: the first
+    // needs planning, the second needs finishing.
+    uncovered: scored.filter((r) => !r.tickets.length).map((r) => r.id),
+    incomplete: covered.filter((r) => !r.done).map((r) => r.id),
+    milestones: rows.filter((r) => r.section === "milestones").map((r) => r.id),
+    percent: scored.length === 0 ? 0 : Math.round((done.length / scored.length) * 100),
+  };
+}
+
+/**
+ * Delivery progress per initiative.
+ *
+ * Derived ENTIRELY by grouping planCoverage() — it never walks the tickets itself. "Covered"
+ * and "done" are decided in exactly one place, so a per-initiative report and the project-wide
+ * one can never disagree about the same requirement. planCoverage already counts live and
+ * archived tickets, which is what makes a landed ticket still count for the item it delivered.
+ *
+ * A project-wide item (no initiativeId) is deliberately excluded from every initiative's
+ * percentage: counting a shared NFR toward all six initiatives would flatter every one of them
+ * with the same piece of work. It is reported once by projectWideProgress().
+ *
+ * @returns {Array<{id, name, total, covered, done, uncovered, incomplete, milestones, percent}>}
+ *          empty when the plan defines no initiative
+ */
+export function initiativeProgress(planRaw, tickets = [], archived = []) {
+  const initiatives = initiativeMap(planRaw);
+  if (!initiatives.size) return [];
+  const rows = planCoverage(planRaw, tickets, archived);
+  return [...initiatives.values()].map((init) =>
+    progressFrom(init.id, init.name, rows.filter((r) => r.initiativeId === init.id)));
+}
+
+/**
+ * The same record for the items no initiative owns. Reported once, beside the initiatives,
+ * rather than folded into each of them.
+ */
+export function projectWideProgress(planRaw, tickets = [], archived = []) {
+  const rows = planCoverage(planRaw, tickets, archived).filter((r) => r.initiativeId == null);
+  return progressFrom(null, "Project-wide", rows);
+}
+
 /**
  * Every plan item that carries an `enforce` command.
  *
