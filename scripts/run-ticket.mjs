@@ -217,7 +217,7 @@ if (resume) {
     die(`--resume needs ${ticketId} to be "in-progress" or "review" — it is "${ticket.status}".`);
   }
 } else {
-  const eligible = eligibleTickets(data, archive.tickets ?? [], plan ? { plan } : {}).some((t) => t.id === ticketId);
+  const eligible = eligibleTickets(data, archive.tickets ?? [], plan ? { plan, archivedEpics: archive.epics ?? [] } : {}).some((t) => t.id === ticketId);
   if (!eligible) {
     const doneIds = new Set([
       ...(archive.tickets ?? []).map((t) => t.id),

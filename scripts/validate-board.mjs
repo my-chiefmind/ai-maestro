@@ -158,7 +158,7 @@ function finish(errors, warnings, eligibleCount, plan, board, archive, config) {
     // Parallelism is a property of the board, so it belongs in the board's report — but it is
     // never a warning: a board where nothing can run in parallel is correct, just slower.
     if (board && config) {
-      const ready = eligibleTickets(board, archive?.tickets ?? [], { plan });
+      const ready = eligibleTickets(board, archive?.tickets ?? [], { plan, archivedEpics: archive?.epics ?? [] });
       if (ready.length > 1) {
         const { lanes } = assignLanes(ready, config);
         const startable = lanes.filter((l) => !l.exclusive).length;

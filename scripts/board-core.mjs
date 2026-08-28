@@ -253,6 +253,13 @@ export function eligibleTickets(data, archived = [], opts = {}) {
   // orchestrator must never start work the plan doesn't cover. Passing no plan leaves this a
   // no-op, so every existing caller behaves exactly as before.
   if (!opts.plan) return ready;
+  // CALLER CONTRACT: passing `plan` without `archivedEpics` silently weakens this gate. A
+  // ticket's initiative is derived through its epic, and an epic that has already landed lives
+  // in archive.json — so with the archived epics missing, such a ticket resolves to
+  // "unresolved" and sails through a check it should have faced. Every plan-aware call site
+  // passes both; test/board-initiatives.test.mjs pins that by reading the sources, so a new
+  // call site cannot quietly reintroduce the hole.
+  //
   // Two independent gates, both at pick time. Scope asks "is this in the plan at all?";
   // ownership asks "is it wired to the right slice of it?". A ticket must clear both.
   return ready.filter((t) =>
@@ -566,7 +573,7 @@ export function validateBoard(data, opts = {}) {
   if (eligible.length === 0) {
     warn("No eligible `todo` ticket right now — the orchestrator will report idle.");
   } else if (scopeIssues.length) {
-    const runnable = eligibleTickets(data, archived, { plan }).length;
+    const runnable = eligibleTickets(data, archived, { plan, archivedEpics }).length;
     if (runnable === 0) {
       warn(`Every eligible ticket is out of the plan's scope (${scopeIssues.join(", ")}) — the orchestrator will refuse them all. Run /plan-update.`);
     }

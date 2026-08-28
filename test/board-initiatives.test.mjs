@@ -193,3 +193,92 @@ test("lane assignment ignores initiatives completely", () => {
   assert.deepEqual(after, before);
   assert.equal(assignLanes.length <= 2, true, "assignLanes(ready, config) — no plan parameter");
 });
+
+// ── The archived-epic hole, and the guard against reopening it ──────────────────
+//
+// Ownership is derived through a ticket's epic, and an epic that has landed lives in
+// archive.json. A caller that passes `plan` but not `archivedEpics` therefore hands
+// ownershipVerdict a ticket whose epic it cannot see: the verdict degrades to "unresolved",
+// which never blocks, and a mis-wired ticket runs. The degradation is deliberate (the
+// portfolio survey legitimately has boards without epics) which is exactly why the CALLERS
+// have to be pinned — the function cannot tell "no epics supplied" from "epics supplied, one
+// missing" and must not guess.
+
+import { readFileSync, readdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+
+const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("a live ticket under an ARCHIVED epic is still ownership-checked at pick time", () => {
+  const archivedEpics = [{ id: "eA", initiativeId: "I-1", name: "Landed registration" }];
+  const b = { epics: [], tickets: [ticket({ id: "T-1", epicId: "eA", traces_to: ["FR-2"] })] };
+  // FR-2 belongs to I-2; the ticket's epic belongs to I-1. Cross-initiative either way — but
+  // only visible if the archived epics were handed over.
+  assert.deepEqual(eligibleTickets(b, [], { plan: plan(), archivedEpics }).map((t) => t.id), []);
+  assert.deepEqual(
+    eligibleTickets(b, [], { plan: plan() }).map((t) => t.id), ["T-1"],
+    "documents the degradation: without archivedEpics the gate cannot see the epic and lets it through",
+  );
+  const [blocked] = scopeBlockedTickets(b, [], plan(), archivedEpics);
+  assert.equal(blocked.verdict.state, "cross-initiative");
+});
+
+test("every plan-aware eligibility call in the shipped sources passes archived epics", () => {
+  // A source-level guard, because the defect is a MISSING ARGUMENT: no behavioural test of one
+  // call site can prove the next one added will be right. This reads the real files.
+  //
+  // Comments are stripped first — the docstrings legitimately write `eligibleTickets(…, {plan})`
+  // while explaining the rule, and a guard that fails on its own documentation gets deleted.
+  const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+  const files = [
+    ...readdirSync(join(KIT, "scripts")).filter((f) => f.endsWith(".mjs")).map((f) => join("scripts", f)),
+    join("cockpit", "server", "portfolio.mjs"),
+    join("cockpit", "server", "index.mjs"),
+  ];
+  const offenders = [];
+  for (const rel of files) {
+    const src = stripComments(readFileSync(join(KIT, rel), "utf8"));
+    for (const m of src.matchAll(/\b(eligibleTickets|scopeBlockedTickets)\s*\(/g)) {
+      // Brace-match the argument list so a nested call cannot truncate it.
+      let i = m.index + m[0].length, depth = 1;
+      while (i < src.length && depth > 0) {
+        if ("([{".includes(src[i])) depth++;
+        else if (")]}".includes(src[i])) depth--;
+        i++;
+      }
+      const args = src.slice(m.index + m[0].length, i - 1);
+      if (!/\bplan\b/.test(args)) continue; // no plan, no ownership gate to weaken
+      // Either spelling counts: eligibleTickets takes `archivedEpics` in its opts, while
+      // scopeBlockedTickets takes the archived epics as its fourth positional argument.
+      if (!/epics/i.test(args)) offenders.push(`${rel}: ${m[1]}(${args.replace(/\s+/g, " ").slice(0, 90)})`);
+    }
+  }
+  assert.deepEqual(offenders, [], `these pass a plan but no archived epics, so ownership silently degrades:\n${offenders.join("\n")}`);
+});
+
+test("validate-board.mjs reports a cross-initiative ticket whose epic is archived", () => {
+  // End-to-end through a real production entry point, not the library.
+  const dir = mkdtempSync(join(tmpdir(), "init-arch-"));
+  const boardDir = join(dir, "board");
+  mkdirSync(boardDir, { recursive: true });
+  const write = (f, o) => writeFileSync(join(boardDir, f), JSON.stringify(o, null, 2));
+  write("plan.json", plan());
+  write("data.json", { epics: [], tickets: [ticket({ id: "T-1", epicId: "eA", traces_to: ["FR-2"] })] });
+  write("archive.json", { epics: [{ id: "eA", initiativeId: "I-1", name: "Landed" }], tickets: [] });
+  try {
+    let out = "";
+    try {
+      out = execFileSync("node", [join(KIT, "scripts", "validate-board.mjs"), join(boardDir, "data.json")], { encoding: "utf8" });
+    } catch (e) {
+      out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+    }
+    assert.match(out, /T-1 belongs to initiative I-1 through epic eA, but traces to FR-2 owned by I-2/);
+    assert.match(out, /Board invalid/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
