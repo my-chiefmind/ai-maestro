@@ -107,7 +107,12 @@ function usage() {
 
   edit-epic flags:
     --initiative I-2   move the epic to another plan initiative
-    --clear-initiative  detach it (only legal while the plan defines no initiative)
+    --clear-initiative  detach the epic from its initiative. Allowed while the plan DOES define
+                        initiatives — an epic between assignments is a legitimate transitional
+                        state, not an error. The epic then warns in the validator and its
+                        tickets are not picked until it is assigned again. It must not still
+                        trace an initiative-owned item though: with no initiative it may trace
+                        only project-wide ones, so re-trace it (or move it) first.
     --name <text>   --desc <text>   --traces-to D-1,FR-4
     Refused if the result would leave any epic or ticket tracing across initiatives.
 
@@ -562,6 +567,10 @@ const RUN = {
       throw usageError("--initiative and --clear-initiative contradict each other.");
     }
 
+    // Clearing is deliberately legal in initiative mode. Migrating a board is a sequence of
+    // states, not one atomic act, and an epic between assignments has to be representable —
+    // the validator warns and pick-time blocks its tickets, which stops the work without
+    // bricking the board. Forbidding it here would leave no way back from a wrong assignment.
     if (has("clear-initiative")) delete epic.initiativeId;
     else if (initiative != null) { assertInitiativeExists(initiative); epic.initiativeId = initiative; }
     if (name != null) epic.name = name;

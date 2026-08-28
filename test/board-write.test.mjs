@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boardVersion, mutateBoard, BoardConflictError, withBoardLock } from "../scripts/board-io.mjs";
+import { validateBoard, eligibleTickets } from "../scripts/board-core.mjs";
 
 const execFileP = promisify(execFile);
 const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -496,6 +497,46 @@ test("edit-epic changes name, desc and traces without touching what was not pass
     assert.equal(e1.desc, "Customers can sign up");
     assert.equal(e1.initiativeId, "I-1", "an untouched field survives");
     assert.deepEqual(e1.traces_to, ["FR-1"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("--clear-initiative is a legal transitional state: the epic warns and its tickets stop", async () => {
+  // Migrating a board is a sequence of states, not one atomic act: an epic between assignments
+  // has to be representable. The design answer is warn-in-validator + block-at-pick, not a
+  // refusal — forbidding the clear would leave no way back from a wrong assignment.
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    // An epic with no initiative may trace only project-wide items, so re-trace first. NFR-1
+    // is owned by nobody.
+    await execFileP("node", [WRITER, "retrace", "T-001", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--clear-initiative"]);
+    assert.equal("initiativeId" in readBoard(board).epics[0], false, "cleared while initiatives exist");
+
+    const plan = JSON.parse(readFileSync(join(dirname(board), "plan.json"), "utf8"));
+    const data = readBoard(board);
+    const r = validateBoard(data, { plan, archived: [], archivedEpics: [] });
+    assert.deepEqual(r.errors, [], "a transitional state must never invalidate the board");
+    assert.ok(r.warnings.some((w) => /Epic e1: belongs to no initiative/.test(w)), r.warnings.join("\n"));
+    assert.deepEqual(eligibleTickets(data, [], { plan, archivedEpics: [] }).map((t) => t.id), [],
+      "its tickets are not picked until it is assigned again");
+
+    // And the way back is open.
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--initiative", "I-1"]);
+    assert.equal(readBoard(board).epics[0].initiativeId, "I-1");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("clearing is refused while the epic still traces an initiative-owned item", async () => {
+  // The other half of the documented rule: with no initiative, an epic may trace only
+  // project-wide items — so the clear is refused rather than silently creating a foreign trace.
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const before = readFileSync(board, "utf8");
+    const e = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--clear-initiative"]).catch((x) => x);
+    assert.equal(e.code, 1);
+    assert.match(`${e.stderr}`, /Epic e1 belongs to no initiative and may trace only to project-wide items, but traces to FR-1 owned by I-1/);
+    assert.equal(readFileSync(board, "utf8"), before, "nothing written");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
