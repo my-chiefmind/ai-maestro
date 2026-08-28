@@ -42,7 +42,7 @@ session. The idea in three sentences:
 
 | # | The idea |
 | :--: | --- |
-| **1** | You keep a **board** of epics and tickets. |
+| **1** | You keep a **board** of epics and tickets, bounded by a **project plan**. |
 | **2** | Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on. |
 | **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it — **one ticket per run**, so you stay in the loop between tickets. |
 
@@ -181,6 +181,7 @@ Open your project in Claude Code or Codex and run these once, in order:
 | **1** | Run:<br/>**`/project-plan`** | Writes the **project plan** from your brief — goal, scope, deliverables, use cases, functional and non-functional requirements — and proposes an answer for anything you left as `propose one`. It stops for your review; nothing is implemented. |
 | **2** | Review the plan; fill in what's thin with **`/plan-update`** or the board's **Plan** tab | The plan reports a completeness percentage and says which sections are missing. It's the contract every later agent works from — and the scope boundary the orchestrator enforces. |
 | **3** | Approve it; `/project-plan` then writes 3-6 epics and 5-15 dependency-ordered tickets, each tracing to a plan item | A ticket that traces to nothing is out of scope by definition, and won't run. |
+| **3b** | *Large project only:* group the epics under 2-6 **initiatives** | Optional, and most projects skip it. Use it when the project holds several outcomes that are each independently worth shipping and each need multiple epics. |
 | **4** | Commit the approved starting point, then run:<br/>**`/orchestrator`** | The first commit gives worktrees a stable base; the orchestrator then builds one ticket per run. |
 
 ### Going further
@@ -191,6 +192,22 @@ Open your project in Claude Code or Codex and run these once, in order:
 > Already set up and a new version is out? `npx @mychiefmind/ai-maestro@latest update`
 > refreshes the kit in `maestro/` and re-renders — your config, brief, and board are kept
 > ([details](./docs/GETTING-STARTED.md#updating-the-kit)).
+
+### How the levels nest
+
+```
+Project plan   the boundary — nothing outside it may run
+└── Initiative an independently valuable outcome, delivered by several epics   ← optional
+    └── Epic   a demonstrable delivery outcome, made of tickets
+        └── Ticket  the executable, independently verifiable unit
+```
+
+**Initiatives are optional and most projects do not need them.** Reach for them only when a
+project holds several independently valuable outcomes that each need multiple epics — then each
+one gets its own outcome, boundary, metrics, and its own slice of the plan's requirements. A
+ticket never stores an initiative; it derives one through its epic, and a trace that crosses
+initiatives is refused. A project that defines none behaves exactly as it did before the layer
+existed.
 
 ## The core idea in one ticket
 

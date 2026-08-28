@@ -27,7 +27,14 @@ const CLONE_ENTRIES = ["agents", "skills", "render", "scripts", "board", "starte
 
 function cloneKit(tmp) {
   const kitClone = join(tmp, "project", "maestro");
-  const filter = (src) => !["node_modules", "dist", ".backups", ".git"].includes(basename(src));
+  // Mirror what `git clone` actually produces. This repo's own board data — data.json,
+  // archive.json, plan.json, plan.md, specs/, reports/ — is gitignored (see .gitignore), so a
+  // real clone never carries it. Copying it from the working tree made the fixture unlike any
+  // real checkout AND handed setup a live board to seed over, which is the destructive act
+  // itself: the tests passed only because it was a throwaway copy being destroyed.
+  const LOCAL_ONLY = ["data.json", "archive.json", "plan.json", "plan.md", "parked.json", "specs", "reports"];
+  const filter = (src) => !["node_modules", "dist", ".backups", ".git"].includes(basename(src))
+    && !(basename(dirname(src)) === "board" && LOCAL_ONLY.includes(basename(src)));
   for (const entry of CLONE_ENTRIES) {
     cpSync(join(KIT, entry), join(kitClone, entry), { recursive: true, filter });
   }

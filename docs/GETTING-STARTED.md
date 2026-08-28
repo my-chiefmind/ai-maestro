@@ -21,6 +21,8 @@ it afterwards.
   without touching your `main` checkout. AI Maestro creates and cleans these up for you.
 - **Rendering** — AI Maestro generates the agent/skill files for your project from a couple of
   config files. You edit the config; a script writes the rest.
+- **Initiative** — an optional grouping above epics, for a project with several independently
+  valuable outcomes. Most projects never use one; see [Initiatives](#initiatives-optional).
 
 ## Before you start
 
@@ -175,6 +177,50 @@ A brand-new project isn't refused everything.
 node maestro/scripts/plan-write.mjs status   --board maestro/board/data.json
 node maestro/scripts/plan-write.mjs coverage --board maestro/board/data.json  # which FRs no ticket covers
 ```
+
+### Initiatives (optional)
+
+**Skip this section unless your project is large.** Most go straight from plan to epics, and
+should — an initiative layer on a project that does not need one is a level to keep consistent
+and nothing else.
+
+```
+Project plan   the boundary — nothing outside it may run
+└── Initiative an independently valuable outcome, delivered by several epics
+    └── Epic   a demonstrable delivery outcome, made of tickets
+        └── Ticket  the executable, independently verifiable unit
+```
+
+Use initiatives when the answer to *"could we ship this half and stop, and it would still be
+worth something?"* is yes for two or more separable halves. Aim for **2-6**, each with a
+distinct outcome and boundary, and never named after a technical layer — "Customer onboarding"
+is an initiative, "Backend" is not.
+
+```bash
+node maestro/scripts/plan-write.mjs initiative-add --board maestro/board/data.json \
+  --name "Customer onboarding" \
+  --outcome "A customer can create and activate an account without contacting support" \
+  --metric "80% complete onboarding unaided"
+
+# Give an initiative a requirement. Leave a project-wide one unassigned.
+node maestro/scripts/plan-write.mjs edit FR-1 --initiative I-1 --board maestro/board/data.json
+
+# Put an epic in it — a ticket derives its initiative through its epic and never stores one.
+node maestro/scripts/board-write.mjs edit-epic e1 --initiative I-1 --board maestro/board/data.json
+```
+
+What the machinery then enforces:
+
+- An epic with no initiative **warns**, and its tickets are **not picked**. That is a
+  transitional state, not an error — so a board can be migrated one epic at a time.
+- A trace across initiatives is an **error**. An epic or ticket may serve a project-wide item or
+  one its own initiative owns. A `scope_exception` does not clear this: it is a decision about
+  project scope, not about who owns a requirement.
+- `coverage` and `status` then report delivery **per initiative**, derived from landed tickets.
+  Nothing declares a percentage.
+
+**Leave shared requirements project-wide.** "No PII in logs" applies to every initiative;
+assigning it to one counts its delivery there and understates the others.
 
 ## Running work in parallel — lanes
 

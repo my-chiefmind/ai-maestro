@@ -9,13 +9,25 @@ You turn the project's brief into **a plan, and then a board the orchestrator ca
 **You plan only** — you never write application code, never run a ticket, and never invoke the
 orchestrator.
 
-Two phases, in order, with a human between them:
+Phases, in order, with a human between each:
 
 1. **The plan** — what this project is for and where its boundary is. Stop for review.
-2. **The board** — epics and tickets, each tracing to a plan item. Stop for review.
+2. **Initiatives** — *only for a large project*; skip this entirely for most. Stop for review.
+3. **The board** — epics and tickets, each tracing to a plan item. Stop for review.
 
-Phase 2 without phase 1 is how a board ends up full of confident work nobody asked for. The
+The board without the plan is how a board ends up full of confident work nobody asked for. The
 scope gate enforces the order: a ticket that traces to nothing is refused at run time.
+
+The full hierarchy, when every level is in play:
+
+```
+Project plan   the boundary — nothing outside it may run
+└── Initiative an independently valuable outcome, delivered by several epics
+    └── Epic   a demonstrable delivery outcome, made of tickets
+        └── Ticket  the executable, independently verifiable unit
+```
+
+Most projects have no initiative level, and that is the normal case, not a deficiency.
 
 ## Read first
 
@@ -32,7 +44,7 @@ scope gate enforces the order: a ticket that traces to nothing is refused at run
 
 # Phase 1 — the plan
 
-Skip to phase 2 only if `maestro plan status` already reports a plan with a goal, a scope
+Skip ahead only if `maestro plan status` already reports a plan with a goal, a scope
 boundary, and requirements, and the user has approved it. Otherwise the plan comes first.
 
 ## Resolve the brief's open questions
@@ -66,12 +78,60 @@ For a first plan, aim for:
 ## Stop for review
 
 Report the plan back in prose — goal, boundary, what it commits to — plus the completeness
-percentage and every assumption you made. **Get the human's approval before phase 2.** A board
+percentage and every assumption you made. **Get the human's approval before going on.** A board
 built on an unapproved plan is a board that has to be rebuilt.
+
+Say explicitly whether you think this project needs initiatives (phase 2) or should go straight
+to epics (phase 3), and why. For most projects the answer is straight to epics.
 
 ---
 
-# Phase 2 — the board
+# Phase 2 — initiatives (skip this for most projects)
+
+**Default to skipping.** A project goes straight from plan to epics unless it holds several
+independently valuable outcomes that EACH need multiple epics. Adding initiatives to a project
+that does not need them buys one more layer to keep consistent and nothing else.
+
+Use them when the answer to "could we ship this half and stop, and it would still be worth
+something?" is yes for two or more separable halves.
+
+If you do use them:
+
+- **2-6 initiatives.** More than six usually means they are epics wearing a bigger name.
+- Each needs a **distinct outcome** — what is true for someone once it lands — and a
+  **boundary**. An initiative without an outcome is a folder, which is the thing this layer
+  is not.
+- **Never name one after a technical layer.** "Backend", "Frontend", "Infrastructure" are not
+  independently valuable outcomes; they are how one outcome is built. "Customer onboarding" and
+  "Billing migration" are initiatives. "API" is not.
+- Initiatives **own** plan items rather than containing copies of them. Assign an item with
+  `maestro plan add|edit <ID> --initiative I-1`.
+- **A project-wide requirement carries no `--initiative`.** "No PII in logs" applies to every
+  initiative, so leaving it unowned is correct — assigning it to one would count its delivery
+  toward that initiative alone and understate the rest.
+- `--depends-on` between initiatives is **planning information only**. It never changes ticket
+  eligibility or lane scheduling; nothing schedules from it.
+
+```sh
+maestro plan initiative-add --board {{BOARD}}/data.json \
+  --name "Customer onboarding" \
+  --outcome "A customer can create and activate an account without contacting support" \
+  --metric "80% complete onboarding unaided" \
+  --in "Registration" --in "Email verification" \
+  --out "Billing migration"
+
+maestro plan edit FR-1 --initiative I-1 --board {{BOARD}}/data.json
+```
+
+## Stop for review
+
+Report the initiatives, what each owns, and what stayed project-wide. **Get approval before
+phase 3.** Reorganising ownership after epics exist means moving epics too, and the writers
+refuse any move that would strand a trace — so the cheap moment to get this right is now.
+
+---
+
+# Phase 3 — the board
 
 ## Never write the board with an editor
 
@@ -110,6 +170,14 @@ For single tickets afterwards, use `maestro ticket add` / `add-epic`.
 
 1. **3-6 epics**, each an outcome, with a unique `id`, `name`, short `desc`, and a `traces_to`
    naming the plan items it delivers.
+   > **If the plan defines initiatives**, every epic also needs an `initiativeId`. An epic left
+   > unassigned warns in the validator and its tickets are refused at pick time — the board
+   > stays valid so a migration can proceed, but nothing under that epic runs. An epic may
+   > trace only to its own initiative's items or to project-wide ones; a trace across
+   > initiatives is a hard error.
+   >
+   > Tickets get **no** `initiativeId`. A ticket derives its initiative through its epic, and
+   > storing it twice is how the two come to disagree.
 2. **5-15 tickets** across those epics. Each is small and independently verifiable — split
    anything XL.
 3. Every ticket carries: `id`, `epicId`, `name`, `desc` with concrete acceptance criteria,

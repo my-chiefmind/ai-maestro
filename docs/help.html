@@ -228,6 +228,20 @@
            one that will never be done, recording why.</p>
       </div>
       <div class="note">
+        <h3>How the levels nest</h3>
+<pre>Project plan   <span class="c">the boundary — nothing outside it may run</span>
+└── Initiative <span class="c">an independently valuable outcome, several epics — OPTIONAL</span>
+    └── Epic   <span class="c">a demonstrable delivery outcome, made of tickets</span>
+        └── Ticket  <span class="c">the executable, independently verifiable unit</span></pre>
+        <p><b>Initiatives are optional, and most projects should not use them.</b> Reach for
+           them only when a project holds several outcomes that are each independently worth
+           shipping and each need multiple epics. Then each initiative owns its own slice of
+           the plan's requirements; anything that applies to all of them stays project-wide.
+           An epic belongs to one initiative and a ticket derives its initiative through its
+           epic — never storing one of its own. A project that defines none behaves exactly as
+           it did before the layer existed.</p>
+      </div>
+      <div class="note">
         <h3>Two commands do almost everything</h3>
         <p><code>/project-plan</code> writes the project plan, then turns it into epics and
            dependency-ordered tickets, stopping for your review at each step.

@@ -25,13 +25,55 @@ Two escape hatches, both deliberate: the gate stays off until the plan names rea
 project isn't refused everything; and a human can write a `scope_exception` on a ticket, which
 clears the gate and then shows up in every report so it can't quietly become the norm.
 
+## 0b. Initiatives — for a project too big for one plan-to-epics jump
+
+Most projects go straight from the plan to epics, and should. But a large one holds several
+outcomes that are each independently worth shipping, and each needs multiple epics to get
+there. That is what an **initiative** is for:
+
+```
+Project plan   the boundary — nothing outside it may run
+└── Initiative an independently valuable outcome, delivered by several epics
+    └── Epic   a demonstrable delivery outcome, made of tickets
+        └── Ticket  the executable, independently verifiable unit
+```
+
+An initiative is a **scoped mini-plan**, not a folder. It states an outcome, a boundary, and
+metrics, and it **owns** plan items — the same `D-`/`UC-`/`FR-`/`NFR-` ids, marked with an
+`initiativeId` rather than copied into a nested structure. That is what keeps every existing
+`traces_to` working and the ids globally unique.
+
+Three rules make it a real boundary instead of a label:
+
+- **An epic belongs to exactly one initiative; a ticket derives its initiative through its
+  epic.** A ticket never stores one. Two places to record the same fact is two places to
+  disagree.
+- **A trace may not cross initiatives.** An epic or ticket may serve a project-wide item or one
+  its own initiative owns — nothing else. This is an error, not a warning, and a
+  `scope_exception` does not clear it: an exception is a decision about project *scope*, not
+  about who owns a requirement.
+- **A project-wide requirement carries no initiative.** "No PII in logs" applies to all of
+  them; "search responds within 300 ms" belongs to the Search initiative. Assigning the first
+  to one initiative would count its delivery there and understate the rest.
+
+Initiatives change **nothing** about scheduling. `depends_on` between them is planning
+information the scheduler never reads; lanes still come from the epic, the area, `depends_on`
+and `touches`. And delivery per initiative is *derived* from the board — covered when a ticket
+traces to an owned item, done when a landed one does — never declared. There is no percentage
+anyone can type.
+
+A project that defines no initiative behaves exactly as it did before they existed: same
+completeness percentage, same coverage, same verdicts, same lanes. That is enforced by a test
+against the last release's own output, not by assertion.
+
 ## 1. The board is the source of truth
 
 Chat sessions are volatile. Context windows fill, sessions get reset, you run two in
 parallel and forget which did what. So **the durable state of the work lives in
 `board/data.json`**, not in any conversation.
 
-- **Epics** group related work into outcomes.
+- **Epics** group related work into outcomes, and — on a project that uses them — belong to an
+  initiative.
 - **Tickets** are the unit of delivery — one independently shippable thing.
 - `archive.json` records finished tickets and their verification evidence, so `data.json`
   only ever shows *live* work.
