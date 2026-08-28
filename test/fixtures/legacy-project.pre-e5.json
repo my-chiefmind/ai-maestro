@@ -1,0 +1,469 @@
+{
+  "_provenance": "Produced by running test/fixtures/legacy-project.json through scripts/plan-core.mjs, board-core.mjs and lane-core.mjs AS THEY WERE at v0.2.6, commit 2ad84f7 — the last release before the initiative layer (epic e5). DO NOT REGENERATE from current code: these values are the BEFORE side of the NFR-1 compatibility proof, and refreshing them from today's output turns test/legacy-compat.test.mjs into a tautology that passes no matter what broke. If a test here fails, the change under review broke backward compatibility.",
+  "gating": true,
+  "completeness": {
+    "percent": 94,
+    "earned": 17,
+    "possible": 18,
+    "sections": [
+      {
+        "key": "goal",
+        "label": "Goal",
+        "weight": 3,
+        "filled": true,
+        "counts": true,
+        "count": 1,
+        "detail": ""
+      },
+      {
+        "key": "scope",
+        "label": "Scope",
+        "weight": 3,
+        "filled": true,
+        "counts": true,
+        "count": 3,
+        "detail": ""
+      },
+      {
+        "key": "deliverables",
+        "label": "Deliverables",
+        "weight": 2,
+        "filled": true,
+        "counts": true,
+        "count": 1,
+        "detail": ""
+      },
+      {
+        "key": "useCases",
+        "label": "Use cases",
+        "weight": 2,
+        "filled": true,
+        "counts": true,
+        "count": 1,
+        "detail": ""
+      },
+      {
+        "key": "functional",
+        "label": "Functional requirements",
+        "weight": 3,
+        "filled": true,
+        "counts": true,
+        "count": 3,
+        "detail": "No verification method on FR-3."
+      },
+      {
+        "key": "nonFunctional",
+        "label": "Non-functional requirements",
+        "weight": 2,
+        "filled": true,
+        "counts": true,
+        "count": 2,
+        "detail": "NFR-1 are checked by judgment, not by a command (no `enforce`)."
+      },
+      {
+        "key": "milestones",
+        "label": "Milestones",
+        "weight": 1,
+        "filled": true,
+        "counts": true,
+        "count": 1,
+        "detail": ""
+      },
+      {
+        "key": "risks",
+        "label": "Risks & assumptions",
+        "weight": 1,
+        "filled": true,
+        "counts": true,
+        "count": 1,
+        "detail": ""
+      },
+      {
+        "key": "gaps",
+        "label": "Gaps",
+        "weight": 0,
+        "filled": true,
+        "counts": false,
+        "count": 3,
+        "detail": "1 open (1 required)."
+      },
+      {
+        "key": "openQuestions",
+        "label": "Open questions",
+        "weight": 0,
+        "filled": true,
+        "counts": false,
+        "count": 1,
+        "detail": ""
+      }
+    ],
+    "missing": [],
+    "requiredGaps": [
+      {
+        "id": "G-1",
+        "text": "Nothing about account deletion",
+        "need": "required",
+        "from": "repo-audit",
+        "status": "open"
+      }
+    ],
+    "optionalGaps": []
+  },
+  "coverage": [
+    {
+      "id": "D-1",
+      "prefix": "D",
+      "section": "deliverables",
+      "text": "A deployable web application",
+      "tickets": [],
+      "done": false
+    },
+    {
+      "id": "UC-1",
+      "prefix": "UC",
+      "section": "useCases",
+      "text": "creates and activates an account",
+      "tickets": [
+        "T-007"
+      ],
+      "done": false
+    },
+    {
+      "id": "FR-1",
+      "prefix": "FR",
+      "section": "functional",
+      "text": "A customer can verify their email address",
+      "tickets": [
+        "T-001"
+      ],
+      "done": false
+    },
+    {
+      "id": "FR-2",
+      "prefix": "FR",
+      "section": "functional",
+      "text": "A failed batch can be replayed",
+      "tickets": [
+        "T-002",
+        "T-900"
+      ],
+      "done": true
+    },
+    {
+      "id": "FR-3",
+      "prefix": "FR",
+      "section": "functional",
+      "text": "An operator can see why a batch failed",
+      "tickets": [
+        "T-008"
+      ],
+      "done": false
+    },
+    {
+      "id": "NFR-1",
+      "prefix": "NFR",
+      "section": "nonFunctional",
+      "text": "The onboarding API stays responsive",
+      "tickets": [],
+      "done": false
+    },
+    {
+      "id": "NFR-2",
+      "prefix": "NFR",
+      "section": "nonFunctional",
+      "text": "No personal data appears in logs",
+      "tickets": [],
+      "done": false
+    },
+    {
+      "id": "M-1",
+      "prefix": "M",
+      "section": "milestones",
+      "text": "First internal demo",
+      "tickets": [],
+      "done": false
+    }
+  ],
+  "verdicts": [
+    {
+      "id": "T-001",
+      "state": "in-scope",
+      "blocks": false,
+      "reason": "In scope via FR-1.",
+      "ids": [
+        "FR-1"
+      ],
+      "unknown": [],
+      "out": []
+    },
+    {
+      "id": "T-002",
+      "state": "in-scope",
+      "blocks": false,
+      "reason": "In scope via FR-2.",
+      "ids": [
+        "FR-2"
+      ],
+      "unknown": [],
+      "out": []
+    },
+    {
+      "id": "T-003",
+      "state": "untraced",
+      "blocks": true,
+      "reason": "Traces to nothing in the plan — it is out of scope until the plan covers it.",
+      "ids": [],
+      "unknown": [],
+      "out": []
+    },
+    {
+      "id": "T-004",
+      "state": "unknown",
+      "blocks": true,
+      "reason": "Traces only to FR-99, which the plan does not define as in-scope work.",
+      "ids": [
+        "FR-99"
+      ],
+      "unknown": [
+        "FR-99"
+      ],
+      "out": []
+    },
+    {
+      "id": "T-005",
+      "state": "out",
+      "blocks": true,
+      "reason": "Traces to OUT-1, which the plan lists as out of scope.",
+      "ids": [
+        "OUT-1"
+      ],
+      "unknown": [],
+      "out": [
+        "OUT-1"
+      ]
+    },
+    {
+      "id": "T-006",
+      "state": "exception",
+      "blocks": false,
+      "reason": "Scope exception on record: owner approved the spike",
+      "ids": [],
+      "unknown": [],
+      "out": []
+    },
+    {
+      "id": "T-007",
+      "state": "in-scope",
+      "blocks": false,
+      "reason": "In scope via UC-1.",
+      "ids": [
+        "UC-1"
+      ],
+      "unknown": [],
+      "out": []
+    },
+    {
+      "id": "T-008",
+      "state": "in-scope",
+      "blocks": false,
+      "reason": "In scope via FR-3.",
+      "ids": [
+        "FR-3"
+      ],
+      "unknown": [],
+      "out": []
+    }
+  ],
+  "validate": {
+    "errors": [],
+    "warnings": [
+      "T-006: model \"sonnet\" is below the \"infra\" floor — it will run on \"opus\".",
+      "T-003: Traces to nothing in the plan — it is out of scope until the plan covers it. The orchestrator will not pick it — add it to the plan (/plan-update) or set scope_exception.",
+      "T-004: Traces only to FR-99, which the plan does not define as in-scope work. The orchestrator will not pick it — add it to the plan (/plan-update) or set scope_exception.",
+      "T-005: Traces to OUT-1, which the plan lists as out of scope. The orchestrator will not pick it — add it to the plan (/plan-update) or set scope_exception.",
+      "T-006: running outside the plan on a scope exception — \"owner approved the spike\".",
+      "Epic e3: traces to nothing in the plan."
+    ],
+    "eligibleCount": 7,
+    "scopeBlocked": [
+      "T-003",
+      "T-004",
+      "T-005"
+    ]
+  },
+  "eligible": [
+    "T-001",
+    "T-002",
+    "T-006",
+    "T-008"
+  ],
+  "lanes": {
+    "lanes": [
+      {
+        "index": 1,
+        "tickets": [
+          {
+            "id": "T-001",
+            "epicId": "e1",
+            "name": "Verify email",
+            "area": "backend",
+            "priority": "P1",
+            "swag": "S",
+            "status": "todo",
+            "depends_on": [],
+            "agent_plan": [
+              "backend"
+            ],
+            "model": "sonnet",
+            "traces_to": [
+              "FR-1"
+            ],
+            "touches": [
+              "src/onboarding/**"
+            ]
+          }
+        ],
+        "reason": "",
+        "exclusive": false
+      },
+      {
+        "index": 2,
+        "tickets": [
+          {
+            "id": "T-002",
+            "epicId": "e2",
+            "name": "Replay DLQ",
+            "area": "backend",
+            "priority": "P2",
+            "swag": "M",
+            "status": "todo",
+            "depends_on": [
+              "T-900"
+            ],
+            "agent_plan": [
+              "backend"
+            ],
+            "model": "sonnet",
+            "traces_to": [
+              "FR-2"
+            ],
+            "touches": [
+              "src/ingest/**"
+            ]
+          },
+          {
+            "id": "T-008",
+            "epicId": "e2",
+            "name": "Overlapping touches",
+            "area": "backend",
+            "priority": "P1",
+            "swag": "M",
+            "status": "todo",
+            "depends_on": [],
+            "agent_plan": [
+              "backend"
+            ],
+            "model": "sonnet",
+            "traces_to": [
+              "FR-3"
+            ],
+            "touches": [
+              "src/ingest/**"
+            ]
+          }
+        ],
+        "reason": "T-008 and T-002 declare overlapping file scopes",
+        "exclusive": false
+      },
+      {
+        "index": 3,
+        "tickets": [
+          {
+            "id": "T-006",
+            "epicId": "e3",
+            "name": "Runs on an exception",
+            "area": "infra",
+            "priority": "P2",
+            "swag": "S",
+            "status": "todo",
+            "depends_on": [],
+            "agent_plan": [
+              "devops"
+            ],
+            "model": "sonnet",
+            "scope_exception": "owner approved the spike"
+          }
+        ],
+        "reason": "",
+        "exclusive": false
+      }
+    ],
+    "capped": true,
+    "max": 3
+  },
+  "startable": {
+    "start": [
+      {
+        "id": "T-001",
+        "epicId": "e1",
+        "name": "Verify email",
+        "area": "backend",
+        "priority": "P1",
+        "swag": "S",
+        "status": "todo",
+        "depends_on": [],
+        "agent_plan": [
+          "backend"
+        ],
+        "model": "sonnet",
+        "traces_to": [
+          "FR-1"
+        ],
+        "touches": [
+          "src/onboarding/**"
+        ]
+      },
+      {
+        "id": "T-002",
+        "epicId": "e2",
+        "name": "Replay DLQ",
+        "area": "backend",
+        "priority": "P2",
+        "swag": "M",
+        "status": "todo",
+        "depends_on": [
+          "T-900"
+        ],
+        "agent_plan": [
+          "backend"
+        ],
+        "model": "sonnet",
+        "traces_to": [
+          "FR-2"
+        ],
+        "touches": [
+          "src/ingest/**"
+        ]
+      },
+      {
+        "id": "T-006",
+        "epicId": "e3",
+        "name": "Runs on an exception",
+        "area": "infra",
+        "priority": "P2",
+        "swag": "S",
+        "status": "todo",
+        "depends_on": [],
+        "agent_plan": [
+          "devops"
+        ],
+        "model": "sonnet",
+        "scope_exception": "owner approved the spike"
+      }
+    ],
+    "exclusive": null,
+    "waiting": []
+  },
+  "vagueness": 0,
+  "planMd": "# Compat Fixture — project plan\n\n_Generated from `plan.json` — **do not edit this file**; edits are overwritten on the next write._\n_Edit it in the cockpit's **Plan** tab, or run `/plan-update`._\n\n**Plan completeness: 94%** — every section filled.\n\n> ⚠ 1 required gap(s) open against this plan. They hold the percentage down until accepted or declined.\n\n## Goal\n\nGive a small team one boring, verifiable way to ship.\n\n**Success metrics**\n\n- A change reaches production in under a day\n\n## Scope\n\n**In scope**\n\n- the web app\n- the ingest pipeline\n\n**Out of scope** — a ticket tracing to one of these is refused by the scope gate.\n\n- `OUT-1` native mobile apps\n\n## Deliverables\n\n- `D-1` A deployable web application\n\n## Use cases\n\n| Id | Use case | Actor |\n| --- | --- | --- |\n| `UC-1` | creates and activates an account | new customer |\n\n## Functional requirements\n\n| Id | Requirement | Verified by | Enforced by |\n| --- | --- | --- | --- |\n| `FR-1` | A customer can verify their email address | npm test -- onboarding | — |\n| `FR-2` | A failed batch can be replayed | npm test -- ingest | npm run check:idempotent |\n| `FR-3` | An operator can see why a batch failed | — | — |\n\n## Non-functional requirements\n\n| Id | Quality attribute | Budget | Verified by | Enforced by |\n| --- | --- | --- | --- | --- |\n| `NFR-1` | The onboarding API stays responsive | p95 below 300 ms | k6 run perf/onboarding.js | — |\n| `NFR-2` | No personal data appears in logs | Zero PII occurrences | — | npm run check:no-pii |\n\n## Milestones\n\n| Id | Milestone | Target |\n| --- | --- | --- |\n| `M-1` | First internal demo | end of discovery |\n\n## Risks & assumptions\n\n| Id | Risk | Mitigation |\n| --- | --- | --- |\n| `R-1` | The auth vendor's free tier may not cover launch | Price the paid tier first |\n\n## Open questions\n\n- `Q-1` Who owns support escalation?\n\n## Gaps raised against this plan\n\n**Required — the plan is incomplete without these**\n\n| Id | Gap | Raised by | Status |\n| --- | --- | --- | --- |\n| `G-1` | Nothing about account deletion | repo-audit | open |\n\n**Optional — worth considering**\n\n| Id | Gap | Raised by | Status |\n| --- | --- | --- | --- |\n| `G-2` | No retention period stated | data-model | accepted → `NFR-2` |\n| `G-3` | Consider a status page | scale | declined |\n"
+}

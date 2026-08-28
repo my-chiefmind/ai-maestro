@@ -71,6 +71,32 @@ maestro plan edit FR-3 --verify "npm run test:api"
 maestro plan remove FR-3                            # refuses if tickets trace to it
 ```
 
+### If the plan uses initiatives
+
+Most plans do not — see the `project-plan` skill for when they are worth it. When they are:
+
+```sh
+maestro plan initiative-add --name "..." --outcome "..." [--metric ...] [--in ...] [--out ...]
+maestro plan initiative-edit I-1 --outcome "..."    # list flags REPLACE, they do not append
+maestro plan initiative-remove I-1                  # refuses while anything references it
+maestro plan add functional --initiative I-1 --text "..." --verify "..."
+maestro plan edit FR-3 --initiative I-2             # move it
+maestro plan edit FR-3 --clear-initiative           # make it project-wide again
+```
+
+- **Leave a project-wide requirement unowned.** "No PII in logs" applies to every initiative;
+  assigning it to one counts its delivery toward that initiative alone and understates the
+  others. Omitting `--initiative` is the correct action, not an omission.
+- Ownership is legal on deliverables, use cases, functional and non-functional requirements,
+  milestones and risks. **Gaps and open questions stay project-level** and the CLI refuses the
+  flag there.
+- Changing ownership can invalidate the **board**: an epic or ticket in another initiative may
+  already trace the item you are moving. The command reads the board and refuses with every
+  conflicting id listed, before writing anything. Reassign or re-trace those first
+  (`maestro ticket edit-epic`, `maestro ticket retrace`).
+- `initiative-remove` has **no `--force`**, unlike `remove`. A dangling trace is a state the
+  orchestrator simply refuses; a dangling initiative is one nothing can mean.
+
 All take `--board {{BOARD}}/data.json`. Exit **2** means the plan moved under you — re-read and
 re-run the same command. Exit **1** means the request was wrong; retrying won't help.
 
@@ -87,6 +113,7 @@ re-run the same command. Exit **1** means the request was wrong; retrying won't 
 | **Invariants** | For any rule that must **never** be violated, add `--enforce "<command>"`. See below — this is the difference between a rule the agents are asked to honour and one they cannot break. |
 | **Milestones** | Only if they mean something. An invented three-phase roadmap is noise. |
 | **Risks** | What could sink this, and what's being assumed without having been checked. |
+| **Initiatives** | Only for a project with several independently valuable outcomes, 2-6 of them, each with a distinct outcome and boundary, never named after a technical layer. Progress is derived from the board and shown read-only — it is never something you write. |
 
 Don't pad. Six real requirements beat twenty generated ones, and every entry you invent is
 something a ticket may later be gated against.

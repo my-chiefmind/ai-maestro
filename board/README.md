@@ -6,7 +6,9 @@ is scoped against:
 - **`plan.json`** — the **project plan**: goal, scope, deliverables, use cases, functional and
   non-functional requirements, milestones, risks, and gaps other skills raised against it. Every
   item carries a stable id (`D-`, `UC-`, `FR-`, `NFR-`, `M-`, `OUT-`) that a ticket's
-  `traces_to` points at. See [Plan and scope](#plan-and-scope) below.
+  `traces_to` points at. A large project may also group its epics under **initiatives**
+  (`I-`) — see [Initiatives](#initiatives) below. Most do not.
+  See [Plan and scope](#plan-and-scope).
 - **`plan.md`** — a **generated** readable mirror of `plan.json`, rewritten on every plan write.
   Never edit it: your changes are discarded on the next write.
 - **`data.json`** — live work: epics and unresolved tickets, with dependency order.
@@ -126,6 +128,37 @@ A ticket is out of scope when it traces to nothing, to an id the plan doesn't de
 
 The gate is **off** until the plan names at least one deliverable, use case, or requirement — a
 project one minute past `maestro setup` isn't refused everything.
+
+## Initiatives
+
+Optional, and absent from most projects. When a project holds several outcomes that are each
+independently worth shipping and each need multiple epics, the plan can name **initiatives**:
+
+```
+Project plan   the boundary — nothing outside it may run
+└── Initiative an independently valuable outcome, delivered by several epics
+    └── Epic   a demonstrable delivery outcome, made of tickets
+        └── Ticket  the executable, independently verifiable unit
+```
+
+An initiative states an outcome, a boundary and metrics, and **owns** plan items — the same
+`D-`/`UC-`/`FR-`/`NFR-`/`M-` ids, tagged with `initiativeId`, never copied into a nested
+structure. Items left untagged are **project-wide** and apply to every initiative.
+
+| Rule | Why |
+| --- | --- |
+| An epic carries `initiativeId`; a ticket does not. | A ticket derives its initiative through its epic. Recording it twice is how the two come to disagree. |
+| An epic or ticket may trace only to a project-wide item or one its own initiative owns. | Otherwise "which initiative delivered this?" has two answers. Cross-initiative traces are **errors**, and a `scope_exception` does not clear one — that is a decision about project scope, not about ownership. |
+| An unassigned epic **warns**, and its tickets are **blocked at pick time**. | A board gains its first initiative with every epic unassigned. Erroring would make it invalid at the one moment nothing could fix it, since the plan CLI cannot write a board. |
+| `depends_on` between initiatives is planning information only. | Nothing schedules from it. Lanes still come from the epic, the area, `depends_on` and `touches`. |
+| Delivery per initiative is derived, never declared. | Covered when a ticket traces to an owned item; done when a landed one does. There is no percentage anyone can type. |
+
+Write them through `maestro plan initiative-add|initiative-edit|initiative-remove`, and assign
+epics with `maestro ticket edit-epic <id> --initiative <I-n>`. `initiative-remove` refuses while
+anything still references the initiative, and offers no `--force`.
+
+**A project that defines no initiative behaves exactly as it did before they existed** — same
+completeness percentage, same coverage, same scope verdicts, same lane assignment.
 
 See [`../docs/METHOD.md`](../docs/METHOD.md) for the why, and
 [`board.schema.json`](./board.schema.json) / [`plan.schema.json`](./plan.schema.json) for the

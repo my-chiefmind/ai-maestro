@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync, statSync, realpathSync } from "fs";
-import { resolve, dirname, join, relative, basename, sep, isAbsolute } from "path";
+import { resolve, dirname, join, relative, basename, extname, sep, isAbsolute } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createInterface } from "readline";
@@ -749,15 +749,67 @@ ${existsSync(boardData)
  * install, no server — the core kit is dependency-free. The cockpit UI is optional.
  * Idempotent: re-running detects an existing config and does nothing.
  */
+/**
+ * What a board directory holds that a starter seed would destroy, as human-readable lines.
+ * Empty when the directory is absent, or holds only files a starter itself would have written.
+ *
+ * "Real content" deliberately includes sample-flagged items being ABSENT rather than present:
+ * a board is safe to overwrite when it is empty or still entirely the starter's own placeholder
+ * epic and ticket. Anything else — one real ticket, one archived ticket, a plan with a goal — is
+ * someone's work.
+ */
+function liveBoardContent(boardDir) {
+  const found = [];
+  const read = (f) => {
+    try { return JSON.parse(readFileSync(join(boardDir, f), "utf8")); } catch { return null; }
+  };
+  const data = read("data.json");
+  if (data) {
+    const tickets = (data.tickets ?? []).filter((t) => !t.sample);
+    const epics = (data.epics ?? []).filter((e) => !e.sample);
+    if (tickets.length) found.push(`data.json — ${tickets.length} ticket(s): ${tickets.slice(0, 8).map((t) => t.id).join(", ")}${tickets.length > 8 ? "…" : ""}`);
+    else if (epics.length) found.push(`data.json — ${epics.length} epic(s): ${epics.map((e) => e.id).join(", ")}`);
+  }
+  const archive = read("archive.json");
+  const archived = (archive?.tickets ?? []).filter((t) => !t.sample);
+  // The archive is the irreplaceable one: it is the only record of work that is finished, and
+  // nothing regenerates it.
+  if (archived.length) found.push(`archive.json — ${archived.length} completed ticket(s): ${archived.slice(0, 8).map((t) => t.id).join(", ")}${archived.length > 8 ? "…" : ""}`);
+  const plan = read("plan.json");
+  const sections = plan?.sections ?? {};
+  const planItems = ["deliverables", "useCases", "functional", "nonFunctional", "milestones", "risks"]
+    .reduce((n, k) => n + (Array.isArray(sections[k]) ? sections[k].length : 0), 0);
+  if (planItems || String(sections.goal?.text ?? "").trim()) {
+    found.push(`plan.json — a project plan${planItems ? ` with ${planItems} item(s)` : ""}`);
+  }
+  return found;
+}
+
+/** Copy a board file aside before it is replaced. Best-effort: never blocks the caller. */
+function backupBoardFile(target) {
+  try {
+    if (!existsSync(target)) return;
+    const dir = join(dirname(target), ".backups");
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    cpSync(target, join(dir, `${basename(target, extname(target))}.${stamp}${extname(target)}`));
+  } catch { /* a backup that cannot be written must not stop the caller reporting the real problem */ }
+}
+
 async function setup(args) {
   // Under npx / an npm install the package copy is ephemeral — vendor the kit into
   // <cwd>/maestro/ first, then set that copy up exactly like the cloned-kit flow.
   let kit = KIT_ROOT;
+  // Whether THIS run put the board there. vendorKit copies the kit's own board/ wholesale, so
+  // in the packaged flow the "existing" board is a copy this invocation made seconds ago — not
+  // the user's work, and the starter seed below is exactly what should replace it.
+  let vendoredNow = false;
   if (IS_PACKAGED) {
     kit = join(process.cwd(), "maestro");
     if (!existsSync(join(kit, "config.json"))) {
       console.log(`→ Copying the AI Maestro kit into ${relative(process.cwd(), kit) || kit}/ …`);
       vendorKit(kit);
+      vendoredNow = true;
     }
   } else {
     // Not packaged: this is the "clone ai-maestro into your repo as maestro/, then run
@@ -795,6 +847,38 @@ async function setup(args) {
   // already-configured project — decides below whether the board gets reseeded from the
   // starter or left alone as the project's own live data.
   const fresh = !existsSync(configPath);
+  // Only a run that would seed can destroy a board, and only content this run did not itself
+  // place there can be the user's.
+  if (fresh && !vendoredNow) {
+    // REFUSE TO SEED OVER A LIVE BOARD, even though `fresh` says this is a first setup.
+    //
+    // Those two facts are decided by different files: freshness by config.json, destruction by
+    // board/. On a kit checkout that has a real board and no root config.json they disagree —
+    // and on 2026-08-28 that combination silently replaced this repo's own board and its entire
+    // archive with the starter sample. No prompt, no backup, and `archive.json` had no backup
+    // path at all. Same class of failure as T-001 ("maestro update destroys user content in
+    // board/"), reached through a different door.
+    //
+    // The test is what is ABOUT to be overwritten, not what config.json implies.
+    const boardDir = join(kit, "board");
+    const occupied = liveBoardContent(boardDir);
+    if (occupied.length) {
+      console.error(`✗ Refusing to seed a starter board over work that is already here.
+
+  ${relative(process.cwd(), boardDir) || boardDir}/ holds real content:
+${occupied.map((l) => `    • ${l}`).join("\n")}
+
+  Setup treats this as a first-time run because there is no ${kitName}/config.json, but seeding
+  the starter board would destroy the above. Those are two different questions, and this is the
+  one that matters.
+
+  If this project is already running AI Maestro, you do not need setup. If you really do want a
+  starter board here, move or delete the files above first — deliberately, so the loss is a
+  decision rather than a side effect.`);
+      process.exit(2);
+    }
+  }
+
   if (!fresh && !has(args, "force")) {
     console.log(`✓ Already set up. Edit ${kitName}/context.md, then run 'npm run sync' from the ${kitName}/ folder.`);
     return;
@@ -829,7 +913,14 @@ async function setup(args) {
   if (fresh) {
     for (const f of ["data.json", "archive.json", "plan.json", "plan.md"]) {
       const starterFile = join(starter, "board", f);
-      if (existsSync(starterFile)) cpSync(starterFile, join(kit, "board", f));
+      if (!existsSync(starterFile)) continue;
+      const target = join(kit, "board", f);
+      // Belt and braces: anything replaced here is copied aside first. liveBoardContent above
+      // should already have refused, so reaching this with a non-empty file means the emptiness
+      // test has a hole — and a backup is the difference between finding that out and losing
+      // the data to it.
+      backupBoardFile(target);
+      cpSync(starterFile, target);
     }
   }
 

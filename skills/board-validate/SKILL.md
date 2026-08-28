@@ -44,6 +44,24 @@ Validate whenever the board was hand-edited or a run behaves unexpectedly.
   orchestrator refuses to pick a scope-blocked ticket. Fix it by adding the requirement
   (`/plan-update`) or by having a human write a `scope_exception` with the reason. A project
   with no plan has the gate off, and the validator says so.
+- **Initiative ownership** — only once `{{BOARD}}/plan.json` defines at least one initiative;
+  a plan without them changes nothing here. Then:
+  - a live epic with no `initiativeId` **warns**, and its tickets are **refused at pick time**.
+    That split is deliberate: a board gains its first initiative with every epic unassigned, and
+    erroring would make it invalid at exactly the moment nothing could fix it — the plan CLI
+    cannot write a board. So the work stops without the board breaking. Assign it with
+    `maestro ticket edit-epic <id> --initiative <I-n>`.
+  - an epic naming an initiative the plan does not define is an **error**, whether or not the
+    plan still defines any initiatives at all. Deleting the last one does not make a dangling
+    reference acceptable, it just makes it easier to miss.
+  - a trace that crosses initiatives is an **error**, for epics and tickets alike. An epic or
+    ticket may trace to a **project-wide** item (one no initiative owns) or to one owned by its
+    **own** initiative. Nothing else.
+  - a `scope_exception` does **not** clear an ownership error. It is a human's decision about
+    project *scope*; it says nothing about which initiative owns a requirement.
+  - archived epics and archived tickets are checked too — a landed ticket's traces are what
+    per-initiative delivery is computed from, so a dangling one there corrupts the reporting
+    rather than merely being untidy.
 - **Plan coverage** — the validator lists plan items no ticket is working. An uncovered `FR-`
   is either a missing ticket or a requirement that shouldn't have been in the plan.
 - **Human gates** — the validator warns when a `human_gate` value isn't in

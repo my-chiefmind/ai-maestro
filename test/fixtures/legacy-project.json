@@ -1,0 +1,55 @@
+{
+  "_comment": "An initiative-free project, deliberately exercising every surface NFR-1 promises is unchanged: a gating plan with all sections, gaps in three states, tickets in every scope state (in-scope, untraced, dangling trace, OUT-, exception), a dependency chain, an archived epic + ticket, an area model floor, and touches both disjoint and overlapping so lane assignment has real work to do.",
+  "plan": {
+    "planVersion": 1,
+    "sections": {
+      "goal": { "text": "Give a small team one boring, verifiable way to ship.", "metrics": ["A change reaches production in under a day"] },
+      "scope": { "in": ["the web app", "the ingest pipeline"], "out": [{ "id": "OUT-1", "text": "native mobile apps" }] },
+      "deliverables": [{ "id": "D-1", "text": "A deployable web application" }],
+      "useCases": [{ "id": "UC-1", "actor": "new customer", "text": "creates and activates an account" }],
+      "functional": [
+        { "id": "FR-1", "text": "A customer can verify their email address", "verify": "npm test -- onboarding" },
+        { "id": "FR-2", "text": "A failed batch can be replayed", "verify": "npm test -- ingest", "enforce": "npm run check:idempotent" },
+        { "id": "FR-3", "text": "An operator can see why a batch failed" }
+      ],
+      "nonFunctional": [
+        { "id": "NFR-1", "text": "The onboarding API stays responsive", "budget": "p95 below 300 ms", "verify": "k6 run perf/onboarding.js" },
+        { "id": "NFR-2", "text": "No personal data appears in logs", "budget": "Zero PII occurrences", "enforce": "npm run check:no-pii" }
+      ],
+      "milestones": [{ "id": "M-1", "text": "First internal demo", "target": "end of discovery" }],
+      "risks": [{ "id": "R-1", "text": "The auth vendor's free tier may not cover launch", "mitigation": "Price the paid tier first" }],
+      "gaps": [
+        { "id": "G-1", "text": "Nothing about account deletion", "need": "required", "from": "repo-audit", "status": "open" },
+        { "id": "G-2", "text": "No retention period stated", "need": "optional", "from": "data-model", "status": "accepted", "resolvedAs": "NFR-2" },
+        { "id": "G-3", "text": "Consider a status page", "need": "optional", "from": "scale", "status": "declined" }
+      ],
+      "openQuestions": [{ "id": "Q-1", "text": "Who owns support escalation?" }]
+    }
+  },
+  "board": {
+    "epics": [
+      { "id": "e1", "name": "Onboarding", "traces_to": ["D-1", "UC-1"] },
+      { "id": "e2", "name": "Ingest", "traces_to": ["FR-2"] },
+      { "id": "e3", "name": "Untraced epic" }
+    ],
+    "tickets": [
+      { "id": "T-001", "epicId": "e1", "name": "Verify email", "area": "backend", "priority": "P1", "swag": "S", "status": "todo", "depends_on": [], "agent_plan": ["backend"], "model": "sonnet", "traces_to": ["FR-1"], "touches": ["src/onboarding/**"] },
+      { "id": "T-002", "epicId": "e2", "name": "Replay DLQ", "area": "backend", "priority": "P2", "swag": "M", "status": "todo", "depends_on": ["T-900"], "agent_plan": ["backend"], "model": "sonnet", "traces_to": ["FR-2"], "touches": ["src/ingest/**"] },
+      { "id": "T-003", "epicId": "e1", "name": "Untraced work", "area": "frontend", "priority": "P2", "swag": "S", "status": "todo", "depends_on": [], "agent_plan": ["frontend"], "model": "sonnet" },
+      { "id": "T-004", "epicId": "e2", "name": "Traces a deleted requirement", "area": "backend", "priority": "P3", "swag": "S", "status": "todo", "depends_on": [], "agent_plan": ["backend"], "model": "sonnet", "traces_to": ["FR-99"] },
+      { "id": "T-005", "epicId": "e3", "name": "Explicitly out of scope", "area": "docs", "priority": "P3", "swag": "XS", "status": "todo", "depends_on": [], "agent_plan": ["docs"], "model": "haiku", "traces_to": ["OUT-1"] },
+      { "id": "T-006", "epicId": "e3", "name": "Runs on an exception", "area": "infra", "priority": "P2", "swag": "S", "status": "todo", "depends_on": [], "agent_plan": ["devops"], "model": "sonnet", "scope_exception": "owner approved the spike" },
+      { "id": "T-007", "epicId": "e1", "name": "Blocked on review", "area": "backend", "priority": "P2", "swag": "S", "status": "review", "depends_on": ["T-001"], "agent_plan": ["backend"], "model": "sonnet", "traces_to": ["UC-1"] },
+      { "id": "T-008", "epicId": "e2", "name": "Overlapping touches", "area": "backend", "priority": "P1", "swag": "M", "status": "todo", "depends_on": [], "agent_plan": ["backend"], "model": "sonnet", "traces_to": ["FR-3"], "touches": ["src/ingest/**"] }
+    ]
+  },
+  "archive": {
+    "epics": [{ "id": "e9", "name": "Landed groundwork", "traces_to": ["D-1"] }],
+    "tickets": [{ "id": "T-900", "epicId": "e9", "name": "Scaffold the pipeline", "status": "done", "traces_to": ["FR-2"], "area": "backend" }]
+  },
+  "config": {
+    "model": { "default": "sonnet", "floors": { "infra": "opus", "docs": "haiku" } },
+    "orchestration": { "maxWorktrees": 3 },
+    "serialFiles": ["package-lock.json", "**/migrations/**"]
+  }
+}

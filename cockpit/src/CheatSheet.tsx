@@ -32,7 +32,7 @@ const STEPS: Step[] = [
   {
     n: 2,
     title: 'Plan the work',
-    body: <>Run <Code>/project-plan</Code> (or paste the prompt below). It writes the project plan first — goal, scope, deliverables, use cases, requirements — then turns it into epics and dependency-ordered tickets, stopping for your review at each step. Fill any section later in the <b>Plan</b> tab or with <Code>/plan-update</Code>.</>,
+    body: <>Run <Code>/project-plan</Code> (or paste the prompt below). It writes the project plan first — goal, scope, deliverables, use cases, requirements — then turns it into epics and dependency-ordered tickets, stopping for your review at each step. Fill any section later in the <b>Plan</b> tab or with <Code>/plan-update</Code>. A large project can group its epics under <b>initiatives</b> in between; most projects skip that.</>,
   },
   {
     n: 3,
@@ -51,6 +51,7 @@ const COMMANDS: Cmd[] = [
   { cmd: 'npm run sync', what: 'Re-render .claude/ after editing context.md or the board' },
   { cmd: 'npm run validate', what: "Check the board's integrity and its scope against the plan" },
   { cmd: 'npm run plan -- status', what: 'How complete the project plan is, and what is thin' },
+  { cmd: 'npm run plan -- coverage', what: 'Plan items vs the tickets working them, per initiative' },
   { cmd: 'npm run board', what: 'Open this visual board' },
 ];
 
