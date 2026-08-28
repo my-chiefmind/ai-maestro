@@ -352,3 +352,208 @@ test("a scheduled board still reports what the plan is holding back", () => {
   assert.match(out, /Starting now: T-1/);
   assert.match(out, /never scheduled: T-2/);
 });
+
+// ── Initiatives through the plan CLI (T-025) ────────────────────────────────────
+//
+// Two things here are load-bearing beyond "the flags work". First, the REVERSE PREFLIGHT: a
+// plan write can invalidate the board, because plan.json and data.json are separate files
+// behind separate locks with no cross-file transaction. Second, `initiative-remove` has no
+// --force, unlike every other removal in this CLI — a dangling trace is a state the
+// orchestrator simply refuses, while a dangling initiative is one nothing can mean.
+
+/** Seed a plan with I-1/I-2, FR-1 (I-1), FR-2 (I-2), and a project-wide NFR-1. */
+function seedInitiatives(p) {
+  p.plan(["init"]);
+  p.plan(["set-goal", "--text", "Ship the thing.", "--metric", "10 users"]);
+  p.plan(["initiative-add", "--name", "Onboarding", "--outcome", "Customers activate", "--metric", "80% self-serve", "--in", "Registration", "--out", "Billing"]);
+  p.plan(["initiative-add", "--name", "Billing", "--outcome", "Invoices reconcile"]);
+  p.plan(["add", "functional", "--initiative", "I-1", "--text", "Verify email", "--verify", "npm test"]);
+  p.plan(["add", "functional", "--initiative", "I-2", "--text", "Reconcile ledger", "--verify", "npm test"]);
+  p.plan(["add", "nonFunctional", "--text", "No PII in logs", "--budget", "zero"]);
+}
+
+/** Put an epic + ticket on the board, both in I-1 and tracing FR-1. */
+function seedBoardUnder(p, epic = { id: "e1", initiativeId: "I-1", traces_to: ["FR-1"] }) {
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({
+    epics: [{ name: "Registration", ...epic }],
+    tickets: [{ id: "T-001", epicId: epic.id, name: "Verify email", area: "backend", priority: "P2", swag: "S", status: "todo", agent_plan: ["backend"], model: "sonnet", depends_on: [], traces_to: ["FR-1"] }],
+  }, null, 2));
+}
+
+test("initiative-add allocates max-plus-one and stores every repeatable flag", () => {
+  const p = project();
+  seedInitiatives(p);
+  const [i1, i2] = p.read().sections.initiatives;
+  assert.equal(i1.id, "I-1");
+  assert.equal(i2.id, "I-2");
+  assert.deepEqual(i1.metrics, ["80% self-serve"]);
+  assert.deepEqual(i1.scope, { in: ["Registration"], out: ["Billing"] });
+  assert.deepEqual(i1.depends_on, []);
+});
+
+test("an initiative needs an outcome, not just a name", () => {
+  const p = project();
+  p.plan(["init"]);
+  assert.throws(() => p.plan(["initiative-add", "--name", "Nameless"]), /--outcome is required/);
+  assert.throws(() => p.plan(["initiative-add", "--outcome", "x"]), /--name is required/);
+  assert.equal(p.read().sections.initiatives.length, 0);
+});
+
+test("initiative-edit replaces list flags rather than appending", () => {
+  const p = project();
+  seedInitiatives(p);
+  p.plan(["initiative-edit", "I-1", "--metric", "a", "--metric", "b"]);
+  assert.deepEqual(p.read().sections.initiatives[0].metrics, ["a", "b"]);
+  p.plan(["initiative-edit", "I-1", "--metric", "c"]);
+  assert.deepEqual(p.read().sections.initiatives[0].metrics, ["c"], "replace — an appending flag could never remove one");
+});
+
+test("a dependency must exist, may not be the initiative itself, and leaves no stale lock", () => {
+  const p = project();
+  seedInitiatives(p);
+  assert.throws(() => p.plan(["initiative-edit", "I-2", "--depends-on", "I-2"]), /cannot depend on itself/);
+  assert.throws(() => p.plan(["initiative-edit", "I-2", "--depends-on", "I-9"]), /is not an initiative in this plan/);
+  // These checks run INSIDE the board lock. Rejecting with process.exit would skip the finally
+  // that releases it and strand every later writer for the full lock timeout.
+  assert.ok(!existsSync(join(p.boardDir, ".board.lock")), "the lock was released on rejection");
+  p.plan(["initiative-edit", "I-2", "--depends-on", "I-1"]);
+  assert.deepEqual(p.read().sections.initiatives[1].depends_on, ["I-1"]);
+});
+
+test("plan items can be assigned, moved and cleared", () => {
+  const p = project();
+  seedInitiatives(p);
+  assert.equal(p.read().sections.functional[0].initiativeId, "I-1");
+  p.plan(["edit", "FR-1", "--initiative", "I-2"]);
+  assert.equal(p.read().sections.functional[0].initiativeId, "I-2");
+  p.plan(["edit", "FR-1", "--clear-initiative"]);
+  assert.equal(p.read().sections.functional[0].initiativeId, undefined, "cleared means project-wide");
+  assert.throws(() => p.plan(["edit", "FR-1", "--initiative", "I-2", "--clear-initiative"]), /contradict each other/);
+  assert.throws(() => p.plan(["edit", "FR-1", "--initiative", "I-9"]), /does not define initiative I-9/);
+});
+
+test("ownership is refused on sections that stay project-level", () => {
+  const p = project();
+  seedInitiatives(p);
+  assert.throws(() => p.plan(["add", "openQuestions", "--text", "Who owns support?", "--initiative", "I-1"]),
+    /does not apply to "openQuestions"/);
+});
+
+test("REVERSE PREFLIGHT: a plan write that would strand a board trace is refused", () => {
+  const p = project();
+  seedInitiatives(p);
+  seedBoardUnder(p); // e1 + T-001 are in I-1 and trace FR-1, which I-1 owns
+  const before = readFileSync(join(p.boardDir, "plan.json"), "utf8");
+
+  let err;
+  try { p.plan(["edit", "FR-1", "--initiative", "I-2"]); } catch (e) { err = e; }
+  assert.ok(err, "moving FR-1 to I-2 strands both the epic and the ticket");
+  const msg = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+  // Every conflicting id, not just the first: one run has to tell the user the whole job.
+  assert.match(msg, /2 board reference\(s\) would break/);
+  assert.match(msg, /Epic e1 belongs to initiative I-1, but traces to FR-1 owned by I-2/);
+  assert.match(msg, /T-001 belongs to initiative I-1 through epic e1, but traces to FR-1 owned by I-2/);
+  assert.match(msg, /nothing has been written/);
+  assert.equal(readFileSync(join(p.boardDir, "plan.json"), "utf8"), before, "the plan is byte-identical");
+});
+
+test("the preflight allows a move that leaves the board consistent", () => {
+  const p = project();
+  seedInitiatives(p);
+  seedBoardUnder(p, { id: "e1", initiativeId: "I-2", traces_to: [] });
+  // T-001 still traces FR-1 through an I-2 epic, so re-home FR-1 to match: now consistent.
+  p.plan(["edit", "FR-1", "--initiative", "I-2"]);
+  assert.equal(p.read().sections.functional[0].initiativeId, "I-2");
+});
+
+test("the preflight sees ARCHIVED epics too", () => {
+  const p = project();
+  seedInitiatives(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({ epics: [], tickets: [] }));
+  writeFileSync(join(p.boardDir, "archive.json"), JSON.stringify({
+    epics: [{ id: "eA", initiativeId: "I-1", name: "Landed", traces_to: ["FR-1"] }], tickets: [],
+  }));
+  assert.throws(() => p.plan(["edit", "FR-1", "--initiative", "I-2"]), /archive: Epic eA belongs to initiative I-1/);
+});
+
+test("initiative-remove refuses while anything still references it, and offers no --force", () => {
+  const p = project();
+  seedInitiatives(p);
+  seedBoardUnder(p);
+  p.plan(["initiative-edit", "I-2", "--depends-on", "I-1"]);
+
+  let err;
+  try { p.plan(["initiative-remove", "I-1"]); } catch (e) { err = e; }
+  const msg = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+  assert.match(msg, /plan item FR-1/);
+  assert.match(msg, /initiative I-2 depends_on it/);
+  assert.match(msg, /epic e1/);
+  assert.match(msg, /There is no --force/);
+  // --force must not be a hidden escape hatch either.
+  assert.throws(() => p.plan(["initiative-remove", "I-1", "--force"]), /still referenced by/);
+  assert.equal(p.read().sections.initiatives.length, 2);
+});
+
+test("initiative-remove succeeds once nothing references it", () => {
+  const p = project();
+  seedInitiatives(p);
+  p.plan(["edit", "FR-2", "--clear-initiative"]);
+  p.plan(["initiative-remove", "I-2"]);
+  assert.deepEqual(p.read().sections.initiatives.map((i) => i.id), ["I-1"]);
+});
+
+test("initiative ops honour --dry-run, --json and --expect-version", () => {
+  const p = project();
+  seedInitiatives(p);
+  const before = readFileSync(join(p.boardDir, "plan.json"), "utf8");
+
+  p.plan(["initiative-add", "--name", "Ghost", "--outcome", "never written", "--dry-run"]);
+  assert.equal(readFileSync(join(p.boardDir, "plan.json"), "utf8"), before, "dry-run writes nothing");
+
+  const r = p.planJson(["initiative-edit", "I-1", "--name", "Renamed"]);
+  assert.equal(r.ok, true);
+  assert.equal(r.id, "I-1");
+
+  let err;
+  try { p.plan(["initiative-edit", "I-1", "--name", "Stale", "--expect-version", "sha256:deadbeef"]); } catch (e) { err = e; }
+  assert.equal(err.status, 2, "contended, so the caller re-reads and retries");
+});
+
+test("plan.md regenerates in the same write and shows the initiative structure", () => {
+  const p = project();
+  seedInitiatives(p);
+  const md = readFileSync(join(p.boardDir, "plan.md"), "utf8");
+  assert.match(md, /## Project-wide plan items/);
+  assert.match(md, /### `I-1` Onboarding/);
+  assert.match(md, /### `I-2` Billing/);
+  assert.ok(md.indexOf("NFR-1") < md.indexOf("### `I-1`"), "project-wide items render before the initiatives");
+});
+
+test("coverage and status report per-initiative delivery", () => {
+  const p = project();
+  seedInitiatives(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({ epics: [], tickets: [] }));
+  writeFileSync(join(p.boardDir, "archive.json"), JSON.stringify({
+    epics: [], tickets: [{ id: "T-900", status: "done", traces_to: ["FR-1"] }],
+  }));
+  const cov = p.planJson(["coverage"]);
+  const i1 = cov.initiatives.find((i) => i.id === "I-1");
+  assert.equal(i1.percent, 100, "FR-1 is I-1's only scored item and a landed ticket delivered it");
+  assert.equal(cov.initiatives.find((i) => i.id === "I-2").percent, 0);
+  assert.equal(cov.projectWide.total, 1, "NFR-1 is counted once, outside every initiative");
+
+  const human = p.plan(["coverage"]);
+  assert.match(human, /I-1 Onboarding — 100% delivered/);
+  assert.match(human, /Project-wide — 0% delivered/);
+  assert.match(p.plan(["status"]), /Initiatives — delivery is derived from the board/);
+});
+
+test("a plan with no initiatives reports exactly as it did before", () => {
+  const p = project();
+  p.plan(["init"]);
+  seedGatingPlan(p);
+  const cov = p.planJson(["coverage"]);
+  assert.deepEqual(cov.initiatives, []);
+  assert.equal(cov.projectWide, null);
+  assert.ok(!p.plan(["status"]).includes("Initiatives —"), "no empty initiative block on a legacy plan");
+});
