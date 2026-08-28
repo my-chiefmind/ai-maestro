@@ -105,7 +105,19 @@ export function initiativeModeActive(plan) {
 
 /** Epics addressable by a ticket: live and archived, since a ticket's epic may have landed. */
 function epicIndex(data, archivedEpics) {
-  return new Map([...(data?.epics ?? []), ...archivedEpics].map((e) => [e.id, e]));
+  // ARCHIVED FIRST, so a live epic of the same id OVERWRITES it. `maestro ticket archive` copies
+  // a ticket's epic into archive.epics to keep the reference alive if the live epic is ever
+  // removed, which means an epic routinely exists in both files. When it does, the live record
+  // is the current one by definition — the archived entry is a shadow of it, not a second
+  // record. Built the other way round the shadow won, and an archived ticket derived a stale
+  // initiative from an epic that had since been reassigned (T-031).
+  return new Map([...archivedEpics, ...(data?.epics ?? [])].map((e) => [e.id, e]));
+}
+
+/** Ids of archived epics that are shadows of a live epic — the live record is authoritative. */
+function shadowedEpicIds(data, archivedEpics) {
+  const live = new Set((data?.epics ?? []).map((e) => e.id));
+  return new Set(archivedEpics.filter((e) => live.has(e.id)).map((e) => e.id));
 }
 
 /**
@@ -214,11 +226,12 @@ export function crossInitiativeConflicts(plan, { data = null, archivedEpics = []
   // off, so a mode-gated check would wave through every epic still pointing at it — the one
   // removal the CLI refuses outright would become the one the cockpit performs silently.
   if (!initiativeModeActive(plan)) {
+    const shadowed = shadowedEpicIds(board, archivedEpics);
     for (const e of board.epics ?? []) {
       if (e.initiativeId) out.push(danglingEpicReason(e));
     }
     for (const e of archivedEpics) {
-      if (e.initiativeId) out.push(`archive: ${danglingEpicReason(e)}`);
+      if (e.initiativeId && !shadowed.has(e.id)) out.push(`archive: ${danglingEpicReason(e)}`);
     }
     return out;
   }
@@ -226,7 +239,12 @@ export function crossInitiativeConflicts(plan, { data = null, archivedEpics = []
     const v = epicOwnershipVerdict(e, plan);
     if (broken(v)) out.push(v.reason);
   }
+  // A shadowed archived epic is skipped: it is the same epic as the live one, and judging the
+  // stale copy independently is what refused a legitimate migration in T-030 — the live epic
+  // had been assigned, the shadow had not, and the shadow's verdict won.
+  const shadows = shadowedEpicIds(board, archivedEpics);
   for (const e of archivedEpics) {
+    if (shadows.has(e.id)) continue;
     const v = epicOwnershipVerdict(e, plan);
     if (broken(v)) out.push(`archive: ${v.reason}`);
   }
@@ -622,8 +640,9 @@ export function validateBoard(data, opts = {}) {
     for (const e of data.epics) {
       if (!e.sample && e.initiativeId) err(danglingEpicReason(e));
     }
+    const shadowed = shadowedEpicIds(data, archivedEpics);
     for (const e of archivedEpics) {
-      if (!e.sample && e.initiativeId) err(`archive: ${danglingEpicReason(e)}`);
+      if (!e.sample && e.initiativeId && !shadowed.has(e.id)) err(`archive: ${danglingEpicReason(e)}`);
     }
   }
 
@@ -639,8 +658,12 @@ export function validateBoard(data, opts = {}) {
     }
     // Archived epics are not exempt: an archived ticket still resolves its initiative through
     // one, so a dangling reference there corrupts the same reporting a live one would.
+    // A shadowed archived epic is not reported at all: it is the live epic, whose own row above
+    // already says everything true about it. Warning twice for one epic — once correctly, once
+    // from a stale copy nothing can edit — is noise the reader cannot act on.
+    const shadowedLive = shadowedEpicIds(data, archivedEpics);
     for (const e of archivedEpics) {
-      if (e.sample) continue;
+      if (e.sample || shadowedLive.has(e.id)) continue;
       if (!e.initiativeId) warn(`archive: epic ${e.id} belongs to no initiative — archived tickets under it resolve to none.`);
       const v = epicOwnershipVerdict(e, plan);
       if (v.state === "unknown-initiative" || v.state === "cross-initiative") err(`archive: ${v.reason}`);

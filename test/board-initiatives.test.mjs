@@ -486,3 +486,70 @@ test("a new ticket defaults into the filtered initiative, never simply the board
   assert.equal(defaultEpicForNewTicket(filters({ initiative: "I-9" }), EPICS), "",
     "an initiative with no epics yields no default rather than a wrong one");
 });
+
+// ── An archived copy of a live epic is a shadow, not a second record (T-031) ────
+//
+// `maestro ticket archive` copies a ticket's epic into archive.epics so the reference survives
+// if the live epic is later removed. An epic therefore routinely exists in BOTH files. When it
+// does, the live record is the current one and the archived entry is a shadow of it.
+//
+// Read the other way round, the shadow won: an archived ticket derived a stale initiative from
+// an epic that had since been reassigned, and the conflict check judged the stale copy on its
+// own and refused a legitimate migration. Found by dogfooding this feature on this repo's own
+// board in T-030, which stopped at 8 of 10 plan items assigned.
+
+/** e5 assigned to I-1 live, with a stale archived shadow that predates the assignment. */
+function shadowBoard() {
+  const live = { epics: [{ id: "e5", initiativeId: "I-1", name: "Initiative layer", traces_to: [] }], tickets: [] };
+  const archivedEpics = [{ id: "e5", name: "Initiative layer", traces_to: [] }]; // no initiativeId
+  const archivedTickets = [{ id: "T-900", epicId: "e5", status: "done", traces_to: ["FR-1"] }];
+  return { live, archivedEpics, archivedTickets };
+}
+
+test("an archived ticket resolves its initiative through the LIVE epic, not the shadow", () => {
+  const { live, archivedEpics, archivedTickets } = shadowBoard();
+  const v = ownershipVerdict(archivedTickets[0], { plan: plan(), data: live, archivedEpics });
+  assert.equal(v.initiativeId, "I-1", "the live epic is canonical when both copies exist");
+  assert.equal(v.state, "ok");
+});
+
+test("a shadowed archived epic is not judged on its own", () => {
+  // FR-1 belongs to I-1; the live e5 is in I-1, so nothing here is actually wrong. Judging the
+  // shadow independently reported it as a cross-initiative break and refused the plan write.
+  const { live, archivedEpics, archivedTickets } = shadowBoard();
+  assert.deepEqual(crossInitiativeConflicts(plan(), { data: live, archivedEpics, archivedTickets }), []);
+});
+
+test("a shadowed archived epic is not warned about twice", () => {
+  const { live, archivedEpics, archivedTickets } = shadowBoard();
+  const r = validateBoard(live, { plan: plan(), archived: archivedTickets, archivedEpics });
+  assert.deepEqual(r.errors, []);
+  assert.ok(!r.warnings.some((w) => /^archive: epic e5 belongs to no initiative/.test(w)),
+    `the live e5 IS assigned; a warning from its stale copy is noise nobody can act on:\n${r.warnings.join("\n")}`);
+});
+
+test("an archived-ONLY epic keeps every bit of its old behaviour", () => {
+  // The narrowing must not reach an epic that exists solely in the archive: it is a real record,
+  // not a shadow, and it still resolves tickets and still gets checked.
+  const archivedEpics = [{ id: "eA", initiativeId: "I-2", name: "Landed billing" }];
+  const live = { epics: [], tickets: [] };
+  const t = { id: "T-901", epicId: "eA", status: "done", traces_to: ["FR-1"] };
+  const v = ownershipVerdict(t, { plan: plan(), data: live, archivedEpics });
+  assert.equal(v.initiativeId, "I-2", "still resolved");
+  assert.equal(v.state, "cross-initiative", "and still checked — FR-1 belongs to I-1");
+
+  // An archived-only epic naming an initiative the plan does not define is still an error.
+  const ghost = [{ id: "eB", initiativeId: "I-9", name: "Ghost" }];
+  assert.ok(validateBoard(live, { plan: plan(), archivedEpics: ghost }).errors.some((e) => /^archive: Epic eB/.test(e)));
+  assert.equal(crossInitiativeConflicts(plan(), { data: live, archivedEpics: ghost }).length, 1);
+});
+
+test("an archived-only epic with a dangling reference is still caught when the mode is off", () => {
+  const gone = plan();
+  gone.sections.initiatives = [];
+  const live = { epics: [], tickets: [] };
+  assert.equal(crossInitiativeConflicts(gone, { data: live, archivedEpics: [{ id: "eA", initiativeId: "I-1" }] }).length, 1);
+  // …but a shadow of a live epic is reported once, against the live epic, not twice.
+  const both = { epics: [{ id: "e5", initiativeId: "I-1", name: "x" }], tickets: [] };
+  assert.equal(crossInitiativeConflicts(gone, { data: both, archivedEpics: [{ id: "e5", initiativeId: "I-1" }] }).length, 1);
+});
