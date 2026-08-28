@@ -41,6 +41,20 @@ const TOKEN_CLASSES: Array<{ key: keyof UsageTokens; label: string; color: strin
   { key: 'cacheRead', label: 'Cache read', color: '#4a5b5e' },
 ];
 
+// Every category is shown as its own column, not just as a proportion bar: they are billed and
+// cached differently, and one blended "tokens" figure hides which of them a ticket actually
+// spent. `thinking` sits apart because it is a SUBSET of output, reported by the API under
+// output_tokens_details — adding it to the total would count reasoning twice.
+const TOKEN_COLUMNS: Array<{ key: keyof UsageTokens; head: string; title: string }> = [
+  { key: 'input', head: 'In', title: 'Input tokens' },
+  { key: 'output', head: 'Out', title: 'Output tokens (includes reasoning)' },
+  { key: 'cacheRead', head: 'C·rd', title: 'Cache read tokens' },
+  { key: 'cacheWrite', head: 'C·wr', title: 'Cache write tokens' },
+  { key: 'thinking', head: 'Think', title: 'Reasoning tokens — a subset of output, not added to the total' },
+];
+
+const TOTAL_RULE = 'Total = input + output + cache read + cache write. Reasoning is a subset of output and is never added in.';
+
 function fmtTokens(n: number): string {
   if (!n) return '0';
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
@@ -173,8 +187,18 @@ export default function ValuePage() {
   const { coverage: c, totals: t } = report;
   const workingMs = t.estimatedActiveMs + t.exactMs;
   const isPortfolio = report.kind === 'portfolio';
+  // Historical working time is INFERRED from the spacing of turns in a transcript. Timestamps
+  // cannot tell agent work from a human reading their phone, so it is never presented as
+  // measured: only the part backed by run telemetry (exactMs) is.
+  const anyExact = t.exactMs > 0;
+  const workingLabel = anyExact ? 'Working time' : 'Working time (est.)';
+  const workingNote = anyExact
+    ? `${fmtDuration(t.exactMs)} measured · ${fmtDuration(t.estimatedActiveMs)} estimated`
+    : 'estimated from gaps between turns';
   const exportUrl = isPortfolio ? portfolioUsageExportUrl : usageExportUrl;
   const dims: Dimension[] = isPortfolio ? ['project', ...DIMENSIONS] : [...DIMENSIONS];
+  const workingHead = anyExact ? 'Working' : 'Working (est.)';
+  const cols = (isPortfolio ? 10 : 9) + TOKEN_COLUMNS.length;
 
   return (
     <Container maxWidth="xl" sx={{ py: 3, display: 'flex', flexDirection: 'column', gap: 2.5 }}>
@@ -206,11 +230,11 @@ export default function ValuePage() {
       )}
 
       <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
-        <Meter accent label="Total tokens" value={fmtTokens(t.tokens.total)} note={`${fmtTokens(t.tokens.thinking)} reasoning`} />
-        <Meter label="Agent working time" value={fmtDuration(workingMs)} note="idle gaps excluded" />
-        <Meter label="Tied to a ticket" value={`${attributedPct.toFixed(0)}%`} note={`${fmtTokens(t.tokens.total - report.unassigned.tokens.total)} of ${fmtTokens(t.tokens.total)}`} />
+        <Meter accent label="Total tokens" value={fmtTokens(t.tokens.total)} note={`in ${fmtTokens(t.tokens.input)} · out ${fmtTokens(t.tokens.output)} · cache ${fmtTokens(t.tokens.cacheRead + t.tokens.cacheWrite)}`} />
+        <Meter label="Reasoning tokens" value={fmtTokens(t.tokens.thinking)} note="subset of output, not in the total" />
+        <Meter label={workingLabel} value={fmtDuration(workingMs)} note={workingNote} />
+        <Meter label="Tokens attributed" value={`${attributedPct.toFixed(0)}%`} note={`${fmtTokens(t.tokens.total - report.unassigned.tokens.total)} of ${fmtTokens(t.tokens.total)} tokens`} />
         <Meter label="Tickets with usage" value={String(c.ticketsWithUsage)} note={`of ${c.ticketsOnBoard} on the board`} />
-        <Meter label="Turns" value={t.turns.toLocaleString('en-US')} note={`${c.exactRuns} measured runs`} />
       </Stack>
 
       <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
@@ -238,7 +262,7 @@ export default function ValuePage() {
           <Table size="small" sx={{ minWidth: 780 }}>
             <TableHead>
               <TableRow>
-                {['Project', 'Tokens', 'Mix', 'Working', 'Turns', 'Tickets w/ usage', 'Tied', 'Top ticket'].map((h) => (
+                {['Project', 'In', 'Out', 'C·rd', 'C·wr', 'Think', 'Total', 'Mix', workingHead, 'Turns', 'Tickets w/ usage', 'Tokens attributed', 'Top ticket'].map((h) => (
                   <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>{h}</TableCell>
                 ))}
               </TableRow>
@@ -247,7 +271,7 @@ export default function ValuePage() {
               {report.projects.map((p) => !p.ok || !p.totals || !p.coverage ? (
                 <TableRow key={p.path}>
                   <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600 }}>{p.name}</TableCell>
-                  <TableCell colSpan={7} sx={{ color: 'text.disabled', fontSize: 12.5 }}>{p.error || 'could not be read'}</TableCell>
+                  <TableCell colSpan={12} sx={{ color: 'text.disabled', fontSize: 12.5 }}>{p.error || 'could not be read'}</TableCell>
                 </TableRow>
               ) : (
                 <TableRow key={p.path} hover>
@@ -255,6 +279,11 @@ export default function ValuePage() {
                     {p.name}
                     {p.template && <Chip size="small" variant="outlined" label="starter board" sx={{ ml: 0.6, fontSize: 9, height: 16 }} />}
                   </TableCell>
+                  {TOKEN_COLUMNS.map((col) => (
+                    <TableCell key={col.key} align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5, color: col.key === 'thinking' ? 'text.disabled' : 'text.secondary', whiteSpace: 'nowrap' }}>
+                      {fmtTokens(p.totals!.tokens[col.key])}
+                    </TableCell>
+                  ))}
                   <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>{fmtTokens(p.totals.tokens.total)}</TableCell>
                   <TableCell><TokenBar tokens={p.totals.tokens} width={90} /></TableCell>
                   <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>{fmtDuration(p.totals.estimatedActiveMs + p.totals.exactMs)}</TableCell>
@@ -277,7 +306,19 @@ export default function ValuePage() {
         <Table size="small" sx={{ minWidth: 900 }}>
           <TableHead>
             <TableRow>
-              {['Ticket', ...(isPortfolio ? ['Project'] : []), 'Name', 'Confidence', 'Tokens', 'Mix', 'Working', 'Elapsed', 'Turns', 'Models'].map((h) => (
+              {['Ticket', ...(isPortfolio ? ['Project'] : []), 'Name', 'Confidence'].map((h) => (
+                <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {h}
+                </TableCell>
+              ))}
+              {TOKEN_COLUMNS.map((col) => (
+                <Tooltip key={col.key} title={col.title}>
+                  <TableCell align="right" sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: col.key === 'thinking' ? 'text.disabled' : 'text.secondary', whiteSpace: 'nowrap' }}>
+                    {col.head}
+                  </TableCell>
+                </Tooltip>
+              ))}
+              {['Total', 'Mix', workingHead, 'Elapsed', 'Turns', 'Models'].map((h) => (
                 <TableCell key={h} sx={{ fontSize: 10, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                   {h}
                 </TableCell>
@@ -286,7 +327,7 @@ export default function ValuePage() {
           </TableHead>
           <TableBody>
             {report.tickets.length === 0 && (
-              <TableRow><TableCell colSpan={isPortfolio ? 10 : 9} sx={{ color: 'text.secondary', py: 4 }}>
+              <TableRow><TableCell colSpan={cols} sx={{ color: 'text.secondary', py: 4 }}>
                 No usage could be tied to a ticket yet.
               </TableCell></TableRow>
             )}
@@ -312,6 +353,13 @@ export default function ValuePage() {
                       <Chip size="small" variant="outlined" label={tk.confidence} color={CONFIDENCE_COLOR[tk.confidence] || 'default'} sx={{ fontSize: 10, height: 20 }} />
                     </Tooltip>
                   </TableCell>
+                  {TOKEN_COLUMNS.map((col) => (
+                    <TableCell key={col.key} align="right"
+                      sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', fontSize: 12.5,
+                        color: col.key === 'thinking' ? 'text.disabled' : 'text.secondary' }}>
+                      {fmtTokens(tk.metrics.tokens[col.key])}
+                    </TableCell>
+                  ))}
                   <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, whiteSpace: 'nowrap' }}>
                     {fmtTokens(tk.metrics.tokens.total)}
                   </TableCell>
@@ -333,7 +381,7 @@ export default function ValuePage() {
                 </TableRow>
                 {open === tk.id && (
                   <TableRow>
-                    <TableCell colSpan={isPortfolio ? 10 : 9} sx={{ bgcolor: 'action.hover', py: 1.5 }}>
+                    <TableCell colSpan={cols} sx={{ bgcolor: 'action.hover', py: 1.5 }}>
                       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0,1fr))' }, gap: 2 }}>
                         {(['agent', 'model', 'date'] as Dimension[]).map((d) => (
                           <Box key={d}>
@@ -354,9 +402,41 @@ export default function ValuePage() {
                 )}
               </Fragment>
             ))}
+            {report.unassigned.turns > 0 && (
+              <TableRow sx={{ '& td': { borderTop: '2px solid', borderColor: 'divider' } }}>
+                <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                  Unassigned
+                </TableCell>
+                {isPortfolio && <TableCell />}
+                <TableCell sx={{ fontSize: 12.5, color: 'text.secondary' }}>
+                  Real usage that no ticket could be justified for — kept, never discarded or forced onto a weak match
+                </TableCell>
+                <TableCell>
+                  <Chip size="small" variant="outlined" label="unassigned" sx={{ fontSize: 10, height: 20 }} />
+                </TableCell>
+                {TOKEN_COLUMNS.map((col) => (
+                  <TableCell key={col.key} align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontSize: 12.5, color: 'text.disabled', whiteSpace: 'nowrap' }}>
+                    {fmtTokens(report.unassigned.tokens[col.key])}
+                  </TableCell>
+                ))}
+                <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {fmtTokens(report.unassigned.tokens.total)}
+                </TableCell>
+                <TableCell><TokenBar tokens={report.unassigned.tokens} /></TableCell>
+                <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  {fmtDuration(report.unassigned.estimatedActiveMs + report.unassigned.exactMs)}
+                </TableCell>
+                <TableCell />
+                <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', color: 'text.secondary' }}>
+                  {report.unassigned.turns.toLocaleString('en-US')}
+                </TableCell>
+                <TableCell />
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </Card>
+      <Typography sx={{ fontSize: 11.5, color: 'text.disabled' }}>{TOTAL_RULE}</Typography>
 
       <Box>
         <ToggleButtonGroup exclusive size="small" value={dim} onChange={(_, v) => v && setDim(v)} sx={{ mb: 1 }}>
@@ -372,12 +452,13 @@ export default function ValuePage() {
       </Box>
 
       <Card sx={{ p: 2, borderLeft: '3px solid', borderColor: 'primary.main' }}>
-        <Typography sx={{ fontSize: 14, fontWeight: 700 }}>What isn&apos;t counted</Typography>
+        <Typography sx={{ fontSize: 14, fontWeight: 700 }}>Unassigned</Typography>
         <Typography sx={{ fontSize: 13.5, color: 'text.secondary', maxWidth: '78ch' }}>
           <strong>{fmtTokens(report.unassigned.tokens.total)} tokens over {report.unassigned.turns.toLocaleString('en-US')} turns</strong>{' '}
-          could not be tied to a ticket. It is reported rather than distributed — spreading it across tickets
-          would make every row above look precise and be wrong. The reasons mean different things: work that
-          never named a ticket is a fact about how the work ran, not a limit of the reading.
+          are real usage no ticket could be justified for. They are <strong>kept and counted in the totals</strong> —
+          never discarded, and never forced onto a weak match. Distributing them across tickets would make every
+          row above look precise and be wrong. The reasons mean different things: work that never named a ticket
+          is a fact about how the work ran, not a limit of the reading.
         </Typography>
         <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.4, maxWidth: 560 }}>
           {Object.entries(c.unassignedReasons || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
@@ -390,9 +471,10 @@ export default function ValuePage() {
       </Card>
 
       <Typography sx={{ fontSize: 11.5, color: 'text.disabled', fontFamily: 'monospace', maxWidth: '92ch' }}>
-        Working time counts gaps between turns capped at 5 minutes; longer gaps are idle, not agent work.
-        Reasoning tokens are a subset of output and are not added to the total. Token counts only — no cost is
-        shown, because rates vary by account and a subscription has no per-token price.
+        {TOTAL_RULE} Historical working time is ESTIMATED: it sums gaps between consecutive turns, capped at
+        5 minutes, because a transcript timestamp cannot tell agent work from an idle gap. Only time backed by
+        run telemetry is measured. Token counts only — no cost is shown, because rates vary by account and a
+        subscription has no per-token price.
       </Typography>
     </Container>
   );

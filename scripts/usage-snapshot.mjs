@@ -52,6 +52,27 @@ const CLASSES = /** @type {const} */ ([
 ]);
 
 /**
+ * Each category gets its own column, not just a share of a bar: they are billed and cached
+ * differently, and one blended figure hides which of them a ticket actually spent.
+ * `thinking` is listed apart because it is a SUBSET of output — adding it to the total would
+ * count reasoning twice.
+ */
+const TOKEN_COLUMNS = /** @type {const} */ ([
+  ["input", "In", "Input tokens"],
+  ["output", "Out", "Output tokens (includes reasoning)"],
+  ["cacheRead", "C·rd", "Cache read tokens"],
+  ["cacheWrite", "C·wr", "Cache write tokens"],
+  ["thinking", "Think", "Reasoning tokens — a subset of output, not added to the total"],
+]);
+
+const TOTAL_RULE = "Total = input + output + cache read + cache write. Reasoning is a subset of output and is never added in.";
+
+/** @param {any} tokens */
+const tokenCells = (tokens) => TOKEN_COLUMNS
+  .map(([k, , title]) => `<td class="num ${k === "thinking" ? "muted" : "sub"}" title="${esc(title)}">${fmtTokens(tokens[k] || 0)}</td>`)
+  .join("");
+
+/**
  * A stacked proportion bar. Widths are percentages of the row's own total, so a small ticket
  * and a large one are compared by shape, and the absolute figure is in the column beside it.
  * @param {any} tokens
@@ -102,6 +123,10 @@ export function renderUsageSnapshot(report, opts = {}) {
   const t = report.totals;
   const attributedTokens = t.tokens.total - report.unassigned.tokens.total;
   const pct = t.tokens.total ? (attributedTokens / t.tokens.total) * 100 : 0;
+  // Historical working time is INFERRED from how turns are spaced. A timestamp cannot tell
+  // agent work from a human being elsewhere, so only telemetry-backed time is called measured.
+  const anyExact = t.exactMs > 0;
+  const workingHead = anyExact ? "Working" : "Working (est.)";
   const day = (/** @type {string | null} */ d) => (d ? d.slice(0, 10) : "—");
 
   const reasonLabels = /** @type {Record<string, string>} */ ({
@@ -118,6 +143,7 @@ export function renderUsageSnapshot(report, opts = {}) {
       ${isPortfolio ? `<td class="proj">${esc(tk.project || "—")}</td>` : ""}
       <td class="name"><span class="ttl">${esc(tk.name) || "<em>untitled</em>"}</span><span class="meta">${esc(tk.area || "—")} · ${esc(tk.status || "—")}${tk.boardModel ? ` · board model ${esc(tk.boardModel)}` : ""}</span></td>
       <td><span class="chip chip--${esc(tk.confidence)}">${esc(tk.confidence)}</span></td>
+      ${tokenCells(tk.metrics.tokens)}
       <td class="num strong">${fmtTokens(tk.metrics.tokens.total)}</td>
       <td class="barcell">${bar(tk.metrics.tokens)}</td>
       <td class="num">${fmtDuration(time)}</td>
@@ -246,6 +272,10 @@ table.ledger { width: 100%; border-collapse: collapse; font-size: 13.5px; min-wi
 .runs { color: var(--ok); margin-left: 4px; }
 .models { white-space: nowrap; }
 .proj { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+.sub { color: var(--ink-2); font-size: 12px; }
+.tmpl { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); border: 1px solid var(--edge); border-radius: 2px; padding: 1px 4px; }
+.unassigned td { border-top: 2px solid var(--edge); color: var(--ink-2); }
+.unassigned .id { color: var(--ink-2); }
 .mdl { font-family: var(--mono); font-size: 10px; color: var(--ink-2); border: 1px solid var(--edge); border-radius: 2px; padding: 1px 5px; margin-right: 3px; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
@@ -282,11 +312,11 @@ h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 0 0 2
   </header>
 
   <div class="meters">
-    <div class="meter meter--accent"><span class="k">Total tokens</span><span class="v">${fmtTokens(t.tokens.total)}</span><span class="n">${fmtTokens(t.tokens.thinking)} reasoning</span></div>
-    <div class="meter"><span class="k">Agent working time</span><span class="v">${fmtDuration(t.estimatedActiveMs + t.exactMs)}</span><span class="n">idle gaps excluded</span></div>
-    <div class="meter"><span class="k">Tied to a ticket</span><span class="v">${pct.toFixed(0)}%</span><span class="n">${fmtTokens(attributedTokens)} of ${fmtTokens(t.tokens.total)}</span></div>
+    <div class="meter meter--accent"><span class="k">Total tokens</span><span class="v">${fmtTokens(t.tokens.total)}</span><span class="n">in ${fmtTokens(t.tokens.input)} · out ${fmtTokens(t.tokens.output)} · cache ${fmtTokens(t.tokens.cacheRead + t.tokens.cacheWrite)}</span></div>
+    <div class="meter"><span class="k">Reasoning tokens</span><span class="v">${fmtTokens(t.tokens.thinking)}</span><span class="n">subset of output, not in the total</span></div>
+    <div class="meter"><span class="k">${anyExact ? "Working time" : "Working time (est.)"}</span><span class="v">${fmtDuration(t.estimatedActiveMs + t.exactMs)}</span><span class="n">${anyExact ? `${fmtDuration(t.exactMs)} measured · ${fmtDuration(t.estimatedActiveMs)} estimated` : "estimated from gaps between turns"}</span></div>
+    <div class="meter"><span class="k">Tokens attributed</span><span class="v">${pct.toFixed(0)}%</span><span class="n">${fmtTokens(attributedTokens)} of ${fmtTokens(t.tokens.total)} tokens</span></div>
     <div class="meter"><span class="k">Tickets with usage</span><span class="v">${c.ticketsWithUsage}</span><span class="n">of ${c.ticketsOnBoard} on the board</span></div>
-    <div class="meter"><span class="k">Turns</span><span class="v">${t.turns.toLocaleString("en-US")}</span><span class="n">${c.exactRuns} measured runs</span></div>
   </div>
 
   <section class="sec">
@@ -302,11 +332,25 @@ h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 0 0 2
     <div class="tablewrap">
       <table class="ledger">
         <thead><tr>
-          <th>Ticket</th>${isPortfolio ? "<th>Project</th>" : ""}<th>Name</th><th>Confidence</th><th>Tokens</th><th>Mix</th>
-          <th>Working</th><th>Elapsed</th><th>Turns</th><th>Models</th>
+          <th>Ticket</th>${isPortfolio ? "<th>Project</th>" : ""}<th>Name</th><th>Confidence</th>
+          ${TOKEN_COLUMNS.map(([, head, title]) => `<th class="num" title="${esc(title)}">${head}</th>`).join("")}
+          <th class="num">Total</th><th>Mix</th>
+          <th class="num">${workingHead}</th><th class="num">Elapsed</th><th class="num">Turns</th><th>Models</th>
         </tr></thead>
         <tbody>
-${rows || `<tr><td colspan="${isPortfolio ? 10 : 9}" class="muted" style="padding:24px">No usage recorded yet.</td></tr>`}
+${rows || `<tr><td colspan="${(isPortfolio ? 10 : 9) + TOKEN_COLUMNS.length}" class="muted" style="padding:24px">No usage recorded yet.</td></tr>`}`
+        + `${report.unassigned.turns > 0 ? `<tr class="unassigned">
+          <td class="id">Unassigned</td>${isPortfolio ? "<td></td>" : ""}
+          <td class="name"><span class="ttl">Real usage no ticket could be justified for — kept, never discarded or forced onto a weak match</span></td>
+          <td><span class="chip chip--unassigned">unassigned</span></td>
+          ${tokenCells(report.unassigned.tokens)}
+          <td class="num strong">${fmtTokens(report.unassigned.tokens.total)}</td>
+          <td class="barcell">${bar(report.unassigned.tokens)}</td>
+          <td class="num">${fmtDuration(report.unassigned.estimatedActiveMs + report.unassigned.exactMs)}</td>
+          <td></td>
+          <td class="num muted">${report.unassigned.turns.toLocaleString("en-US")}</td>
+          <td></td>
+        </tr>` : ""}
         </tbody>
       </table>
     </div>
@@ -319,10 +363,11 @@ ${rows || `<tr><td colspan="${isPortfolio ? 10 : 9}" class="muted" style="paddin
     </div>
     <div class="tablewrap">
       <table class="ledger">
-        <thead><tr><th>Project</th><th>Tokens</th><th>Mix</th><th>Working</th><th>Turns</th><th>Tickets w/ usage</th><th>Tied to a ticket</th><th>Top ticket</th></tr></thead>
+        <thead><tr><th>Project</th>${TOKEN_COLUMNS.map(([, head, title]) => `<th class="num" title="${esc(title)}">${head}</th>`).join("")}<th class="num">Total</th><th>Mix</th><th class="num">${workingHead}</th><th class="num">Turns</th><th class="num">Tickets w/ usage</th><th class="num">Tokens attributed</th><th>Top ticket</th></tr></thead>
         <tbody>
         ${projectRows.map((/** @type {any} */ p) => p.ok ? `<tr>
-          <td class="id">${esc(p.name)}</td>
+          <td class="id">${esc(p.name)}${p.template ? ' <span class="tmpl">starter board</span>' : ""}</td>
+          ${tokenCells(p.totals.tokens)}
           <td class="num strong">${fmtTokens(p.totals.tokens.total)}</td>
           <td class="barcell">${bar(p.totals.tokens)}</td>
           <td class="num">${fmtDuration(p.totals.estimatedActiveMs + p.totals.exactMs)}</td>
@@ -330,7 +375,7 @@ ${rows || `<tr><td colspan="${isPortfolio ? 10 : 9}" class="muted" style="paddin
           <td class="num muted">${p.coverage.ticketsWithUsage} / ${p.coverage.ticketsOnBoard}</td>
           <td class="num muted">${p.totals.tokens.total ? (((p.totals.tokens.total - p.coverage.unassignedTokens) / p.totals.tokens.total) * 100).toFixed(0) : 0}%</td>
           <td class="muted" style="font-size:12px">${p.topTicket ? `${esc(p.topTicket.id)} · ${fmtTokens(p.topTicket.total)}` : "—"}</td>
-        </tr>` : `<tr><td class="id">${esc(p.name)}</td><td colspan="7" class="muted" style="font-size:12px">${esc(p.error || "could not be read")}</td></tr>`).join("\n        ")}
+        </tr>` : `<tr><td class="id">${esc(p.name)}</td><td colspan="12" class="muted" style="font-size:12px">${esc(p.error || "could not be read")}</td></tr>`).join("\n        ")}
         </tbody>
       </table>
     </div>
@@ -352,10 +397,11 @@ ${rows || `<tr><td colspan="${isPortfolio ? 10 : 9}" class="muted" style="paddin
   </section>
 
   <section class="sec">
-    <div class="sechead"><h2>What isn't counted</h2></div>
+    <div class="sechead"><h2>Unassigned</h2></div>
     <p class="note">
-      <strong>${fmtTokens(report.unassigned.tokens.total)} tokens across ${report.unassigned.turns.toLocaleString("en-US")} turns</strong> could not be tied to a ticket.
-      That is reported rather than distributed: spreading it across tickets would make every row above look precise and be wrong.
+      <strong>${fmtTokens(report.unassigned.tokens.total)} tokens across ${report.unassigned.turns.toLocaleString("en-US")} turns</strong> are real usage no ticket could be justified for.
+      They are <strong>kept and counted in the totals</strong> — never discarded, and never forced onto a weak match.
+      Distributing them across tickets would make every row above look precise and be wrong.
       The reasons matter differently — work that never named a ticket is a fact about how the work ran, not a limitation of the reading.
     </p>
     <ul class="reasons">
@@ -365,7 +411,8 @@ ${rows || `<tr><td colspan="${isPortfolio ? 10 : 9}" class="muted" style="paddin
 
   <footer>
     Aggregates only — no prompts, responses, commands or source text are read into this page or persisted anywhere.
-    Working time counts gaps between turns capped at 5 minutes; longer gaps are idle, not agent work. Reasoning tokens are a subset of output and are not added to the total.
+    ${esc(TOTAL_RULE)}
+    Historical working time is ESTIMATED: it sums gaps between consecutive turns, capped at 5 minutes, because a transcript timestamp cannot distinguish agent work from an idle gap. Only time backed by run telemetry is measured.
     Token counts only: no cost is shown, because rates vary by account and a subscription has no per-token price.
   </footer>
 </div>`;

@@ -28,7 +28,8 @@ import { distill, normaliseUsage, totalTokens, encodeProjectDir, transcriptDirsF
 import { attribute, ticketIndex, ticketFromBranch } from "../scripts/usage-attribute.mjs";
 import { appendRun, readRuns, validateRun, telemetryPath } from "../scripts/telemetry-io.mjs";
 import { buildUsageReport, transcriptScanEnabled, usageToCsv } from "../scripts/usage-core.mjs";
-import { buildPortfolioUsage, discoverProjects } from "../scripts/usage-portfolio.mjs";
+import { buildPortfolioUsage, discoverProjects, projectsFromRegistry } from "../scripts/usage-portfolio.mjs";
+import { renderUsageSnapshot } from "../scripts/usage-snapshot.mjs";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "maestro-usage-"));
 
@@ -378,14 +379,21 @@ test("ticket-shaped noise is matched then refused, so a loose pattern stays safe
 
 // ── Portfolio rollup ──────────────────────────────────────────────────────────────────────
 
-/** A project laid out the way `maestro setup` produces: the kit vendored at <project>/maestro. */
+/**
+ * A project laid out the way `maestro setup` produces: the kit vendored at <project>/maestro,
+ * with the config.json beside the board. Both matter — discovery keys off board/data.json,
+ * while the registry's findKitDir() keys off config.json, and a fixture with only one of them
+ * passes one path and silently fails the other.
+ */
 function vendoredProject(root, name, board) {
   const dir = join(root, name);
-  const boardDir = join(dir, "maestro", "board");
+  const kitDir = join(dir, "maestro");
+  const boardDir = join(kitDir, "board");
   mkdirSync(boardDir, { recursive: true });
+  writeFileSync(join(kitDir, "config.json"), JSON.stringify({ project: { name } }), "utf8");
   writeFileSync(join(boardDir, "data.json"), JSON.stringify(board), "utf8");
   writeFileSync(join(boardDir, "archive.json"), JSON.stringify({ epics: [], tickets: [] }), "utf8");
-  return { dir, boardDir };
+  return { dir, kitDir, boardDir };
 }
 
 test("discovery does not register <project>/maestro as a project of its own", () => {
@@ -482,4 +490,84 @@ test("a project that cannot be read is reported as a failed row, never dropped",
   assert.equal(report.projects.length, 1);
   assert.equal(report.projects[0].ok, false);
   assert.match(report.projects[0].error, /not set up/);
+});
+
+// ── End-to-end privacy: what the API and the artifact may contain ─────────────────────────
+
+test("no transcript content survives into the report, the CSV, or the shared snapshot", () => {
+  // distill() is unit-tested above, but the claim printed on the page is about everything
+  // DOWNSTREAM of it — the /api/usage body, the exports, the HTML someone may share, and the
+  // on-disk cache. Each is asserted here against a transcript stuffed with content that must
+  // not travel: a credential, prose, a shell command, and a file body from an edit.
+  const boardDir = boardFixture();
+  const projectsDir = tmp();
+  const cacheFile = join(tmp(), "cache.json");
+  const sessionDir = join(projectsDir, encodeProjectDir(ROOT));
+  mkdirSync(sessionDir, { recursive: true });
+
+  const SECRETS = {
+    credential: "sk-ant-NEVER-LEAK-THIS-TOKEN",
+    prose: "the acquisition closes on Thursday",
+    command: "psql postgres://admin:hunter2@prod.internal/customers",
+    fileBody: "export const PRIVATE_SALT = 'zzzz-do-not-ship';",
+    toolResult: "row 1: patient Jane Doe, dob 1970-01-01",
+  };
+
+  writeFileSync(join(sessionDir, "leaky.jsonl"), [
+    JSON.stringify({ type: "user", timestamp: at(0), cwd: ROOT, sessionId: "leaky", gitBranch: "main",
+      message: { role: "user", content: `Work T-010. ${SECRETS.credential} — ${SECRETS.prose}` } }),
+    JSON.stringify({ type: "assistant", timestamp: at(1000), cwd: ROOT, sessionId: "leaky", gitBranch: "main",
+      message: { model: "claude-sonnet-5", usage: { input_tokens: 10, output_tokens: 20, output_tokens_details: { thinking_tokens: 5 } },
+        content: [
+          { type: "text", text: SECRETS.prose },
+          { type: "tool_use", name: "Bash", input: { command: SECRETS.command } },
+          { type: "tool_use", name: "Write", input: { file_path: "/repo/x.ts", content: SECRETS.fileBody } },
+        ] } }),
+    JSON.stringify({ type: "user", timestamp: at(2000), cwd: ROOT, sessionId: "leaky", gitBranch: "main",
+      message: { role: "user", content: [{ type: "tool_result", content: SECRETS.toolResult }] } }),
+  ].join("\n") + "\n", "utf8");
+
+  const report = buildUsageReport({
+    boardDir, roots: [ROOT], projectsDir, cacheFile,
+    config: { usage: { scanTranscripts: true } }, useCache: true,
+  });
+
+  // The reading worked — otherwise this test would pass by finding nothing at all.
+  const t010 = report.tickets.find((t) => t.id === "T-010");
+  assert.ok(t010, "the ticket was attributed, so there was real content to leak");
+  assert.equal(t010.metrics.tokens.total, 30);
+  assert.equal(t010.metrics.tokens.thinking, 5, "reasoning is captured");
+
+  const surfaces = {
+    "the /api/usage body": JSON.stringify(report),
+    "the CSV export": usageToCsv(report),
+    "the shared HTML snapshot": renderUsageSnapshot(report),
+    "the on-disk cache": readFileSync(cacheFile, "utf8"),
+  };
+  for (const [what, text] of Object.entries(surfaces)) {
+    for (const [kind, secret] of Object.entries(SECRETS)) {
+      assert.ok(!text.includes(secret), `${what} must not contain the ${kind}`);
+    }
+    // Not just the exact strings: none of the distinctive words from any of them.
+    for (const word of ["hunter2", "acquisition", "PRIVATE_SALT", "Jane", "prod.internal"]) {
+      assert.ok(!text.includes(word), `${what} must not contain "${word}"`);
+    }
+  }
+});
+
+test("a temporary registry file drives the rollup, so no permanent one has to exist", () => {
+  // Creating a registry changes the scope of mutating commands (`update --all`, `drift`), so
+  // that is the owner's call to make explicitly — never a side effect of asking for a report.
+  const root = tmp();
+  vendoredProject(root, "alpha", BOARD);
+  const registryPath = join(tmp(), "maestro-registry.json");
+  writeFileSync(registryPath, JSON.stringify({ projects: [{ name: "alpha", path: join(root, "alpha") }] }), "utf8");
+
+  const projects = projectsFromRegistry(registryPath);
+  assert.equal(projects.length, 1);
+  assert.ok(projects[0].kitDir?.endsWith(join("alpha", "maestro")));
+
+  const report = buildPortfolioUsage({ projects, config: null, env: {} });
+  assert.equal(report.kind, "portfolio");
+  assert.equal(report.projects[0].name, "alpha");
 });

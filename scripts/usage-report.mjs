@@ -108,18 +108,32 @@ process.stdout.write(`  ${report.dateRange.from?.slice(0, 10) || "—"} → ${re
 process.stdout.write(`transcripts: ${report.enabled.transcripts ? `on (${c.transcriptSessions} sessions)` : "off (opt-in)"}   telemetry: ${c.exactRuns} measured runs\n\n`);
 
 if (isPortfolio) {
-  process.stdout.write(`  ${pad("PROJECT", 22)}${rpad("TOKENS", 9)}${rpad("WORKING", 9)}${rpad("TURNS", 8)}${rpad("TIED", 6)}  TICKETS\n`);
+  const wh = report.totals.exactMs > 0 ? "WORKING" : "WORK~";
+  process.stdout.write(`  ${pad("PROJECT", 22)}${rpad("IN", 8)}${rpad("OUT", 8)}${rpad("C-READ", 9)}${rpad("C-WRITE", 9)}${rpad("THINK", 8)}${rpad("TOTAL", 9)}${rpad(wh, 8)}${rpad("TOK-ATTR", 9)}  TICKETS\n`);
   for (const p of report.projects) {
-    if (!p.ok) { process.stdout.write(`  ${pad(p.name, 22)}${rpad("—", 9)}  ${p.error}\n`); continue; }
-    const tied = p.totals.tokens.total ? ((p.totals.tokens.total - p.coverage.unassignedTokens) / p.totals.tokens.total) * 100 : 0;
-    process.stdout.write(`  ${pad(p.name, 22)}${rpad(M(p.totals.tokens.total), 9)}${rpad(H(p.totals.estimatedActiveMs + p.totals.exactMs), 9)}${rpad(p.totals.turns, 8)}${rpad(`${tied.toFixed(0)}%`, 6)}  ${p.coverage.ticketsWithUsage}/${p.coverage.ticketsOnBoard}\n`);
+    if (!p.ok) { process.stdout.write(`  ${pad(p.name, 22)}${rpad("—", 8)}  ${p.error}\n`); continue; }
+    const k = p.totals.tokens;
+    // "Tokens attributed" is a TOKEN share, not a ticket count — the ticket ratio is its own
+    // column. Labelling a token percentage as tickets would misdescribe both.
+    const attr = k.total ? ((k.total - p.coverage.unassignedTokens) / k.total) * 100 : 0;
+    process.stdout.write(`  ${pad(p.name, 22)}${rpad(M(k.input), 8)}${rpad(M(k.output), 8)}${rpad(M(k.cacheRead), 9)}${rpad(M(k.cacheWrite), 9)}${rpad(M(k.thinking), 8)}${rpad(M(k.total), 9)}${rpad(H(p.totals.estimatedActiveMs + p.totals.exactMs), 8)}${rpad(`${attr.toFixed(0)}%`, 9)}  ${p.coverage.ticketsWithUsage}/${p.coverage.ticketsOnBoard}${p.template ? "  (starter board)" : ""}\n`);
   }
   process.stdout.write("\n");
 }
 
-process.stdout.write(`  ${pad("TICKET", 7)}${isPortfolio ? pad("PROJECT", 16) : ""}${pad("CONF", 7)}${rpad("TOKENS", 8)}${rpad("ACTIVE", 8)}${rpad("SPAN", 8)}  NAME\n`);
+// Every category is printed, not just the total: they are billed and cached differently, and
+// one blended number hides which of them a ticket actually spent.
+const anyExact = report.totals.exactMs > 0;
+const workHead = anyExact ? "WORKING" : "WORK~";
+const tokCells = (/** @type {any} */ k) => `${rpad(M(k.input), 8)}${rpad(M(k.output), 8)}${rpad(M(k.cacheRead), 9)}${rpad(M(k.cacheWrite), 9)}${rpad(M(k.thinking), 8)}${rpad(M(k.total), 9)}`;
+
+process.stdout.write(`  ${pad("TICKET", 7)}${isPortfolio ? pad("PROJECT", 14) : ""}${pad("CONF", 11)}${rpad("IN", 8)}${rpad("OUT", 8)}${rpad("C-READ", 9)}${rpad("C-WRITE", 9)}${rpad("THINK", 8)}${rpad("TOTAL", 9)}${rpad(workHead, 8)}${rpad("ELAPSED", 9)}  NAME\n`);
 for (const t of report.tickets.slice(0, Number(flag("top", 20)))) {
-  process.stdout.write(`  ${pad(t.id, 7)}${isPortfolio ? pad(String(t.project).slice(0, 15), 16) : ""}${pad(t.confidence, 7)}${rpad(M(t.metrics.tokens.total), 8)}${rpad(H(t.metrics.estimatedActiveMs + t.metrics.exactMs), 8)}${rpad(H(t.metrics.spanMs), 8)}  ${t.name.slice(0, 40)}\n`);
+  process.stdout.write(`  ${pad(t.id, 7)}${isPortfolio ? pad(String(t.project).slice(0, 13), 14) : ""}${pad(t.confidence, 11)}${tokCells(t.metrics.tokens)}${rpad(H(t.metrics.estimatedActiveMs + t.metrics.exactMs), 8)}${rpad(H(t.metrics.spanMs), 9)}  ${t.name.slice(0, 34)}\n`);
+}
+// Unassigned is a ROW, not a deleted number: it is real usage that is kept and counted.
+if (report.unassigned.turns > 0) {
+  process.stdout.write(`  ${pad("—", 7)}${isPortfolio ? pad("", 14) : ""}${pad("unassigned", 11)}${tokCells(report.unassigned.tokens)}${rpad(H(report.unassigned.estimatedActiveMs + report.unassigned.exactMs), 8)}${rpad("", 9)}  (kept, never forced onto a weak match)\n`);
 }
 
 for (const d of (isPortfolio ? PORTFOLIO_DIMENSIONS : DIMENSIONS)) {
@@ -132,8 +146,12 @@ for (const d of (isPortfolio ? PORTFOLIO_DIMENSIONS : DIMENSIONS)) {
 }
 
 const un = report.unassigned;
-process.stdout.write(`\n  UNATTRIBUTED  ${M(un.tokens.total)} tokens over ${un.turns} turns${c.unassignedReasons ? ":" : ""}\n`);
+process.stdout.write(`\n  UNASSIGNED  ${M(un.tokens.total)} tokens over ${un.turns} turns — kept and counted, never forced onto a weak match\n`);
 for (const [reason, n] of Object.entries(c.unassignedReasons || {})) {
   process.stdout.write(`    ${pad(reason, 24)}${rpad(n, 6)} turns\n`);
+}
+process.stdout.write(`\n  Total = input + output + cache read + cache write. Reasoning (THINK) is a subset of output and is never added in.\n`);
+if (!anyExact) {
+  process.stdout.write(`  WORK~ is ESTIMATED — gaps between turns, capped at 5 min. A transcript timestamp cannot tell agent work from an idle gap.\n`);
 }
 process.stdout.write("\n");

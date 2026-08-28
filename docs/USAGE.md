@@ -64,6 +64,11 @@ from. Reading is local and read-only.
 
 ### Privacy
 
+Everything downstream of the scanner inherits this: the `/api/usage` response, the JSON and CSV
+exports, the HTML snapshot and the on-disk cache are all built from the report object, which
+holds only counts, durations, ticket ids and board metadata. A test asserts end-to-end that a
+secret present in a transcript appears in none of them.
+
 A transcript is the most sensitive file on the disk. `scripts/usage-scan.mjs` is the only code that
 opens one, and from each record it keeps **only** timestamps, model ids, token counts, the git
 branch, session/agent ids, ticket-shaped identifiers, and board commands reduced to `(verb, id)`.
@@ -108,6 +113,10 @@ a doc example and a test fixture — with 150M tokens between them and looked en
 Unattributed usage is shown with its reasons, never spread across tickets — distributing it would
 make every row look precise and be wrong.
 
+Unassigned usage is **kept and counted in the totals** — it appears as its own `Unassigned` row
+in the ledger, in the CLI table, and in the snapshot. It is never discarded, and never forced
+onto a weak match to make coverage look better.
+
 | Reason | What it means |
 | --- | --- |
 | `no-ticket-in-session` | The session never named a ticket. **A fact about how the work ran**, not a limit of the reading. |
@@ -116,14 +125,33 @@ make every row look precise and be wrong.
 
 ### Time
 
-- **Working time** — the sum of gaps between consecutive turns, each capped at 5 minutes. Longer
-  gaps are the human being elsewhere, not agent work. Estimated, and labelled so.
+- **Working time (estimated)** — the sum of gaps between consecutive turns, each capped at 5
+  minutes. A transcript timestamp records *when a turn happened*, nothing more: it cannot
+  distinguish agent work from a human reading their phone. So this is an inference, it is
+  labelled `(est.)` in every surface that shows it, and it drops the label only for the portion
+  backed by run telemetry.
 - **Elapsed** — first to last turn. Calendar time, which for a ticket picked up across three weeks
   is a very different number.
 - **Cycle time** — first measured stage start to last measured stage end. Exact, and computed only
   across measured runs; mixing in an inferred timestamp would put an exact label on an estimate.
 
-Reasoning tokens are reported separately and are **a subset of output** — never added into the total.
+### Token categories
+
+Five counters are tracked and shown separately everywhere — table columns, CSV, JSON, snapshot —
+because they are billed and cached differently and one blended figure hides which of them a
+ticket actually spent:
+
+| Counter | Field | In the total? |
+| --- | --- | --- |
+| Input | `input` | yes |
+| Output | `output` | yes |
+| Cache read | `cacheRead` | yes |
+| Cache write | `cacheWrite` | yes |
+| Reasoning | `thinking` | **no** |
+
+**`total` = input + output + cache read + cache write.** Reasoning is reported by the API under
+`output_tokens_details.thinking_tokens` — it is a **subset of output**, so adding it would count
+those tokens twice. It is shown in its own column and never summed in.
 
 ---
 
