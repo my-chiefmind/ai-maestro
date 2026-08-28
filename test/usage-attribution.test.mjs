@@ -23,15 +23,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { distill, normaliseUsage, totalTokens, encodeProjectDir, transcriptDirsFor, ownsCwd, eventsForRoots } from "../scripts/usage-scan.mjs";
 import { attribute, ticketIndex, ticketFromBranch } from "../scripts/usage-attribute.mjs";
 import { appendRun, readRuns, validateRun, telemetryPath } from "../scripts/telemetry-io.mjs";
 import { buildUsageReport, transcriptScanEnabled, usageToCsv } from "../scripts/usage-core.mjs";
 import { buildPortfolioUsage, discoverProjects, projectsFromRegistry } from "../scripts/usage-portfolio.mjs";
 import { renderUsageSnapshot } from "../scripts/usage-snapshot.mjs";
+import { parseClaudeEnvelope, wantsJsonEnvelope } from "../scripts/run-stage.mjs";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "maestro-usage-"));
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
 const ROOT = "/repo";
 let clock = Date.parse("2026-08-01T10:00:00.000Z");
@@ -570,4 +573,50 @@ test("a temporary registry file drives the rollup, so no permanent one has to ex
   const report = buildPortfolioUsage({ projects, config: null, env: {} });
   assert.equal(report.kind, "portfolio");
   assert.equal(report.projects[0].name, "alpha");
+});
+
+// ── The runtime envelope, against a real one ──────────────────────────────────────────────
+
+test("both usage spellings are read — the envelope's snake_case and modelUsage's camelCase", () => {
+  // test/fixtures/claude-json-envelope.json is a REAL `claude -p --output-format json` result.
+  // Reading only snake_case wrote a telemetry record stamped usageSource "provider" with every
+  // counter at zero — worse than no record, because it claims the stage was free. No invented
+  // fixture caught that; running the real binary did.
+  const envelope = JSON.parse(readFileSync(join(FIXTURES, "claude-json-envelope.json"), "utf8"));
+
+  const top = normaliseUsage(envelope.usage);
+  assert.equal(top.input, 10);
+  assert.equal(top.output, 42);
+  assert.equal(top.cacheRead, 18052);
+  assert.equal(top.cacheWrite, 7743);
+  assert.equal(top.thinking, 35, "only the top-level block reports reasoning");
+
+  const perModel = normaliseUsage(Object.values(envelope.modelUsage)[0]);
+  assert.equal(perModel.input, 907, "modelUsage spells it inputTokens");
+  assert.equal(perModel.cacheRead, 18052, "...and cacheReadInputTokens");
+  assert.equal(perModel.cacheWrite, 7743);
+  assert.equal(perModel.thinking, 0, "modelUsage carries no reasoning count at all");
+});
+
+test("the envelope yields the session id that keeps a measured run from being double-counted", () => {
+  const envelope = readFileSync(join(FIXTURES, "claude-json-envelope.json"), "utf8");
+  const parsed = parseClaudeEnvelope(envelope);
+  assert.equal(parsed.sessionId, "00000000-0000-0000-0000-000000000000");
+  assert.ok(parsed.usage && parsed.usage.output === 42);
+  assert.ok(parsed.modelUsage && Object.keys(parsed.modelUsage).length === 1);
+});
+
+test("a runtime whose envelope shape changed costs the telemetry, never the run", () => {
+  for (const junk of ["", "not json", "[]", '{"usage":null}']) {
+    const parsed = parseClaudeEnvelope(junk);
+    assert.equal(parsed.usage, null);
+    assert.equal(parsed.sessionId, null);
+  }
+});
+
+test("a caller's own --output-format is respected, and usage is then simply not claimed", () => {
+  assert.equal(wantsJsonEnvelope([]), true);
+  assert.equal(wantsJsonEnvelope(["--permission-mode", "bypassPermissions"]), true);
+  assert.equal(wantsJsonEnvelope(["--output-format", "stream-json"]), false);
+  assert.equal(wantsJsonEnvelope(["--output-format=text"]), false);
 });

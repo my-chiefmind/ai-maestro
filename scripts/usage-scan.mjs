@@ -102,19 +102,31 @@ export function addUsage(a, b) {
 }
 
 /**
- * Normalise one Claude Code `usage` block. Unknown/missing counters read as zero rather than
- * NaN — a transcript written by a different CLI version must degrade, not corrupt the totals.
+ * Normalise a Claude Code usage block.
+ *
+ * TWO SHAPES, and they are not interchangeable. A transcript turn and the `-p --output-format
+ * json` envelope report snake_case (`input_tokens`); that envelope's own per-model breakdown,
+ * `modelUsage`, reports camelCase (`inputTokens`, `cacheReadInputTokens`). Reading only the
+ * first produced a telemetry record stamped `usageSource: "provider"` with every counter at
+ * zero — worse than no record, because it claims a stage was free. Both spellings are accepted
+ * here so a caller cannot pick the wrong one.
+ *
+ * Unknown or missing counters read as zero rather than NaN: a payload from a different CLI
+ * version must degrade, not corrupt the totals. `modelUsage` carries no reasoning count at
+ * all, which is why callers prefer the top-level block whenever a run used a single model.
  * @param {any} u
  * @returns {Usage}
  */
 export function normaliseUsage(u) {
   const n = (/** @type {any} */ v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const pick = (/** @type {string} */ snake, /** @type {string} */ camel) =>
+    n(u?.[snake] !== undefined ? u[snake] : u?.[camel]);
   return {
-    input: n(u?.input_tokens),
-    output: n(u?.output_tokens),
-    cacheRead: n(u?.cache_read_input_tokens),
-    cacheWrite: n(u?.cache_creation_input_tokens),
-    thinking: n(u?.output_tokens_details?.thinking_tokens),
+    input: pick("input_tokens", "inputTokens"),
+    output: pick("output_tokens", "outputTokens"),
+    cacheRead: pick("cache_read_input_tokens", "cacheReadInputTokens"),
+    cacheWrite: pick("cache_creation_input_tokens", "cacheCreationInputTokens"),
+    thinking: n(u?.output_tokens_details?.thinking_tokens ?? u?.thinkingTokens),
   };
 }
 

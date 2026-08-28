@@ -45,6 +45,26 @@ yesterday's tokens would be confidently wrong.
 A stage that fails is still recorded. A twenty-minute run that then failed is exactly the run you
 most want to see.
 
+### Reading what the runtime reports
+
+`scripts/run-stage.mjs` invokes the adapter and appends the record. It is deliberately separate
+from `run-ticket.mjs`: the full dev → PR → reviewer pipeline needs a GitHub remote and a second
+account's token, so a stage runner that only existed inside it could only be proven by doing
+something irreversible.
+
+Claude Code is asked for `-p --output-format json`, whose envelope carries `session_id`,
+`duration_ms`, `usage` and a per-model `modelUsage`. **The two usage blocks are spelled
+differently** — `usage` uses `input_tokens`, `modelUsage` uses `inputTokens` — and only the
+top-level block reports reasoning tokens. So a single-model stage records the top-level block
+(counts plus reasoning), and only a stage that spanned several models falls back to
+`modelUsage`, where `thinking` is 0 because the runtime does not break reasoning down per model.
+Reading one spelling for both wrote a record stamped `usageSource: "provider"` with every
+counter at zero, which claims a stage was free; `test/fixtures/claude-json-envelope.json` is a
+real envelope kept as a regression.
+
+A caller who passes their own `--output-format` keeps it, and the run is then recorded with no
+usage — their flag is an explicit instruction, and instrumentation does not override it.
+
 ---
 
 ## Reconstructing history from transcripts
