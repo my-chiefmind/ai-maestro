@@ -1348,12 +1348,33 @@ const COMMANDS = [
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
 ];
 
+// `sync` alone (no --project, no --all) can't run: render/sync.mjs requires a project dir and
+// would otherwise just print a bare "--project <dir> is required" and exit — the one command in
+// COMMANDS that fails outright instead of showing usage when the interactive menu invokes it
+// with empty args. Resolve a default the way `update` does (cwd if it's the kit, else
+// <cwd>/maestro) and, interactively, let the user override it before falling back to that error.
+async function sync(args) {
+  if (!flag(args, "project") && !has(args, "all")) {
+    const cwdIsKit = existsSync(join(process.cwd(), "config.json")) && existsSync(join(process.cwd(), "render", "sync.mjs"));
+    const defaultDir = cwdIsKit ? process.cwd() : join(process.cwd(), "maestro");
+    const projectDir = existsSync(join(defaultDir, "config.json"))
+      ? defaultDir
+      : resolve(await ask("Project directory (contains config.json)", defaultDir));
+    if (!existsSync(join(projectDir, "config.json"))) {
+      console.error(`✗ No config.json at ${projectDir} — pass --project <dir>, or run 'maestro setup' first.`);
+      process.exit(2);
+    }
+    args = [...args, "--project", projectDir];
+  }
+  process.exit(run("render/sync.mjs", args));
+}
+
 async function dispatch(command, args) {
   switch (command) {
     case "setup": await setup(args); break;
     case "update": await update(args); break;
     case "init": await init(args); break;
-    case "sync": process.exit(run("render/sync.mjs", args)); break;
+    case "sync": await sync(args); break;
     case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
     case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
