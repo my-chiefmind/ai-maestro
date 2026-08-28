@@ -274,6 +274,34 @@ export function epicOwnershipVerdict(epic, plan) {
 }
 
 /**
+ * The verdict the orchestrator acts on: scope AND ownership, composed.
+ *
+ * THE SINGLE DEFINITION OF "may this ticket run". eligibleTickets filters on it, and the
+ * cockpit's drawer previews with it, so the UI cannot say yes where the orchestrator says no.
+ * It was briefly written out twice — once here, once by hand in the cockpit — and the copy
+ * diverged in two ways within a single change, so the composition itself is now a function
+ * rather than a pattern each caller repeats.
+ *
+ * The two gates are independent and neither clears the other:
+ *   - scope answers "is this in the plan at all?" — a scope_exception can clear it
+ *   - ownership answers "is it wired to the right slice of the plan?" — an exception cannot,
+ *     because that is a decision about project scope, not about who owns a requirement
+ *
+ * Scope is reported first when both block: "not in the plan" is the more fundamental answer,
+ * and fixing it usually makes the ownership question moot.
+ *
+ * @param {any} ticket
+ * @param {{plan?: any, data?: any, archivedEpics?: any[]}} [ctx]
+ * @returns {{state:string, blocks:boolean, reason:string}}
+ */
+export function pickVerdict(ticket, { plan, data = null, archivedEpics = [] } = {}) {
+  const scope = scopeVerdict(ticket, plan);
+  if (scope.blocks) return scope;
+  const own = ownershipVerdict(ticket, { plan, data, archivedEpics });
+  return own.blocks ? own : scope;
+}
+
+/**
  * Live `todo` tickets ready to run right now: every dependency satisfied (archived, or a live
  * ticket already `done`) and not blocked by a human gate. `archived` only needs `id`s here —
  * an archived ticket is done by definition (it left the board because it landed, or because it
@@ -311,8 +339,7 @@ export function eligibleTickets(data, archived = [], opts = {}) {
   // Two independent gates, both at pick time. Scope asks "is this in the plan at all?";
   // ownership asks "is it wired to the right slice of it?". A ticket must clear both.
   return ready.filter((t) =>
-    !scopeVerdict(t, opts.plan).blocks &&
-    !ownershipVerdict(t, { plan: opts.plan, data, archivedEpics: opts.archivedEpics ?? [] }).blocks);
+    !pickVerdict(t, { plan: opts.plan, data, archivedEpics: opts.archivedEpics ?? [] }).blocks);
 }
 
 /**

@@ -5,7 +5,8 @@ import {
   TextField, Typography, useTheme,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import type { Board, BoardTicket, ProjectConfig } from './types';
+import type { Board, BoardEpic, BoardTicket, ProjectConfig } from './types';
+import { NO_INITIATIVE, reconcileEpicSelection, defaultEpicForNewTicket } from './boardFilters.mjs';
 import { useBoard } from './useBoard';
 import { useConfig } from './useConfig';
 import { usePlanScope } from './usePlanScope';
@@ -87,9 +88,10 @@ type Props = {
 
 function SingleBoard({ board, save, error, reload, update, config }: Props) {
   const { statusColor, priorityColor, modelColor } = useAccents();
-  const [f, setF] = useState({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '' });
+  const [f, setF] = useState({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '', initiative: '' });
   const [sel, setSel] = useState<string | null>(null);
   const [epicsOpen, setEpicsOpen] = useState(false);
+  const planScope = usePlanScope();
   const [view, setView] = useState<'list' | 'kanban'>('list');
 
   const areas = useMemo(() => [...new Set(
@@ -113,11 +115,16 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
     if (f.focus === 'blocked') return board.tickets.filter((t) => t.status === 'blocked');
     return board.tickets;
   };
+  // A ticket's initiative is DERIVED through its epic — it is never stored on the ticket, so
+  // the filter resolves it the same way every other reader does.
+  const initiativeOfTicket = (t: BoardTicket) =>
+    [...board.epics, ...board.archivedEpics].find((e) => e.id === t.epicId)?.initiativeId ?? '';
   const matches = (t: BoardTicket) =>
     (!f.status || t.status === f.status) &&
     (!f.priority || t.priority === f.priority) &&
     (!f.area || t.area === f.area) &&
     (!f.epic || t.epicId === f.epic) &&
+    (!f.initiative || (f.initiative === NO_INITIATIVE ? !initiativeOfTicket(t) : initiativeOfTicket(t) === f.initiative)) &&
     (!f.q || `${t.id} ${t.name} ${t.desc || ''} ${t.area || ''} ${planLabel(t)} ${epicName(board, t.epicId)}`
       .toLowerCase().includes(f.q.toLowerCase()));
 
@@ -173,7 +180,9 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
     return m;
   }, [focusTickets]);
 
-  const clear = () => setF({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '' });
+  const clear = () => setF({ status: '', priority: '', area: '', q: '', focus: 'active', epic: '', initiative: '' });
+  const selectEpic = (epicId: string) =>
+    setF(reconcileEpicSelection(f, [...board.epics, ...board.archivedEpics].find((e) => e.id === epicId), epicId));
 
   const patchTicket = (id: string, patch: Partial<BoardTicket>) =>
     update((b) => { const t = b.tickets.find((x) => x.id === id); if (t) Object.assign(t, patch); return b; });
@@ -186,7 +195,7 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
     update((b) => {
       b.tickets.unshift({
         id, name: 'New ticket', desc: '', status: 'backlog', priority: 'P2',
-        epicId: f.epic || board.epics[0]?.id || '', area: config?.areas?.[0] || '',
+        epicId: defaultEpicForNewTicket(f, board.epics), area: config?.areas?.[0] || '',
         depends_on: [], agent_plan: [], model: config?.models?.[1] || 'sonnet',
       });
       return b;
@@ -242,6 +251,16 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
           <MenuItem value="">All</MenuItem>
           {areas.map((a) => <MenuItem key={a} value={a}>{a}</MenuItem>)}
         </TextField>
+        {planScope.initiativeMode && (
+          <TextField select label="Initiative" value={f.initiative} onChange={(e) => setF({ ...f, initiative: e.target.value, epic: '' })} sx={{ minWidth: 150 }}>
+            <MenuItem value="">All</MenuItem>
+            {planScope.initiatives.map((i) => <MenuItem key={i.id} value={i.id}>{i.id} — {i.name}</MenuItem>)}
+            {/* Selectable, not just a sidebar heading: unassigned epics are the ones whose
+                tickets the orchestrator refuses, so "show me those" is the query that matters
+                most during a migration. */}
+            <MenuItem value={NO_INITIATIVE}>— No initiative —</MenuItem>
+          </TextField>
+        )}
         <Button size="small" onClick={clear}>Clear</Button>
       </Card>
 
@@ -252,10 +271,23 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
             <Box sx={{ flexGrow: 1 }} />
             <Button size="small" onClick={() => setEpicsOpen(true)} sx={{ minWidth: 0, fontSize: 11 }}>Manage</Button>
           </Box>
-          <EpicItem active={!f.epic} onClick={() => setF({ ...f, epic: '' })} name={f.epic ? 'Show all epics' : 'All epics'} count={focusTickets.length} />
-          {visibleEpics.map((e, i) => (
-            <EpicItem key={e.id} active={f.epic === e.id} onClick={() => setF({ ...f, epic: e.id })} no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
-          ))}
+          <EpicItem active={!f.epic} onClick={() => selectEpic('')} name={f.epic ? 'Show all epics' : 'All epics'} count={focusTickets.length} />
+          {!planScope.initiativeMode
+            ? visibleEpics.map((e, i) => (
+              <EpicItem key={e.id} active={f.epic === e.id} onClick={() => selectEpic(e.id)} no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
+            ))
+            : groupEpicsByInitiative(visibleEpics, planScope.initiatives).map((g) => (
+              <Box key={g.id ?? '_none'}>
+                <Typography sx={{ px: 1.6, pt: 1.2, pb: 0.4, fontSize: 10, fontWeight: 800, letterSpacing: '.1em',
+                  textTransform: 'uppercase', color: g.id ? 'primary.main' : 'warning.main' }}>
+                  {g.id ? `${g.id} · ${g.name}` : 'No initiative'}
+                </Typography>
+                {g.epics.map((e, i) => (
+                  <EpicItem key={e.id} active={f.epic === e.id} onClick={() => selectEpic(e.id)}
+                    no={i + 1} name={e.name} count={epicCountMap.get(e.id) || 0} />
+                ))}
+              </Box>
+            ))}
         </Card>
 
         <Box sx={{ minWidth: 0 }}>
@@ -340,7 +372,7 @@ function SingleBoard({ board, save, error, reload, update, config }: Props) {
 
       <TicketDrawer board={board} config={config} ticket={selTicket || null} onClose={() => setSel(null)}
         onPatch={(patch) => sel && patchTicket(sel, patch)} onDelete={() => sel && deleteTicket(sel)} />
-      <EpicsDialog board={board} open={epicsOpen} onClose={() => setEpicsOpen(false)} update={update} />
+      <EpicsDialog board={board} open={epicsOpen} onClose={() => setEpicsOpen(false)} update={update} defaultInitiative={f.initiative} />
     </Container>
   );
 }
@@ -508,7 +540,12 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
   // The project plan, for the scope controls below. The verdict shown here is a preview: the
   // validator warns and the orchestrator blocks on the server's own reading of the same rules.
   const scope = usePlanScope();
-  const verdict = t ? scope.verdict(t) : null;
+  // The epic is passed in so the verdict can derive the ticket's initiative the way the server
+  // does. A ticket has no initiative field of its own, and adding one would be a second source
+  // of truth that drifts the first time an epic moves.
+  const ticketEpic = t?.epicId ? [...board.epics, ...board.archivedEpics].find((e) => e.id === t.epicId) : null;
+  const verdict = t ? scope.verdict(t, { epics: board.epics, archivedEpics: board.archivedEpics }) : null;
+  const foreign = scope.foreignFor(ticketEpic?.initiativeId ?? null);
 
   // Load the ticket's spec whenever the open ticket changes.
   useEffect(() => {
@@ -570,8 +607,25 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
               <TextField select label="Epic" value={board.epics.find((e) => e.id === t.epicId) ? t.epicId : ''} onChange={(e) => onPatch({ epicId: e.target.value })} fullWidth
                 helperText={board.epics.length ? undefined : 'no epics yet — add one from the board’s Epics ▸ Manage'}>
                 <MenuItem value="">— none —</MenuItem>
-                {board.epics.map((ep) => <MenuItem key={ep.id} value={ep.id}>{ep.name} ({ep.id})</MenuItem>)}
+                {board.epics.map((ep) => (
+                  <MenuItem key={ep.id} value={ep.id}>
+                    {ep.name} ({ep.id}){scope.initiativeMode && ep.initiativeId ? ` · ${scope.initiativeName(ep.initiativeId)}` : ''}
+                  </MenuItem>
+                ))}
               </TextField>
+
+              {scope.initiativeMode && (
+                // READ-ONLY on purpose. A ticket's initiative is derived through its epic; an
+                // editable field here would be a second source of truth that disagrees with the
+                // epic the moment either one moves.
+                <Typography sx={{ fontSize: 12.5, mt: -0.6, color: ticketEpic?.initiativeId ? 'text.secondary' : 'warning.main' }}>
+                  {ticketEpic?.initiativeId
+                    ? `Initiative: ${ticketEpic.initiativeId} — ${scope.initiativeName(ticketEpic.initiativeId)} (from its epic; not set here)`
+                    : ticketEpic
+                      ? `Initiative: none — epic ${ticketEpic.id} is unassigned, so this ticket will not be picked. Assign it in Epics ▸ Manage.`
+                      : 'Initiative: none — with no epic this ticket may trace only to project-wide items.'}
+                </Typography>
+              )}
 
               <PlanEditor value={t.agent_plan || []} options={planSteps} onChange={(v) => onPatch({ agent_plan: v })} />
 
@@ -630,13 +684,22 @@ function TicketDrawer({ board, config, ticket: t, onClose, onPatch, onDelete }: 
                     </Box>
                   )}>
                   {scope.options.length === 0 && <MenuItem disabled value="">No plan items yet — write the plan first</MenuItem>}
-                  {scope.options.map((o) => (
-                    <MenuItem key={o.id} value={o.id}>
-                      <Checkbox checked={(t.traces_to || []).includes(o.id)} size="small" />
-                      <ListItemText primary={`${o.id}${o.out ? '  (out of scope)' : ''}`}
-                        secondary={`${scope.label(o.section)} — ${o.text}`} />
-                    </MenuItem>
-                  ))}
+                  {scope.options.map((o) => {
+                    // Another initiative's item is offered but disabled, exactly as an OUT- id
+                    // is shown rather than hidden: the reader has to be able to see that the
+                    // requirement exists and why it is unavailable, or they will assume the
+                    // plan is missing it and file a duplicate.
+                    const isForeign = foreign.has(o.id) && !(t.traces_to || []).includes(o.id);
+                    return (
+                      <MenuItem key={o.id} value={o.id} disabled={isForeign}>
+                        <Checkbox checked={(t.traces_to || []).includes(o.id)} size="small" disabled={isForeign} />
+                        <ListItemText primary={`${o.id}${o.out ? '  (out of scope)' : ''}`}
+                          secondary={isForeign
+                            ? `owned by ${scope.initiativeName(o.initiativeId)} — this ticket is in another initiative`
+                            : `${scope.label(o.section)} — ${o.text}`} />
+                      </MenuItem>
+                    );
+                  })}
                 </Select>
                 {verdict && (
                   <Typography sx={{ fontSize: 12, mt: 0.6, color: verdict.blocks ? 'warning.main' : 'text.secondary' }}>
@@ -725,10 +788,27 @@ function SpecEditor({ spec, setSpec, onSave, state, setState }: {
   );
 }
 
-function EpicsDialog({ board, open, onClose, update }: {
+/**
+ * Epics under their initiative, in plan order, with the unassigned ones last.
+ *
+ * "No initiative" is a real group, not a hidden one: in initiative mode an unassigned epic's
+ * tickets are refused at pick time, so burying it is the opposite of useful — it is the group
+ * someone needs to see.
+ */
+function groupEpicsByInitiative(epics: BoardEpic[], initiatives: { id: string; name: string }[]) {
+  const groups = initiatives.map((i) => ({ id: i.id as string | null, name: i.name, epics: epics.filter((e) => e.initiativeId === i.id) }));
+  const known = new Set(initiatives.map((i) => i.id));
+  const orphans = epics.filter((e) => !e.initiativeId || !known.has(e.initiativeId));
+  if (orphans.length) groups.push({ id: null, name: 'No initiative', epics: orphans });
+  return groups.filter((g) => g.epics.length);
+}
+
+function EpicsDialog({ board, open, onClose, update, defaultInitiative }: {
   board: Board; open: boolean; onClose: () => void; update: (fn: (b: Board) => Board) => void;
+  defaultInitiative?: string;
 }) {
   const [newName, setNewName] = useState('');
+  const scope = usePlanScope();
   const rename = (id: string, name: string) =>
     update((b) => { const e = b.epics.find((x) => x.id === id); if (e) e.name = name; return b; });
   const remove = (id: string) =>
@@ -737,11 +817,21 @@ function EpicsDialog({ board, open, onClose, update }: {
       for (const t of b.tickets) if (t.epicId === id) t.epicId = ''; // orphaned tickets, not deleted
       return b;
     });
+  const setInitiative = (id: string, initiativeId: string) =>
+    update((b) => {
+      const e = b.epics.find((x) => x.id === id);
+      if (e) { if (initiativeId) e.initiativeId = initiativeId; else delete e.initiativeId; }
+      return b;
+    });
   const add = () => {
     const name = newName.trim();
     if (!name) return;
     const id = nextEpicId(board);
-    update((b) => { b.epics.push({ id, name }); return b; });
+    // Inherit the initiative currently being looked at. Creating an epic from inside I-2 and
+    // getting an unassigned one is a silent trap: it validates, then its tickets are refused
+    // at pick time for a reason nothing on this screen explained.
+    const initiativeId = defaultInitiative && defaultInitiative !== NO_INITIATIVE ? defaultInitiative : undefined;
+    update((b) => { b.epics.push(initiativeId ? { id, name, initiativeId } : { id, name }); return b; });
     setNewName('');
   };
 
@@ -755,6 +845,15 @@ function EpicsDialog({ board, open, onClose, update }: {
             <Box key={e.id} sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
               <Typography sx={{ fontFamily: 'monospace', fontSize: 12, color: 'primary.main', width: 34 }}>{e.id}</Typography>
               <TextField value={e.name} onChange={(ev) => rename(e.id, ev.target.value)} size="small" sx={{ flex: 1 }} />
+              {scope.initiativeMode && (
+                <TextField select size="small" value={e.initiativeId ?? ''} sx={{ minWidth: 165 }}
+                  onChange={(ev) => setInitiative(e.id, ev.target.value)}
+                  error={!e.initiativeId}
+                  helperText={e.initiativeId ? undefined : 'tickets will not be picked'}>
+                  <MenuItem value="">— no initiative —</MenuItem>
+                  {scope.initiatives.map((i) => <MenuItem key={i.id} value={i.id}>{i.id} — {i.name}</MenuItem>)}
+                </TextField>
+              )}
               <Button color="error" size="small" onClick={() => remove(e.id)}>Delete</Button>
             </Box>
           ))}

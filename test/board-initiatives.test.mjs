@@ -19,9 +19,13 @@ import assert from "node:assert/strict";
 import {
   validateBoard, eligibleTickets, scopeBlockedTickets,
   ownershipVerdict, epicOwnershipVerdict, initiativeModeActive, crossInitiativeConflicts,
+  pickVerdict,
 } from "../scripts/board-core.mjs";
 import { assignLanes } from "../scripts/lane-core.mjs";
-import { emptyPlan } from "../scripts/plan-core.mjs";
+import { emptyPlan, scopeVerdict, planIsGating } from "../scripts/plan-core.mjs";
+import {
+  NO_INITIATIVE, reconcileEpicSelection, defaultEpicForNewTicket,
+} from "../cockpit/src/boardFilters.mjs";
 
 /** A plan with two initiatives, one owned requirement each, and one project-wide NFR. */
 function plan({ initiatives = true } = {}) {
@@ -212,6 +216,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const KIT_SRC = join(KIT, "cockpit", "src");
 
 test("a live ticket under an ARCHIVED epic is still ownership-checked at pick time", () => {
   const archivedEpics = [{ id: "eA", initiativeId: "I-1", name: "Landed registration" }];
@@ -320,4 +325,164 @@ test("a sample epic is exempt from the dangling check, as it is from the rest", 
   gone.sections.initiatives = [];
   const b = { epics: [{ id: "e9", initiativeId: "I-1", name: "Sample", sample: true }], tickets: [] };
   assert.deepEqual(validateBoard(b, { plan: gone }).errors, []);
+});
+
+// ── The rules the cockpit's preview runs, executably ───────────────────────────
+//
+// usePlanScope.ts no longer restates these — it imports scopeVerdict and ownershipVerdict from
+// scripts/ and composes them exactly as eligibleTickets does. That is the fix for two
+// divergences a source-ordering check could not see, and these tests pin the COMPOSED
+// behaviour rather than the arrangement of the source.
+
+// `preview` IS pickVerdict — the production function both eligibleTickets and usePlanScope
+// call. A test-local reimplementation of the composition would stay green while production
+// regressed to returning scope alone, which is the exact failure mode the earlier
+// source-ordering guard had.
+const preview = (ticket, ctx) => pickVerdict(ticket, ctx);
+
+test("a scope exception does NOT clear ownership in the preview", () => {
+  // The bug: the hand-written preview returned early on scope_exception, so a ticket with an
+  // exception showed as runnable while the server refused it. An exception is a decision about
+  // project SCOPE; it says nothing about which initiative a requirement belongs to.
+  const p = plan();
+  const b = board({ tickets: [ticket({ id: "T-1", epicId: "e2", traces_to: ["FR-1"], scope_exception: "owner said so" })] });
+
+  assert.equal(scopeVerdict(b.tickets[0], p).state, "exception", "scope alone is satisfied");
+  assert.equal(scopeVerdict(b.tickets[0], p).blocks, false);
+  const v = preview(b.tickets[0], { plan: p, data: b });
+  assert.equal(v.state, "cross-initiative");
+  assert.equal(v.blocks, true, "the preview must agree with the server, which still refuses it");
+  // And the server does refuse it, which is what makes the preview correct rather than merely strict.
+  assert.deepEqual(eligibleTickets(b, [], { plan: p }).map((t) => t.id), []);
+});
+
+test("ownership still applies when the ordinary scope gate is OFF", () => {
+  // The bug: the preview short-circuited on "no plan yet" — computed from D/UC/FR — so a plan
+  // that defines initiatives and only NFRs turned ownership off in the UI while the server
+  // kept enforcing it. planIsGating and initiativeModeActive are independent switches.
+  const p = emptyPlan();
+  p.sections.initiatives = [
+    { id: "I-1", name: "A", outcome: "x", scope: { in: [], out: [] }, metrics: [], depends_on: [] },
+    { id: "I-2", name: "B", outcome: "y", scope: { in: [], out: [] }, metrics: [], depends_on: [] },
+  ];
+  p.sections.nonFunctional = [{ id: "NFR-1", initiativeId: "I-1", text: "No PII", budget: "zero" }];
+
+  assert.equal(planIsGating(p), false, "no deliverable, use case or functional requirement");
+  assert.equal(initiativeModeActive(p), true, "but the plan does define initiatives");
+
+  const b = {
+    epics: [{ id: "e2", initiativeId: "I-2", name: "Billing" }],
+    tickets: [ticket({ id: "T-1", epicId: "e2", traces_to: ["NFR-1"] })],
+  };
+  assert.equal(scopeVerdict(b.tickets[0], p).state, "no-plan", "the scope gate really is off");
+  const v = preview(b.tickets[0], { plan: p, data: b });
+  assert.equal(v.state, "cross-initiative");
+  assert.equal(v.blocks, true);
+  assert.deepEqual(eligibleTickets(b, [], { plan: p }).map((t) => t.id), [], "the server refuses it too");
+});
+
+test("the preview reports the same verdicts the server acts on, across the states", () => {
+  const p = plan();
+  const cases = [
+    ["own initiative", { id: "T-1", epicId: "e1", traces_to: ["FR-1"] }, "in-scope", false],
+    ["project-wide item", { id: "T-2", epicId: "e1", traces_to: ["NFR-1"] }, "in-scope", false],
+    ["another initiative's item", { id: "T-3", epicId: "e2", traces_to: ["FR-1"] }, "cross-initiative", true],
+    ["unassigned epic", { id: "T-4", epicId: "e3", traces_to: ["NFR-1"] }, "unassigned-epic", true],
+    ["untraced", { id: "T-5", epicId: "e1", traces_to: [] }, "untraced", true],
+  ];
+  for (const [label, t, state, blocks] of cases) {
+    const b = board({ tickets: [ticket(t)] });
+    const v = preview(b.tickets[0], { plan: p, data: b });
+    assert.equal(v.state, state, `${label}: expected ${state}, got ${v.state}`);
+    assert.equal(v.blocks, blocks, label);
+    // Whatever the preview says about blocking, the orchestrator must do.
+    assert.equal(eligibleTickets(b, [], { plan: p }).length, blocks ? 0 : 1, `${label}: server disagrees`);
+  }
+});
+
+test("the cockpit calls pickVerdict rather than composing the gates itself", () => {
+  // Structural, and narrow on purpose: the behaviour above is pinned by calling the production
+  // function, so all this has to establish is that the hook calls THAT function and does not
+  // rebuild the composition beside it.
+  const src = readFileSync(join(KIT_SRC, "usePlanScope.ts"), "utf8");
+  assert.match(src, /import \{ pickVerdict[^}]*\} from '\.\.\/\.\.\/scripts\/board-core\.mjs'/);
+  assert.match(src, /return pickVerdict\(ticket, \{/);
+  assert.ok(!src.includes("const TRACEABLE = ["), "the restated prefix list must be gone");
+  assert.ok(!/scope\.blocks\)\s*return scope/.test(src), "the hook must not re-compose the two gates");
+});
+
+test("pickVerdict is what eligibleTickets filters on, so preview and pick cannot diverge", () => {
+  const p = plan();
+  for (const t of [
+    { id: "T-1", epicId: "e1", traces_to: ["FR-1"] },
+    { id: "T-2", epicId: "e2", traces_to: ["FR-1"] },
+    { id: "T-3", epicId: "e3", traces_to: ["NFR-1"] },
+    { id: "T-4", epicId: "e1", traces_to: [] },
+    { id: "T-5", epicId: "e1", traces_to: ["FR-1"], scope_exception: "owner said so" },
+  ]) {
+    const b = board({ tickets: [ticket(t)] });
+    const blocked = pickVerdict(b.tickets[0], { plan: p, data: b }).blocks;
+    assert.equal(eligibleTickets(b, [], { plan: p }).length, blocked ? 0 : 1,
+      `${t.id}: pickVerdict says blocks=${blocked}, eligibleTickets disagrees`);
+  }
+});
+
+// ── Board filters cannot contradict each other ─────────────────────────────────
+//
+// Two filters that can disagree are not just confusing: "+ ticket" defaults from them, so an
+// impossible combination files work somewhere other than the view implies and then hides it.
+// The rules live in cockpit/src/boardFilters.mjs as plain ESM precisely so they are pinnable.
+
+const EPICS = [
+  { id: "e1", initiativeId: "I-1" },
+  { id: "e2", initiativeId: "I-2" },
+  { id: "e3" }, // unassigned
+];
+const filters = (over = {}) => ({ status: "", priority: "", area: "", q: "", focus: "active", epic: "", initiative: "", ...over });
+
+test("selecting an epic outside the active initiative retunes the initiative filter", () => {
+  // Filter I-2, click an I-1 epic: leaving both would show zero tickets AND file the next new
+  // ticket into the invisible I-1 epic.
+  const next = reconcileEpicSelection(filters({ initiative: "I-2" }), EPICS[0], "e1");
+  assert.equal(next.epic, "e1");
+  assert.equal(next.initiative, "I-1", "the initiative filter follows the epic");
+  assert.equal(defaultEpicForNewTicket(next, EPICS), "e1", "and the new ticket lands where the view says");
+});
+
+test("selecting an unassigned epic switches the filter to NO_INITIATIVE", () => {
+  const next = reconcileEpicSelection(filters({ initiative: "I-1" }), EPICS[2], "e3");
+  assert.equal(next.initiative, NO_INITIATIVE);
+  assert.equal(defaultEpicForNewTicket(next, EPICS), "e3");
+});
+
+test("selecting an assigned epic while filtered to NO_INITIATIVE switches to its initiative", () => {
+  const next = reconcileEpicSelection(filters({ initiative: NO_INITIATIVE }), EPICS[1], "e2");
+  assert.equal(next.initiative, "I-2");
+});
+
+test("a matching selection leaves the initiative filter alone", () => {
+  for (const [initiative, epic, id] of [["I-1", EPICS[0], "e1"], [NO_INITIATIVE, EPICS[2], "e3"]]) {
+    const next = reconcileEpicSelection(filters({ initiative }), epic, id);
+    assert.equal(next.initiative, initiative);
+    assert.equal(next.epic, id);
+  }
+});
+
+test("with no initiative filter, selecting an epic does not invent one", () => {
+  const next = reconcileEpicSelection(filters(), EPICS[0], "e1");
+  assert.equal(next.initiative, "", "a user who has not filtered by initiative is not opted into one");
+});
+
+test("'All epics' keeps the initiative in force rather than clearing both", () => {
+  const next = reconcileEpicSelection(filters({ initiative: "I-2", epic: "e2" }), undefined, "");
+  assert.equal(next.epic, "");
+  assert.equal(next.initiative, "I-2");
+});
+
+test("a new ticket defaults into the filtered initiative, never simply the board's first epic", () => {
+  assert.equal(defaultEpicForNewTicket(filters({ initiative: "I-2" }), EPICS), "e2");
+  assert.equal(defaultEpicForNewTicket(filters({ initiative: NO_INITIATIVE }), EPICS), "e3");
+  assert.equal(defaultEpicForNewTicket(filters(), EPICS), "e1", "unfiltered, the board's first is right");
+  assert.equal(defaultEpicForNewTicket(filters({ initiative: "I-9" }), EPICS), "",
+    "an initiative with no epics yields no default rather than a wrong one");
 });

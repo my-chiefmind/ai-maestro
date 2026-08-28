@@ -213,3 +213,76 @@ test("removing every initiative succeeds once the board no longer references the
   assert.ok(p.sections.some((/** @type {any} */ s2) => s2.key === "initiatives"),
     "the Initiatives section stays in the registry — hiding it entirely would leave a fresh project no way in");
 });
+
+// ── Board writes through the cockpit (T-028) ────────────────────────────────────
+//
+// The Plan tab and the Board tab are two doors onto the same rules. These pin the board door:
+// the UI must not be able to save a board the CLI would refuse, and a refusal must be a 400
+// (keep the user's edits) rather than a 409 (disk wins, reapply).
+
+/**
+ * Rewrite the seeded plan + board. The plan tests above deliberately end by tearing the
+ * initiative layer down, so the board tests restore a known state rather than inheriting
+ * whatever the last one left — order-dependent fixtures are how a suite starts passing for
+ * the wrong reason.
+ */
+function reseed() { seed(dirname(boardDir)); }
+
+async function putBoard(body) {
+  const r = await fetch(`${ORIGIN}/api/board`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: r.status, body: await r.json() };
+}
+const getBoard = async () => (await fetch(`${ORIGIN}/api/board`)).json();
+
+test("the board tab cannot save a cross-initiative trace the CLI would refuse", { skip: SKIP }, async () => {
+  reseed();
+  const b = await getBoard();
+  const onDisk = readFileSync(join(boardDir, "data.json"), "utf8");
+  const r = await putBoard({
+    epics: b.epics,
+    // T-001 sits in I-1 through e1; FR-2 belongs to I-2.
+    tickets: b.tickets.map((t) => (t.id === "T-001" ? { ...t, traces_to: ["FR-2"] } : t)),
+    version: b.version,
+  });
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.match(r.body.error, /T-001 belongs to initiative I-1 through epic e1, but traces to FR-2 owned by I-2/);
+  assert.equal(readFileSync(join(boardDir, "data.json"), "utf8"), onDisk, "nothing written");
+  // 400, not 409: useBoard only replaces the in-memory board on a conflict, so a validation
+  // refusal must not carry `current` or the user's in-progress edits are thrown away.
+  assert.equal(r.body.current, undefined);
+});
+
+test("an epic pointing at an initiative the plan does not define is refused", { skip: SKIP }, async () => {
+  reseed();
+  const b = await getBoard();
+  const r = await putBoard({
+    epics: b.epics.map((e) => (e.id === "e1" ? { ...e, initiativeId: "I-9" } : e)),
+    tickets: b.tickets,
+    version: b.version,
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /Epic e1: initiativeId "I-9" is not an initiative in the plan/);
+});
+
+test("leaving an epic unassigned is allowed and only warns — it is a migration state", { skip: SKIP }, async () => {
+  reseed();
+  // The warn-in-validator / block-at-pick split, seen from the UI: the save must SUCCEED, or a
+  // board could never be migrated onto initiatives through the cockpit at all.
+  const b = await getBoard();
+  const detached = b.epics.map((e) => (e.id === "e1" ? { id: e.id, name: e.name, traces_to: [] } : e));
+  const r = await putBoard({
+    epics: detached,
+    tickets: b.tickets.map((t) => (t.id === "T-001" ? { ...t, traces_to: ["NFR-1"] } : t)),
+    version: b.version,
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const after = await getBoard();
+  assert.equal(after.epics.find((e) => e.id === "e1").initiativeId, undefined);
+
+  // Put it back for any later test.
+  await putBoard({ epics: b.epics, tickets: b.tickets, version: after.version });
+});
