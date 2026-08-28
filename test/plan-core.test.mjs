@@ -11,11 +11,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   emptyPlan, normalisePlan, isPlaceholder, sectionFilled, planCompleteness, planCoverage,
   nextId, nextOutId, sectionForId, validatePlan, planIsGating, scopeVerdict, renderPlanMd,
-  PLAN_SECTIONS,
+  planItems, initiativeCycles, PLAN_SECTIONS, TRACEABLE_PREFIXES, OWNED_SECTIONS,
 } from "../scripts/plan-core.mjs";
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
 /** A plan with every scoring section filled — 100% before any gap is raised. */
 function fullPlan() {
@@ -247,4 +252,278 @@ test("the mirror separates required from optional gaps", () => {
   assert.match(md, /Required — the plan is incomplete without these/);
   assert.match(md, /Optional — worth considering/);
   assert.ok(md.indexOf("G-1") < md.indexOf("G-2"), "required gaps come first");
+});
+
+// ── Initiatives (T-022) ─────────────────────────────────────────────────────────
+//
+// The initiative layer is additive by contract: a plan that never defines one must behave
+// EXACTLY as it did before this section existed. Half these tests are about the new feature;
+// the other half exist to prove it stayed out of everyone else's way.
+
+/** A plan with two initiatives, one owned item each, and one project-wide item. */
+function initiativePlan() {
+  const p = emptyPlan();
+  p.sections.goal = { text: "Ship the thing.", metrics: ["10 users in week one"] };
+  p.sections.initiatives = [
+    { id: "I-1", name: "Customer onboarding", outcome: "Customers activate without support", scope: { in: ["Registration"], out: ["Billing migration"] }, metrics: ["80% self-serve"], depends_on: [] },
+    { id: "I-2", name: "Billing migration", outcome: "Invoices come from the new system", scope: { in: [], out: [] }, metrics: [], depends_on: ["I-1"] },
+  ];
+  p.sections.deliverables = [{ id: "D-1", initiativeId: "I-1", text: "Onboarding workflow" }];
+  p.sections.functional = [
+    { id: "FR-1", initiativeId: "I-1", text: "Customer verifies their email", verify: "npm test" },
+    { id: "FR-2", initiativeId: "I-2", text: "Invoices reconcile against the ledger", verify: "npm test" },
+  ];
+  p.sections.nonFunctional = [{ id: "NFR-1", text: "No PII in logs", budget: "zero occurrences", enforce: "npm run check:no-pii" }];
+  return p;
+}
+
+test("a legacy plan with no initiatives key normalises to an empty array", () => {
+  const raw = { planVersion: 1, sections: { goal: { text: "x", metrics: [] }, functional: [{ id: "FR-1", text: "a" }] } };
+  const n = normalisePlan(raw);
+  assert.deepEqual(n.sections.initiatives, []);
+  // planVersion is NOT bumped — the layer is additive, so there is nothing to migrate.
+  assert.equal(n.planVersion, 1);
+  assert.equal(emptyPlan().planVersion, 1);
+});
+
+test("initiatives carry weight 0 — the completeness denominator is unchanged", () => {
+  // 17 = goal 3 + scope 3 + deliverables 2 + useCases 2 + functional 3 + nonFunctional 2
+  //      + milestones 1 + risks 1. Initiatives, gaps and open questions all score 0.
+  assert.equal(planCompleteness(emptyPlan()).possible, 17);
+  assert.equal(SECTIONS_BY_KEY_WEIGHT("initiatives"), 0);
+  // Adding initiatives to a full plan must not move the number in either direction.
+  const before = planCompleteness(fullPlan()).percent;
+  const withInit = fullPlan();
+  withInit.sections.initiatives = [{ id: "I-1", name: "A", outcome: "B", scope: { in: [], out: [] }, metrics: [], depends_on: [] }];
+  assert.equal(planCompleteness(withInit).percent, before);
+});
+
+function SECTIONS_BY_KEY_WEIGHT(key) {
+  return PLAN_SECTIONS.find((s) => s.key === key).weight;
+}
+
+test("initiative ids allocate max-plus-one over the ids currently in the plan", () => {
+  const p = initiativePlan();
+  assert.equal(nextId(p, "initiatives"), "I-3");
+  // Max-plus-one is computed over what is PERSISTED, so removing the highest id frees it for
+  // reuse. That is the honest description of this allocator: it is not a monotonic counter,
+  // and nothing here prevents a deleted id from being handed out again. Making reuse
+  // impossible would need tombstones or a ban on deletion, neither of which exists — so the
+  // protection against re-pointing a live trace at unrelated work lives elsewhere: T-025's
+  // `initiative-remove` refuses while any plan item, live epic, or archived epic still
+  // references the initiative, with no force flag.
+  p.sections.initiatives = p.sections.initiatives.filter((i) => i.id !== "I-2");
+  assert.equal(nextId(p, "initiatives"), "I-2");
+});
+
+test("sectionForId resolves an initiative id, and I- is not traceable", () => {
+  assert.equal(sectionForId("I-1"), "initiatives");
+  assert.ok(!TRACEABLE_PREFIXES.includes("I"));
+});
+
+test("a ticket tracing to an initiative is refused as unknown", () => {
+  const p = initiativePlan();
+  const v = scopeVerdict({ id: "T-1", traces_to: ["I-1"] }, p);
+  assert.equal(v.state, "unknown");
+  assert.equal(v.blocks, true);
+  assert.deepEqual(v.unknown, ["I-1"]);
+});
+
+test("initiatives are excluded from coverage", () => {
+  const ids = planCoverage(initiativePlan(), [], []).map((r) => r.id);
+  assert.ok(!ids.includes("I-1"), "an initiative must never appear as a plan item awaiting a ticket");
+  assert.deepEqual(ids.sort(), ["D-1", "FR-1", "FR-2", "NFR-1"]);
+});
+
+test("planItems includes initiatives for id uniqueness and reports ownership", () => {
+  const items = planItems(initiativePlan());
+  assert.equal(items.get("I-1").prefix, "I");
+  assert.equal(items.get("I-1").text, "Customer onboarding");
+  assert.equal(items.get("FR-1").initiativeId, "I-1");
+  assert.equal(items.get("NFR-1").initiativeId, null, "a project-wide item reports null, not undefined");
+});
+
+test("a valid initiative plan passes validation", () => {
+  assert.deepEqual(validatePlan(initiativePlan()).errors, []);
+});
+
+test("an initiative needs a name and an outcome", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[0].outcome = "";
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: an initiative needs an `outcome`/.test(e)));
+  p.sections.initiatives[0].name = "";
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: an initiative needs a `name`/.test(e)));
+});
+
+test("a duplicate initiative id collides in the shared plan id space", () => {
+  const p = initiativePlan();
+  p.sections.initiatives.push({ id: "I-1", name: "Dup", outcome: "x", scope: { in: [], out: [] }, metrics: [], depends_on: [] });
+  assert.ok(validatePlan(p).errors.some((e) => /Duplicate plan id "I-1"/.test(e)));
+});
+
+test("a malformed initiative id is rejected", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[0].id = "INIT-1";
+  assert.ok(validatePlan(p).errors.some((e) => /must look like I-1/.test(e)));
+});
+
+test("depends_on must name a real initiative, and never itself", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[1].depends_on = ["I-9"];
+  assert.ok(validatePlan(p).errors.some((e) => /I-2: depends_on "I-9"/.test(e)));
+  p.sections.initiatives[1].depends_on = ["I-2"];
+  assert.ok(validatePlan(p).errors.some((e) => /I-2: depends on itself/.test(e)));
+});
+
+test("a dependency cycle among initiatives is an error", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[0].depends_on = ["I-2"]; // I-1 → I-2 → I-1
+  const errs = validatePlan(p).errors;
+  assert.ok(errs.some((e) => /Initiative dependency cycle/.test(e)), errs.join("\n"));
+  assert.equal(initiativeCycles(normalisePlan(p).sections.initiatives).length, 1);
+  // A dangling dependency is reported as a dangling dependency, not as a phantom cycle.
+  assert.deepEqual(initiativeCycles([{ id: "I-1", depends_on: ["I-404"] }]), []);
+});
+
+test("an item may not name an initiative the plan does not define", () => {
+  const p = initiativePlan();
+  p.sections.functional[0].initiativeId = "I-9";
+  assert.ok(validatePlan(p).errors.some((e) => /FR-1: initiativeId "I-9" is not an initiative/.test(e)));
+});
+
+test("an item with no initiativeId is project-wide and valid", () => {
+  const p = initiativePlan();
+  delete p.sections.functional[0].initiativeId;
+  assert.deepEqual(validatePlan(p).errors, []);
+  assert.equal(planItems(p).get("FR-1").initiativeId, null);
+});
+
+test("ownership is legal on exactly six sections", () => {
+  assert.deepEqual([...OWNED_SECTIONS].sort(), ["deliverables", "functional", "milestones", "nonFunctional", "risks", "useCases"]);
+});
+
+test("ownership on an open question or a gap is an unknown field, not a silent no-op", () => {
+  // The trap: deliverables and openQuestions shared one schema definition, so widening it
+  // would have made ownership legal on questions. Both halves must refuse it.
+  const p = initiativePlan();
+  p.sections.openQuestions = [{ id: "Q-1", text: "Who owns support?", initiativeId: "I-1" }];
+  assert.ok(validatePlan(p).errors.some((e) => /Q-1: unknown field "initiativeId"/.test(e)));
+
+  const q = initiativePlan();
+  q.sections.gaps = [{ id: "G-1", text: "No deletion story", need: "required", initiativeId: "I-1" }];
+  assert.ok(validatePlan(q).errors.some((e) => /G-1: unknown field "initiativeId"/.test(e)));
+});
+
+test("an unknown field on an initiative is reported rather than normalised away", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[0].metric = ["typo — singular"];
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: unknown field "metric"/.test(e)));
+});
+
+test("initiative list fields must hold only strings", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[0].metrics = ["fine", 7];
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: `metrics` must contain only strings/.test(e)));
+  p.sections.initiatives[0].metrics = "not an array";
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: `metrics` must be an array of strings/.test(e)));
+});
+
+// ── Rendering ───────────────────────────────────────────────────────────────────
+
+test("an initiative-free plan renders byte-for-byte as it did before initiatives existed", () => {
+  // THE POINT OF THE FIXTURE: rendering twice and comparing the two results proves only that
+  // the function is pure — it would pass just as happily if every legacy plan's Markdown
+  // changed shape. legacy-plan.md was captured from the renderer BEFORE this ticket touched
+  // it, so this asserts against the old bytes and not against the new code's opinion of them.
+  const plan = JSON.parse(readFileSync(join(FIXTURES, "legacy-plan.json"), "utf8"));
+  const expected = readFileSync(join(FIXTURES, "legacy-plan.md"), "utf8");
+  assert.equal(renderPlanMd(plan, "Fixture Project"), expected);
+});
+
+test("rendering is deterministic in initiative mode too", () => {
+  // Catches Map-iteration order or object-key order leaking into the new path, which the
+  // fixture above cannot see.
+  const p = initiativePlan();
+  assert.equal(renderPlanMd(p, "P"), renderPlanMd(p, "P"));
+  assert.equal(renderPlanMd(structuredClone(p), "P"), renderPlanMd(p, "P"));
+});
+
+test("initiative mode renders project-wide items apart from each initiative's own", () => {
+  const md = renderPlanMd(initiativePlan(), "P");
+  assert.match(md, /## Project-wide plan items/);
+  assert.match(md, /_Owned by no single initiative/);
+  assert.match(md, /### `I-1` Customer onboarding/);
+  assert.match(md, /### `I-2` Billing migration/);
+  assert.match(md, /\*\*Depends on:\*\* `I-1`/);
+  // NFR-1 is project-wide; FR-1 belongs to I-1 and FR-2 to I-2.
+  const i1 = md.slice(md.indexOf("### `I-1`"), md.indexOf("### `I-2`"));
+  assert.ok(i1.includes("FR-1"), "I-1 renders its own requirement");
+  assert.ok(!i1.includes("FR-2"), "I-1 must not render another initiative's requirement");
+  assert.ok(!i1.includes("NFR-1"), "a project-wide item is not repeated under every initiative");
+  assert.ok(md.indexOf("NFR-1") < md.indexOf("### `I-1`"), "project-wide items render before the initiatives");
+});
+
+test("an initiative with no owned items says so rather than rendering an empty section", () => {
+  const p = initiativePlan();
+  p.sections.functional = p.sections.functional.filter((f) => f.initiativeId !== "I-2");
+  assert.match(renderPlanMd(p, "P"), /_No plan items owned yet._/);
+});
+
+// ── Malformed initiatives must be REPORTED, never quietly dropped ───────────────
+//
+// mutatePlan (plan-io.mjs) validates the NORMALISED plan, so anything normalisation filters
+// out is gone before validatePlan can object — and would then be erased from disk by the next
+// unrelated write. For initiatives the filter therefore keeps every object entry and lets the
+// validator refuse the write instead.
+
+test("an initiative with no id survives normalisation and is reported as an error", () => {
+  const p = initiativePlan();
+  p.sections.initiatives.push({ name: "Nameless", outcome: "something" });
+  assert.equal(normalisePlan(p).sections.initiatives.length, 3, "the malformed entry must not be filtered away");
+  const errs = validatePlan(p).errors;
+  assert.ok(errs.some((e) => /Initiatives: item missing id/.test(e)), errs.join("\n"));
+});
+
+test("a plan write is refused rather than silently erasing an id-less initiative", () => {
+  // The end-to-end shape of the defect: read → normalise → write would have dropped the entry
+  // and reported success. An error here is what makes the write fail instead.
+  const onDisk = initiativePlan();
+  onDisk.sections.initiatives.push({ name: "Half-typed", outcome: "" });
+  const next = normalisePlan(onDisk); // exactly what mutatePlan validates
+  assert.ok(validatePlan(next).errors.length > 0, "the normalised plan must still fail validation");
+  assert.ok(next.sections.initiatives.some((i) => i.name === "Half-typed"), "the entry is still there to be saved once fixed");
+});
+
+test("a non-object in the initiatives array is still filtered, and does not shift the raw pairing", () => {
+  const p = initiativePlan();
+  p.sections.initiatives.splice(1, 0, "not an initiative");
+  const n = normalisePlan(p);
+  assert.equal(n.sections.initiatives.length, 2);
+  // I-2's checks must still read I-2's raw entry, not I-1's, after the string is dropped.
+  p.sections.initiatives[2].metrics = [42];
+  assert.ok(validatePlan(p).errors.some((e) => /I-2: `metrics` must contain only strings/.test(e)));
+});
+
+test("an unknown nested scope field is rejected, matching the schema", () => {
+  // normaliseInitiative rebuilds `scope` from scratch, so a nested typo is gone by the time the
+  // normalised entry exists — only a raw-key check can see it. The schema says
+  // additionalProperties:false here; core validation must not be the looser of the two.
+  const p = initiativePlan();
+  p.sections.initiatives[0].scope = { in: ["Registration"], inn: ["typo"] };
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: unknown field "scope.inn" \(allowed: in, out\)/.test(e)));
+});
+
+test("a scope that is not an object is rejected", () => {
+  const p = initiativePlan();
+  p.sections.initiatives[0].scope = ["in", "out"];
+  assert.ok(validatePlan(p).errors.some((e) => /I-1: `scope` must be an object/.test(e)));
+});
+
+test("an id-less initiative never reaches the id map or the rendered Markdown", () => {
+  const p = initiativePlan();
+  p.sections.initiatives.push({ name: "Nameless", outcome: "x" });
+  assert.ok(!planItems(p).has(undefined), "an id-less entry must not be keyed as `undefined`");
+  const md = renderPlanMd(p, "P");
+  assert.ok(!md.includes("undefined"), "an id-less entry must not render as `### `undefined``");
+  assert.ok(!md.includes("Nameless"));
 });

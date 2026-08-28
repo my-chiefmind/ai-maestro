@@ -1,0 +1,134 @@
+{
+  "planVersion": 1,
+  "sections": {
+    "goal": {
+      "text": "Give a small team one boring, verifiable way to ship.",
+      "metrics": [
+        "A change reaches production in under a day",
+        "No release needs a manual checklist"
+      ]
+    },
+    "scope": {
+      "in": [
+        "the web app",
+        "the ingest pipeline"
+      ],
+      "out": [
+        {
+          "id": "OUT-1",
+          "text": "native mobile apps"
+        },
+        {
+          "id": "OUT-2",
+          "text": "migrating the legacy billing database"
+        }
+      ]
+    },
+    "deliverables": [
+      {
+        "id": "D-1",
+        "text": "A deployable web application"
+      },
+      {
+        "id": "D-2",
+        "text": "An ingest pipeline with a replayable dead-letter queue",
+        "notes": "Replay must be idempotent."
+      }
+    ],
+    "useCases": [
+      {
+        "id": "UC-1",
+        "actor": "new customer",
+        "text": "creates and activates an account without support"
+      },
+      {
+        "id": "UC-2",
+        "actor": "operator",
+        "text": "replays a failed batch without touching the database"
+      }
+    ],
+    "functional": [
+      {
+        "id": "FR-1",
+        "text": "A customer can verify their email address",
+        "verify": "npm test -- onboarding"
+      },
+      {
+        "id": "FR-2",
+        "text": "A failed batch can be replayed from the dead-letter queue",
+        "verify": "npm test -- ingest",
+        "enforce": "npm run check:idempotent"
+      },
+      {
+        "id": "FR-3",
+        "text": "An operator can see why a batch failed"
+      }
+    ],
+    "nonFunctional": [
+      {
+        "id": "NFR-1",
+        "text": "The onboarding API stays responsive under load",
+        "budget": "p95 below 300 ms",
+        "verify": "k6 run perf/onboarding.js"
+      },
+      {
+        "id": "NFR-2",
+        "text": "No personal data appears in logs",
+        "budget": "Zero PII occurrences",
+        "enforce": "npm run check:no-pii"
+      }
+    ],
+    "milestones": [
+      {
+        "id": "M-1",
+        "text": "First internal demo",
+        "target": "end of the discovery phase"
+      },
+      {
+        "id": "M-2",
+        "text": "Public beta"
+      }
+    ],
+    "risks": [
+      {
+        "id": "R-1",
+        "text": "The auth vendor's free tier may not cover launch volume",
+        "mitigation": "Price the paid tier before the beta"
+      },
+      {
+        "id": "R-2",
+        "text": "Assumes the legacy export format never changes"
+      }
+    ],
+    "gaps": [
+      {
+        "id": "G-1",
+        "text": "The plan says nothing about how a customer deletes their account",
+        "need": "required",
+        "from": "repo-audit",
+        "status": "open"
+      },
+      {
+        "id": "G-2",
+        "text": "No stated retention period for ingest artefacts",
+        "need": "optional",
+        "from": "data-model",
+        "status": "accepted",
+        "resolvedAs": "NFR-2"
+      },
+      {
+        "id": "G-3",
+        "text": "Consider a status page",
+        "need": "optional",
+        "from": "scale",
+        "status": "declined"
+      }
+    ],
+    "openQuestions": [
+      {
+        "id": "Q-1",
+        "text": "Who owns the customer-support escalation path?"
+      }
+    ]
+  }
+}
