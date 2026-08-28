@@ -31,10 +31,10 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { validateBoard, agentFileToCode, STATUSES, ARCHIVE_STATUSES, ARCHIVE_ONLY_STATUSES, PRIORITY, SWAG, MODELS, MODES } from "./board-core.mjs";
+import { validateBoard, agentFileToCode, STATUSES, ARCHIVE_STATUSES, ARCHIVE_ONLY_STATUSES, PRIORITY, SWAG, MODELS, MODES, initiativeModeActive, epicOwnershipVerdict, ownershipVerdict } from "./board-core.mjs";
 import { mutateBoard, boardVersion, BoardConflictError, BoardLockError } from "./board-io.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
-import { planItems, planIsGating, scopeVerdict, TRACEABLE_PREFIXES } from "./plan-core.mjs";
+import { planItems, planIsGating, scopeVerdict, TRACEABLE_PREFIXES, initiativeMap } from "./plan-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -42,12 +42,12 @@ const KIT_ROOT = resolve(__dir, "..");
 const argv = process.argv.slice(2);
 const OPS = new Set([
   "set-status", "set-routing", "set-testcmd", "block", "archive", "version",
-  "add", "add-epic", "import", "next-id", "retrace", "drop",
+  "add", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
 // add-epic) or take a file path (import), and must not be forced through the id guard below.
-const OPS_TAKING_ID = new Set(["set-status", "set-routing", "set-testcmd", "block", "archive", "retrace", "drop"]);
+const OPS_TAKING_ID = new Set(["set-status", "set-routing", "set-testcmd", "block", "archive", "retrace", "drop", "edit-epic"]);
 
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -83,6 +83,7 @@ function usage() {
 
     maestro ticket add                        file a new ticket
     maestro ticket add-epic                   file a new epic
+    maestro ticket edit-epic <id>             change an epic (initiative, name, desc, traces)
     maestro ticket import <file.json|->       bulk-add epics + tickets in one atomic write
     maestro ticket next-id [--count N]        allocate free ids (add --epics for epic ids)
     maestro ticket set-status <id> <status>   move a ticket between statuses
@@ -102,7 +103,18 @@ function usage() {
     --agent-plan a,b  --model  --execution-mode  --traces-to FR-1,FR-2  --human-gate  --test-cmd
 
   add-epic flags:
-    --name <text>  (required)   --id  --desc  --traces-to
+    --name <text>  (required)   --id  --desc  --traces-to  --initiative I-1
+
+  edit-epic flags:
+    --initiative I-2   move the epic to another plan initiative
+    --clear-initiative  detach the epic from its initiative. Allowed while the plan DOES define
+                        initiatives — an epic between assignments is a legitimate transitional
+                        state, not an error. The epic then warns in the validator and its
+                        tickets are not picked until it is assigned again. It must not still
+                        trace an initiative-owned item though: with no initiative it may trace
+                        only project-wide ones, so re-trace it (or move it) first.
+    --name <text>   --desc <text>   --traces-to D-1,FR-4
+    Refused if the result would leave any epic or ticket tracing across initiatives.
 
   import flags:
     --replace-sample   remove starter items marked "sample": true before adding
@@ -173,7 +185,7 @@ if (op === "next-id") {
 }
 
 const ticketId = argv[1] && !argv[1].startsWith("--") ? argv[1] : null;
-if (OPS_TAKING_ID.has(op) && !ticketId) die(`${op} needs a ticket id: maestro ticket ${op} <id> …`);
+if (OPS_TAKING_ID.has(op) && !ticketId) die(`${op} needs an id: maestro ticket ${op} <id> …`);
 
 // ── Validation context, mirroring validate-board.mjs so the same board is judged the
 //    same way whoever writes it. A missing agents dir or config downgrades to "skip that
@@ -199,7 +211,10 @@ const config = (() => {
 const plan = (() => {
   try {
     const p = readPlanForBoard(dataPath);
-    return planIsGating(p) ? p : null;
+    // Gating OR initiative-defining. A plan can name initiatives before it names a single
+    // requirement, and in that window ownership still has to be checked — otherwise the first
+    // epics filed against a fresh initiative structure are the ones nothing verifies.
+    return planIsGating(p) || initiativeModeActive(p) ? p : null;
   } catch {
     return null;
   }
@@ -242,6 +257,66 @@ function assertTraceable(ids) {
       `The plan does not define ${unknown.join(", ")} as in-scope work. Add the requirement ` +
       `first ('maestro plan add …' or /plan-update), or pass --force to record the trace ` +
       `anyway — the orchestrator will still refuse the ticket until the plan covers it.`);
+  }
+}
+
+/**
+ * Refuse an `--initiative` the plan does not define.
+ *
+ * Deliberately NOT forceable, unlike an unknown `traces_to`. A trace running ahead of the plan
+ * is a normal mid-replan state the orchestrator will simply refuse; an epic pointing at an
+ * initiative that does not exist is a dangling reference with no reading under which it is
+ * correct, and every ticket beneath it would inherit the same nonsense.
+ *
+ * There is no initiative id ALLOCATOR here on purpose: initiatives belong to the plan, and
+ * `maestro ticket` may only ever reference one the plan already defines. Handing out `I-4`
+ * from the board side would create an initiative nothing describes.
+ */
+function assertInitiativeExists(id) {
+  if (id == null) return;
+  if (!plan) {
+    throw usageError(
+      `Cannot set --initiative ${id}: there is no plan beside this board to define it. ` +
+      `Write one first ('maestro plan init', then 'maestro plan initiative-add').`);
+  }
+  const known = initiativeMap(plan);
+  if (!known.has(id)) {
+    const list = known.size ? [...known.keys()].join(", ") : "none yet";
+    throw usageError(
+      `The plan does not define initiative ${id} (known: ${list}). ` +
+      `Create it with 'maestro plan initiative-add --name … --outcome …'.`);
+  }
+}
+
+/**
+ * Refuse a change that would leave any epic or ticket wired across initiative boundaries.
+ *
+ * The board's own validator catches this too — mutateBoard runs it before writing, so nothing
+ * invalid can land either way. This exists for the MESSAGE: reassigning an epic is a bulk
+ * operation, and being told "the result would be invalid" followed by a wall of errors is a
+ * worse answer than being told, up front, exactly which tickets stand in the way and that
+ * nothing was written.
+ *
+ * @param {{epics:any[], tickets:any[]}} data the board AS IT WOULD BE after the change
+ * @param {any[]} archivedEpics
+ * @param {string} subject the epic being changed, for the message
+ */
+function assertNoCrossInitiative(data, archivedEpics, subject) {
+  if (!initiativeModeActive(plan)) return;
+  const conflicts = [];
+  for (const e of data.epics ?? []) {
+    const v = epicOwnershipVerdict(e, plan);
+    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(v.reason);
+  }
+  for (const t of data.tickets ?? []) {
+    const v = ownershipVerdict(t, { plan, data, archivedEpics });
+    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(v.reason);
+  }
+  if (conflicts.length) {
+    // Every conflicting id, not the first: one run has to tell the user the whole job.
+    throw usageError(
+      `Refusing to change ${subject} — ${conflicts.length} trace(s) would cross initiative ` +
+      `boundaries and nothing has been written:\n${conflicts.map((c) => `  • ${c}`).join("\n")}`);
   }
 }
 
@@ -452,13 +527,71 @@ const RUN = {
     if ((data.epics ?? []).some((e) => e.id === id) || (archive.epics ?? []).some((e) => e.id === id)) {
       throw usageError(`Epic id ${id} is already in use. Omit --id and one will be allocated from the board's current state.`);
     }
+    const initiative = flag("initiative");
+    assertInitiativeExists(initiative);
     const epic = { id, name };
+    if (initiative) epic.initiativeId = initiative;
     const desc = flag("desc"); if (desc) epic.desc = desc;
     const traces = listFlag("traces-to");
     if (traces) { assertTraceable(traces); epic.traces_to = traces; }
     data.epics ??= [];
     data.epics.push(epic);
-    return { data, result: { id }, human: `epic ${id} added` };
+    assertNoCrossInitiative(data, archive.epics ?? [], `epic ${id}`);
+    return { data, result: { id, initiativeId: epic.initiativeId ?? null }, human: `epic ${id} added${initiative ? ` under ${initiative}` : ""}` };
+  },
+
+  /**
+   * Change an existing epic in place — the operation that makes migrating a board onto
+   * initiatives possible at all. Without it, assigning an epic means hand-editing the board,
+   * which is the one thing this module exists to prevent.
+   *
+   * Absent flag ≠ empty: only what the caller passed is touched, so reassigning an initiative
+   * cannot quietly blank a description.
+   */
+  "edit-epic": ({ data, archive }) => {
+    const epic = (data.epics ?? []).find((e) => e.id === ticketId);
+    if (!epic) {
+      const archived = (archive.epics ?? []).some((e) => e.id === ticketId);
+      throw usageError(archived
+        ? `Epic ${ticketId} is archived. Archived work is history — it is not edited in place.`
+        : `Epic ${ticketId} does not exist on this board.`);
+    }
+    const initiative = flag("initiative");
+    const name = flag("name");
+    const desc = flag("desc");
+    const traces = listFlag("traces-to");
+    if (initiative == null && name == null && desc == null && traces == null && !has("clear-initiative")) {
+      throw usageError("Nothing to change — pass --initiative, --clear-initiative, --name, --desc or --traces-to.");
+    }
+    if (initiative != null && has("clear-initiative")) {
+      throw usageError("--initiative and --clear-initiative contradict each other.");
+    }
+
+    // Clearing is deliberately legal in initiative mode. Migrating a board is a sequence of
+    // states, not one atomic act, and an epic between assignments has to be representable —
+    // the validator warns and pick-time blocks its tickets, which stops the work without
+    // bricking the board. Forbidding it here would leave no way back from a wrong assignment.
+    if (has("clear-initiative")) delete epic.initiativeId;
+    else if (initiative != null) { assertInitiativeExists(initiative); epic.initiativeId = initiative; }
+    if (name != null) epic.name = name;
+    if (desc != null) epic.desc = desc;
+    if (traces != null) { assertTraceable(traces); epic.traces_to = traces; }
+
+    // Checked against the board AS IT WOULD BE: moving an epic re-homes every ticket under it,
+    // so the tickets' traces have to be re-judged too, not just the epic's own.
+    assertNoCrossInitiative(data, archive.epics ?? [], `epic ${ticketId}`);
+
+    const changed = [
+      has("clear-initiative") ? "initiative cleared" : initiative != null ? `initiative → ${initiative}` : null,
+      name != null ? "name" : null,
+      desc != null ? "desc" : null,
+      traces != null ? `traces_to → ${traces.join(", ") || "(none)"}` : null,
+    ].filter(Boolean);
+    return {
+      data,
+      result: { id: ticketId, initiativeId: epic.initiativeId ?? null, name: epic.name, traces_to: epic.traces_to ?? [] },
+      human: `epic ${ticketId}: ${changed.join("; ")}`,
+    };
   },
 
   /**
@@ -511,9 +644,13 @@ const RUN = {
     // fail before any of it lands, not after the first eight tickets are already on the board.
     const traced = [...epics, ...tickets].flatMap((x) => (Array.isArray(x.traces_to) ? x.traces_to : []));
     assertTraceable([...new Set(traced)]);
+    // Same one-set rule for initiatives: a document assigning half its epics to an initiative
+    // that does not exist should fail before any of it lands.
+    for (const id of new Set(epics.map((e) => e.initiativeId).filter(Boolean))) assertInitiativeExists(id);
 
     data.epics.push(...epics);
     data.tickets.push(...tickets);
+    assertNoCrossInitiative(data, archive.epics ?? [], `this import`);
 
     const summary = `imported ${epics.length} epic(s) + ${tickets.length} ticket(s)` +
       (dropped.length ? `, replacing sample ${dropped.join(", ")}` : "");

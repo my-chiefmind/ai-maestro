@@ -12,12 +12,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { boardVersion, mutateBoard, BoardConflictError, withBoardLock } from "../scripts/board-io.mjs";
+import { validateBoard, eligibleTickets } from "../scripts/board-core.mjs";
 
 const execFileP = promisify(execFile);
 const KIT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -395,4 +396,224 @@ test("an unknown ticket id is a usage error naming the board", async () => {
   const r = await ticket(["set-status", "T-999", "review"], dataPath);
   assert.equal(r.code, 1);
   assert.match(r.out.error, /T-999/);
+});
+
+// ── Initiative assignment on epics (T-026) ──────────────────────────────────────
+//
+// `edit-epic` is what makes migrating an existing board onto initiatives possible at all.
+// Without it, assigning an epic means hand-editing board/data.json — the one thing this
+// module exists to prevent — so the op has to be as safe as every other: locked, validated,
+// atomic, and refusing rather than half-applying.
+
+/** A board plus a plan defining I-1/I-2, FR-1 (I-1), FR-2 (I-2) and a project-wide NFR-1. */
+function seedInitiativeBoard() {
+  const dir = mkdtempSync(join(tmpdir(), "board-init-"));
+  const boardDir = join(dir, "board");
+  mkdirSync(boardDir, { recursive: true });
+  const w = (f, o) => writeFileSync(join(boardDir, f), JSON.stringify(o, null, 2));
+  w("plan.json", {
+    planVersion: 1,
+    sections: {
+      goal: { text: "Ship it.", metrics: [] },
+      scope: { in: [], out: [] },
+      initiatives: [
+        { id: "I-1", name: "Onboarding", outcome: "Customers activate", scope: { in: [], out: [] }, metrics: [], depends_on: [] },
+        { id: "I-2", name: "Billing", outcome: "Invoices reconcile", scope: { in: [], out: [] }, metrics: [], depends_on: [] },
+      ],
+      deliverables: [], useCases: [],
+      functional: [
+        { id: "FR-1", initiativeId: "I-1", text: "verify email", verify: "npm test" },
+        { id: "FR-2", initiativeId: "I-2", text: "reconcile", verify: "npm test" },
+      ],
+      nonFunctional: [{ id: "NFR-1", text: "No PII", budget: "zero" }],
+      milestones: [], risks: [], gaps: [], openQuestions: [],
+    },
+  });
+  w("data.json", {
+    epics: [{ id: "e1", initiativeId: "I-1", name: "Registration", traces_to: ["FR-1"] }],
+    tickets: [{ id: "T-001", epicId: "e1", name: "Verify email", area: "backend", priority: "P2", swag: "S", status: "todo", agent_plan: ["backend"], model: "sonnet", depends_on: [], traces_to: ["FR-1"] }],
+  });
+  w("archive.json", { epics: [], tickets: [] });
+  return { dir, board: join(boardDir, "data.json") };
+}
+
+const readBoard = (board) => JSON.parse(readFileSync(board, "utf8"));
+
+test("add-epic --initiative records the assignment", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const { stdout } = await execFileP("node", [WRITER, "add-epic", "--board", board, "--name", "Ledger", "--initiative", "I-2", "--traces-to", "FR-2", "--json"]);
+    const r = JSON.parse(stdout);
+    assert.equal(r.ok, true);
+    assert.equal(r.initiativeId, "I-2");
+    assert.equal(readBoard(board).epics.find((e) => e.id === r.id).initiativeId, "I-2");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an initiative the plan does not define is refused, and is not forceable", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    for (const extra of [[], ["--force"]]) {
+      const e = await execFileP("node", [WRITER, "add-epic", "--board", board, "--name", "Ghost", "--initiative", "I-9", ...extra]).catch((x) => x);
+      assert.equal(e.code, 1);
+      assert.match(`${e.stderr}`, /does not define initiative I-9 \(known: I-1, I-2\)/);
+    }
+    assert.equal(readBoard(board).epics.length, 1, "nothing was written");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("edit-epic moves an epic and re-homes its tickets", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    // Retrace the ticket to a project-wide item first, so the move is legal.
+    await execFileP("node", [WRITER, "retrace", "T-001", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--traces-to", "NFR-1"]);
+    const { stdout } = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--initiative", "I-2", "--json"]);
+    assert.equal(JSON.parse(stdout).initiativeId, "I-2");
+    assert.equal(readBoard(board).epics[0].initiativeId, "I-2");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("edit-epic refuses a move that would strand a ticket across initiatives, naming every conflict", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const before = readFileSync(board, "utf8");
+    const e = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--initiative", "I-2"]).catch((x) => x);
+    assert.equal(e.code, 1, "a bad request, never a retry");
+    // The epic's own trace AND the ticket underneath it both become foreign — both are named.
+    assert.match(`${e.stderr}`, /Epic e1 belongs to initiative I-2, but traces to FR-1 owned by I-1/);
+    assert.match(`${e.stderr}`, /T-001 belongs to initiative I-2 through epic e1, but traces to FR-1 owned by I-1/);
+    assert.match(`${e.stderr}`, /nothing has been written/);
+    assert.equal(readFileSync(board, "utf8"), before, "atomic: the board is byte-identical");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("edit-epic changes name, desc and traces without touching what was not passed", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--name", "Account registration", "--desc", "Customers can sign up"]);
+    const e1 = readBoard(board).epics[0];
+    assert.equal(e1.name, "Account registration");
+    assert.equal(e1.desc, "Customers can sign up");
+    assert.equal(e1.initiativeId, "I-1", "an untouched field survives");
+    assert.deepEqual(e1.traces_to, ["FR-1"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("--clear-initiative is a legal transitional state: the epic warns and its tickets stop", async () => {
+  // Migrating a board is a sequence of states, not one atomic act: an epic between assignments
+  // has to be representable. The design answer is warn-in-validator + block-at-pick, not a
+  // refusal — forbidding the clear would leave no way back from a wrong assignment.
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    // An epic with no initiative may trace only project-wide items, so re-trace first. NFR-1
+    // is owned by nobody.
+    await execFileP("node", [WRITER, "retrace", "T-001", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--clear-initiative"]);
+    assert.equal("initiativeId" in readBoard(board).epics[0], false, "cleared while initiatives exist");
+
+    const plan = JSON.parse(readFileSync(join(dirname(board), "plan.json"), "utf8"));
+    const data = readBoard(board);
+    const r = validateBoard(data, { plan, archived: [], archivedEpics: [] });
+    assert.deepEqual(r.errors, [], "a transitional state must never invalidate the board");
+    assert.ok(r.warnings.some((w) => /Epic e1: belongs to no initiative/.test(w)), r.warnings.join("\n"));
+    assert.deepEqual(eligibleTickets(data, [], { plan, archivedEpics: [] }).map((t) => t.id), [],
+      "its tickets are not picked until it is assigned again");
+
+    // And the way back is open.
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--initiative", "I-1"]);
+    assert.equal(readBoard(board).epics[0].initiativeId, "I-1");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("clearing is refused while the epic still traces an initiative-owned item", async () => {
+  // The other half of the documented rule: with no initiative, an epic may trace only
+  // project-wide items — so the clear is refused rather than silently creating a foreign trace.
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const before = readFileSync(board, "utf8");
+    const e = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--clear-initiative"]).catch((x) => x);
+    assert.equal(e.code, 1);
+    assert.match(`${e.stderr}`, /Epic e1 belongs to no initiative and may trace only to project-wide items, but traces to FR-1 owned by I-1/);
+    assert.equal(readFileSync(board, "utf8"), before, "nothing written");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("edit-epic rejects an empty change, a contradiction, and a missing epic", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    for (const [args, re] of [
+      [["edit-epic", "e1"], /Nothing to change/],
+      [["edit-epic", "e1", "--initiative", "I-2", "--clear-initiative"], /contradict each other/],
+      [["edit-epic", "e404", "--name", "x"], /Epic e404 does not exist/],
+    ]) {
+      const e = await execFileP("node", [WRITER, ...args, "--board", board]).catch((x) => x);
+      assert.equal(e.code, 1);
+      assert.match(`${e.stderr}`, re);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("edit-epic supports --dry-run and --expect-version like every other op", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const before = readFileSync(board, "utf8");
+    const { stdout } = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--name", "Renamed", "--dry-run", "--json"]);
+    assert.equal(JSON.parse(stdout).dryRun, true);
+    assert.equal(readFileSync(board, "utf8"), before, "dry-run writes nothing");
+
+    const stale = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--name", "Renamed", "--expect-version", "sha256:deadbeef"]).catch((x) => x);
+    assert.equal(stale.code, 2, "contended, so the caller retries");
+    assert.equal(readFileSync(board, "utf8"), before);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("edit-epic refuses to rewrite an archived epic", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    writeFileSync(join(dirname(board), "archive.json"), JSON.stringify({ epics: [{ id: "eA", initiativeId: "I-1", name: "Landed" }], tickets: [] }, null, 2));
+    const e = await execFileP("node", [WRITER, "edit-epic", "eA", "--board", board, "--name", "Rewritten"]).catch((x) => x);
+    assert.equal(e.code, 1);
+    assert.match(`${e.stderr}`, /archived. Archived work is history/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("import validates initiative ownership across the whole document before adding any of it", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const before = readFileSync(board, "utf8");
+    const doc = join(dir, "import.json");
+
+    writeFileSync(doc, JSON.stringify({ epics: [
+      { id: "e2", initiativeId: "I-2", name: "Ledger", traces_to: ["FR-2"] },
+      { id: "e3", initiativeId: "I-9", name: "Ghost" },
+    ] }));
+    const bad = await execFileP("node", [WRITER, "import", doc, "--board", board]).catch((x) => x);
+    assert.equal(bad.code, 1);
+    assert.match(`${bad.stderr}`, /does not define initiative I-9/);
+    assert.equal(readFileSync(board, "utf8"), before, "not even the good epic landed");
+
+    writeFileSync(doc, JSON.stringify({ epics: [{ id: "e2", initiativeId: "I-2", name: "Ledger", traces_to: ["FR-1"] }] }));
+    const crossed = await execFileP("node", [WRITER, "import", doc, "--board", board]).catch((x) => x);
+    assert.equal(crossed.code, 1);
+    assert.match(`${crossed.stderr}`, /Epic e2 belongs to initiative I-2, but traces to FR-1 owned by I-1/);
+    assert.equal(readFileSync(board, "utf8"), before);
+
+    writeFileSync(doc, JSON.stringify({ epics: [{ id: "e2", initiativeId: "I-2", name: "Ledger", traces_to: ["FR-2"] }] }));
+    await execFileP("node", [WRITER, "import", doc, "--board", board]);
+    assert.equal(readBoard(board).epics.find((e) => e.id === "e2").initiativeId, "I-2");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("maestro ticket has no initiative id allocator", async () => {
+  // Initiatives belong to the plan. Handing out `I-4` from the board side would create an
+  // initiative nothing describes.
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const { stdout } = await execFileP("node", [WRITER, "next-id", "--board", board, "--epics", "--count", "2"]);
+    assert.deepEqual(stdout.trim().split("\n"), ["e2", "e3"], "epic ids, never initiative ids");
+    const e = await execFileP("node", [WRITER, "next-id", "--board", board, "--initiatives"]).catch((x) => x);
+    if (!e.code) assert.ok(!/^I-/.test(`${e.stdout}`.trim()), "--initiatives must not allocate an I- id");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

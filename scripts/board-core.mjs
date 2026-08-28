@@ -13,7 +13,7 @@
  * but nothing may run until someone decides it is in scope.
  */
 
-import { scopeVerdict, planIsGating, planItems, normalisePlan } from "./plan-core.mjs";
+import { scopeVerdict, planIsGating, planItems, initiativeMap } from "./plan-core.mjs";
 
 export const STATUSES = ["backlog", "todo", "in-progress", "review", "blocked", "done"];
 
@@ -98,22 +98,9 @@ export function suggestCode(unknown, knownCodes) {
 // initiatives must keep behaving exactly as it did, and inventing a hidden "I-0" for it would
 // make every later question ("which initiative owns this?") have a fake answer.
 
-/**
- * True when the plan defines at least one initiative.
- *
- * Derived from normalisePlan rather than plan-core's initiativeMap on purpose: T-024 and T-023
- * are built in parallel off the same commit, and reaching for an export that only exists on the
- * other branch would couple two tickets whose write scopes are otherwise disjoint. Once both
- * have landed this can collapse to `initiativeMap(plan).size > 0` — same answer, one less
- * traversal.
- */
+/** True when the plan defines at least one initiative. */
 export function initiativeModeActive(plan) {
-  return !!plan && normalisePlan(plan).sections.initiatives.some((i) => i && i.id);
-}
-
-/** The plan's initiatives by id — the local equivalent of plan-core's initiativeMap. */
-function initiativesById(plan) {
-  return new Map(normalisePlan(plan).sections.initiatives.filter((i) => i.id).map((i) => [i.id, i]));
+  return !!plan && initiativeMap(plan).size > 0;
 }
 
 /** Epics addressable by a ticket: live and archived, since a ticket's epic may have landed. */
@@ -159,7 +146,7 @@ export function ownershipVerdict(ticket, opts = {}) {
   const epic = ticket.epicId ? epics.get(ticket.epicId) : null;
   if (ticket.epicId && !epic) return { state: "unresolved", blocks: false, reason: "", ...none };
 
-  const initiatives = initiativesById(plan);
+  const initiatives = initiativeMap(plan);
   const own = epic?.initiativeId ?? null;
 
   if (epic && !own) {
@@ -205,7 +192,7 @@ export function ownershipVerdict(ticket, opts = {}) {
  */
 export function epicOwnershipVerdict(epic, plan) {
   if (!initiativeModeActive(plan)) return { state: "off", blocks: false, reason: "", foreign: [] };
-  const initiatives = initiativesById(plan);
+  const initiatives = initiativeMap(plan);
   const own = epic.initiativeId ?? null;
   if (own && !initiatives.has(own)) {
     return { state: "unknown-initiative", blocks: true, reason: `Epic ${epic.id}: initiativeId "${own}" is not an initiative in the plan.`, foreign: [] };
