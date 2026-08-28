@@ -66,6 +66,8 @@ import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { eligibleTickets } from "./board-core.mjs";
+import { appendRun, newRunId } from "./telemetry-io.mjs";
+import { normaliseUsage } from "./usage-scan.mjs";
 import { boardVersion } from "./board-io.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planIsGating, scopeVerdict } from "./plan-core.mjs";
@@ -157,6 +159,8 @@ const repoDir = gitToplevel(resolve(flag("repo", process.cwd())));
 const dataPath = resolve(flag("board", join(process.cwd(), "board", "data.json")));
 const archivePath = resolve(flag("archive", join(dirname(dataPath), "archive.json")));
 const configPath = resolve(flag("config", join(dirname(dirname(dataPath)), "config.json")));
+// Run telemetry sits with the board's other live, local-only data.
+const boardDirPath = dirname(dataPath);
 const autoMerge = has("auto-merge");
 const dryRun = has("dry-run");
 const resume = has("resume");
@@ -353,23 +357,130 @@ function assertCleanCommittedWorktree(cwd, baseBranch) {
 }
 
 /** Run one agent stage headlessly in `cwd` and return its final response text. */
+/**
+ * Claude Code's `-p --output-format json` wraps the same answer in an envelope that also
+ * reports `session_id`, `duration_ms`, and the real `usage` counters — which is the only way
+ * this runner can record what a stage actually cost instead of guessing. Both call sites
+ * discard the returned text, so switching format changes nothing a caller sees; stderr is
+ * still inherited, so the live progress a human watches is untouched.
+ *
+ * A caller who passes their own --output-format keeps it, and we simply record no usage:
+ * their flag is the explicit instruction and this instrumentation is not entitled to override
+ * it.
+ * @param {string[]} extraFlags
+ */
+function wantsJsonEnvelope(extraFlags) {
+  return !extraFlags.some((f) => f === "--output-format" || f.startsWith("--output-format="));
+}
+
+/**
+ * Parse Claude Code's JSON envelope. Best-effort by design: a version that changes the shape
+ * must cost us the telemetry for that run, never the run itself.
+ * @param {string} stdout
+ * @returns {{ usage: any, sessionId: string | null, modelUsage: Record<string, any> | null }}
+ */
+function parseClaudeEnvelope(stdout) {
+  const empty = { usage: null, sessionId: null, modelUsage: null };
+  try {
+    const j = JSON.parse(stdout);
+    if (!j || typeof j !== "object") return empty;
+    return {
+      usage: j.usage ? normaliseUsage(j.usage) : null,
+      sessionId: typeof j.session_id === "string" ? j.session_id : null,
+      // Newer CLIs break usage down per model when a stage spanned more than one; when they
+      // do, that detail is strictly better than one blended row.
+      modelUsage: j.modelUsage && typeof j.modelUsage === "object" ? j.modelUsage : null,
+    };
+  } catch { return empty; }
+}
+
+/**
+ * @returns {{ stdout: string, startedAt: string, endedAt: string, durationMs: number,
+ *             usage: any, sessionId: string | null, modelUsage: Record<string, any> | null }}
+ */
 function runAgent(runtime, model, prompt, extraFlags, cwd, envOverride) {
   const cmd = runtime === "claude" ? "claude" : "codex";
   const codexModelArgs = CODEX_EFFORT[model]
     ? ["-c", `model_reasoning_effort=${CODEX_EFFORT[model]}`]
     : ["-m", model];
+  const json = runtime === "claude" && wantsJsonEnvelope(extraFlags);
   const args = runtime === "claude"
-    ? ["-p", prompt, "--model", model, ...extraFlags]
+    ? ["-p", prompt, "--model", model, ...(json ? ["--output-format", "json"] : []), ...extraFlags]
     : ["exec", prompt, ...codexModelArgs, ...extraFlags];
   const env = envOverride ? { ...process.env, ...envOverride } : process.env;
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
   const r = spawnSync(cmd, args, {
     cwd, encoding: "utf8", timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "inherit"], env,
   });
-  if (r.error) die(`Failed to run "${cmd}": ${r.error.message}`);
-  if (r.signal === "SIGTERM") die(`${cmd} timed out after ${timeoutMs / 1000}s (--timeout to change it).`);
-  if (r.status !== 0) die(`${cmd} exited ${r.status}. Its output:\n${r.stdout || "(none)"}`);
-  return r.stdout || "";
+  const durationMs = Date.now() - started;
+  const endedAt = new Date().toISOString();
+  // These THROW rather than die() so runStage can record the failed stage before the process
+  // goes away. A stage that burned twenty minutes and then failed is exactly the run you most
+  // want on the dashboard; exiting here would erase it.
+  const fail = (/** @type {string} */ msg, /** @type {string} */ outcome) => {
+    throw Object.assign(new Error(msg), { stageFailure: true, outcome, startedAt, endedAt, durationMs });
+  };
+  if (r.error) fail(`Failed to run "${cmd}": ${r.error.message}`, "spawn-failed");
+  if (r.signal === "SIGTERM") fail(`${cmd} timed out after ${timeoutMs / 1000}s (--timeout to change it).`, "timeout");
+  if (r.status !== 0) fail(`${cmd} exited ${r.status}. Its output:\n${r.stdout || "(none)"}`, "failed");
+  const stdout = r.stdout || "";
+  // Codex reports no machine-readable token counts on its normal `exec` output, so a Codex
+  // stage is recorded with an exact duration and NO usage — `usageSource: "none"`. A zero
+  // would read as "this stage was free", which is a different and false claim.
+  const envelope = json ? parseClaudeEnvelope(stdout) : { usage: null, sessionId: null, modelUsage: null };
+  return { stdout, startedAt, endedAt, durationMs, ...envelope };
+}
+
+/**
+ * Run one pipeline stage and record what it cost, as one telemetry line per model the stage
+ * used. The board is not touched: measurements live in board/telemetry.jsonl and ticket
+ * totals are derived from them (see scripts/telemetry-io.mjs for why that separation matters).
+ *
+ * Telemetry never fails a run. A stage that worked but could not be recorded is a lost
+ * measurement; a stage failed by its own bookkeeping is a lost day.
+ */
+function runStage(stage, runtime, model, prompt, extraFlags, cwd, envOverride) {
+  const runId = newRunId();
+  let out;
+  try {
+    out = runAgent(runtime, model, prompt, extraFlags, cwd, envOverride);
+  } catch (e) {
+    const err = /** @type {any} */ (e);
+    if (!err?.stageFailure) throw e;
+    const now = new Date().toISOString();
+    try {
+      appendRun(boardDirPath, {
+        runId, ticketId, stage, role: stage, runtime, model,
+        startedAt: err.startedAt || now, endedAt: err.endedAt || now,
+        durationMs: err.durationMs ?? 0, outcome: err.outcome || "failed",
+        usage: null, usageSource: "none",
+        note: String(err.message).slice(0, 200),
+      });
+    } catch { /* a lost measurement must not replace the real error below */ }
+    die(err.message);
+  }
+  const base = {
+    runId, ticketId, stage, role: stage, runtime, model,
+    startedAt: out.startedAt, endedAt: out.endedAt, durationMs: out.durationMs,
+    sessionId: out.sessionId || undefined, outcome: "ok",
+  };
+  try {
+    const perModel = out.modelUsage && Object.keys(out.modelUsage).length
+      ? Object.entries(out.modelUsage)
+      : null;
+    if (perModel) {
+      for (const [modelId, u] of perModel) {
+        appendRun(boardDirPath, { ...base, runId: `${runId}:${modelId}`, modelId, usage: normaliseUsage(u), usageSource: "provider" });
+      }
+    } else {
+      appendRun(boardDirPath, { ...base, usage: out.usage, usageSource: out.usage ? "provider" : "none" });
+    }
+  } catch (e) {
+    console.error(`  (telemetry not recorded: ${e instanceof Error ? e.message : String(e)})`);
+  }
+  return out;
 }
 
 function devPrompt() {
@@ -431,7 +542,7 @@ if (!prUrl) {
   if (wt.status !== 0) die(`git worktree add failed (see above) — ${ticketId} is left "in-progress".`);
   installDeps(worktreeDir);
 
-  runAgent(devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
+  runStage("dev", devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
 
   assertCleanCommittedWorktree(worktreeDir, defaultBranch);
   runTests(worktreeDir);
@@ -486,7 +597,7 @@ const priorReviewerReviews = (ghPrJson(prUrl, "reviews")?.reviews || [])
   .filter((review) => review.author?.login === reviewerLogin).length;
 const reviewerHeadBefore = git(worktreeDir, ["rev-parse", "HEAD"]).stdout.trim();
 const reviewerStatusBefore = git(worktreeDir, ["status", "--porcelain"]).stdout;
-runAgent(reviewerRuntime, reviewerModel, reviewerPrompt(prUrl), flagAll(reviewerRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir, reviewerEnv);
+runStage("reviewer", reviewerRuntime, reviewerModel, reviewerPrompt(prUrl), flagAll(reviewerRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir, reviewerEnv);
 const reviewerHeadAfter = git(worktreeDir, ["rev-parse", "HEAD"]).stdout.trim();
 const reviewerStatusAfter = git(worktreeDir, ["status", "--porcelain"]).stdout;
 if (reviewerHeadAfter !== reviewerHeadBefore || reviewerStatusAfter !== reviewerStatusBefore) {

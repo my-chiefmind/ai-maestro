@@ -26,6 +26,8 @@
  *   PUT  /api/spec/:id         -> { ok }                     ({ content })
  *   GET  /api/docs             -> { sections: [{ key, label, files: [{ path, title }] }] }
  *   GET  /api/docs/render      -> { path, html }             (?path=<root-relative .md>)
+ *   GET  /api/usage            -> the ticket usage report (see scripts/usage-core.mjs)
+ *   GET  /api/usage/export     -> ?format=json|csv|html [&view=tickets|model|agent|...]
  *   GET  /api/reports          -> { reports: [{ name, mtime, size }] }   (board/reports/)
  *   GET  /api/reports/render   -> { name, kind, html } for .md; sandboxed file for .html
  *
@@ -53,6 +55,8 @@ import { boardVersion as sharedBoardVersion } from "../../scripts/board-io.mjs";
 import { neuterRawHtml } from "./sanitize.mjs";
 import { findFreePort } from "./ports.mjs";
 import { loadPortfolio, readPortfolioBoards, survey as portfolioSurvey } from "./portfolio.mjs";
+import { buildUsageReport, usageToCsv, DIMENSIONS } from "../../scripts/usage-core.mjs";
+import { renderUsageSnapshot } from "../../scripts/usage-snapshot.mjs";
 
 // Raw HTML in a doc must not pass through to the UI's dangerouslySetInnerHTML untouched:
 // the rendered set includes agent-authored files (agents/*.md, skills/*/SKILL.md), so it
@@ -754,7 +758,7 @@ app.put("/api/plan/gap/:id", (req, res) => {
 // Curated so the tab shows the docs worth reading, not every file. Rendered server-side
 // with marked; read-only and path-allowlisted to the kit root (.md files only).
 const DOC_SECTIONS = [
-  { key: "guides", label: "Guides", files: ["README.md", "docs/GETTING-STARTED.md", "docs/METHOD.md", "docs/MODEL-ROUTING.md", "docs/CROSS-REVIEW.md", "docs/AGENTS.md", "CONTRIBUTING.md"] },
+  { key: "guides", label: "Guides", files: ["README.md", "docs/GETTING-STARTED.md", "docs/METHOD.md", "docs/MODEL-ROUTING.md", "docs/CROSS-REVIEW.md", "docs/USAGE.md", "docs/AGENTS.md", "CONTRIBUTING.md"] },
   { key: "reference", label: "Reference", files: ["board/README.md", "render/README.md", "cockpit/README.md", "starters/README.md"] },
   { key: "agents", label: "Agents", dir: "agents" },
   { key: "skills", label: "Skills", dir: "skills" },
@@ -921,6 +925,65 @@ function listReports(scope) {
       return { name: f, mtime: s.mtimeMs, size: s.size };
     });
 }
+
+// ── Ticket usage: time and tokens per ticket ────────────────────────────────
+// Every figure on the Value page comes from buildUsageReport(), the same function the
+// `maestro usage` CLI and the shareable snapshot render from — one aggregation, so a
+// dashboard, an export and a terminal can never quote different numbers for one ticket.
+//
+// Reading session transcripts is opt-in and can take a second on a first, cold run over
+// months of them; after that the mtime cache makes it cheap. This memo exists for the
+// pathological case instead — a UI that polls, or several tabs open on one board — and is
+// short enough that a run finishing is visible on the next manual refresh.
+const USAGE_TTL_MS = 20_000;
+/** @type {Map<string, { at: number, report: any }>} */
+const usageMemo = new Map();
+
+/** @param {{ boardDir: string }} scope @param {boolean} fresh */
+function usageFor(scope, fresh) {
+  const hit = usageMemo.get(scope.boardDir);
+  if (!fresh && hit && Date.now() - hit.at < USAGE_TTL_MS) return hit.report;
+  const report = buildUsageReport({ boardDir: scope.boardDir });
+  usageMemo.set(scope.boardDir, { at: Date.now(), report });
+  return report;
+}
+
+app.get("/api/usage", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  try {
+    res.json(usageFor(scope, req.query.refresh === "1"));
+  } catch (e) {
+    res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+app.get("/api/usage/export", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const format = String(req.query.format || "json");
+  const view = String(req.query.view || "tickets");
+  if (!["tickets", ...DIMENSIONS].includes(view)) return res.status(400).json({ error: `Unknown view "${view}".` });
+  let report;
+  try { report = usageFor(scope, false); }
+  catch (e) { return res.status(500).json({ error: errMessage(e) }); }
+  // A dated filename so several exports can sit in one download folder without overwriting.
+  const stamp = report.generatedAt.slice(0, 10);
+  const base = `${(scope.name || report.project || "board").replace(/[^\w.-]+/g, "-")}-usage-${stamp}`;
+  if (format === "csv") {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}-${view}.csv"`);
+    return res.send(usageToCsv(report, { view: /** @type {any} */ (view) }));
+  }
+  if (format === "html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.html"`);
+    return res.send(renderUsageSnapshot(report));
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${base}.json"`);
+  res.send(JSON.stringify(report, null, 2));
+});
 
 app.get("/api/reports", (req, res) => {
   const scope = scopeOf(req, res);

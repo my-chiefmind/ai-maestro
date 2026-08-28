@@ -8,12 +8,13 @@ import DocsPage from './DocsPage';
 import HelpPage from './HelpPage';
 import TodayPage from './TodayPage';
 import ReportsPage from './ReportsPage';
+import ValuePage from './ValuePage';
 import WelcomeModal from './WelcomeModal';
 import { useConfig } from './useConfig';
 import { getPortfolioToday, setActiveProject } from './api';
 import logoUrl from '../asset/logo.png';
 
-type Tab = 'board' | 'plan' | 'today' | 'roster' | 'docs' | 'reports' | 'help';
+type Tab = 'board' | 'plan' | 'today' | 'roster' | 'value' | 'docs' | 'reports' | 'help';
 
 // Sentinel for "the board this service was started for" in the project picker. A real
 // registry name can't collide with it: it isn't a name the registry format produces.
@@ -78,6 +79,7 @@ export default function App() {
             <NavButton active={tab === 'plan'} onClick={() => setTab('plan')}>Plan</NavButton>
             {projects && <NavButton active={tab === 'today'} onClick={() => setTab('today')}>Today</NavButton>}
             <NavButton active={tab === 'roster'} onClick={() => setTab('roster')}>Roster</NavButton>
+            <NavButton active={tab === 'value'} onClick={() => setTab('value')}>Value</NavButton>
             <NavButton active={tab === 'docs'} onClick={() => setTab('docs')}>Docs</NavButton>
             <NavButton active={tab === 'reports'} onClick={() => setTab('reports')}>Reports</NavButton>
             <NavButton active={tab === 'help'} onClick={() => setTab('help')}>Help</NavButton>
@@ -93,6 +95,7 @@ export default function App() {
             : tab === 'plan' ? <PlanPage />
             : tab === 'today' ? <TodayPage onOpenProject={pickProject} />
             : tab === 'roster' ? <RosterPage />
+            : tab === 'value' ? <ValuePage />
             : tab === 'docs' ? <DocsPage />
             : tab === 'reports' ? <ReportsPage />
             : <HelpPage />}
