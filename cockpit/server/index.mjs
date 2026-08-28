@@ -46,7 +46,9 @@ import { readPlan, planVersion, mutatePlan, PlanConflictError } from "../../scri
 import {
   PLAN_SECTIONS, SECTION_BY_KEY, GAP_NEEDS, GAP_STATUSES,
   planCompleteness, planCoverage, validatePlan, nextId, nextOutId, sectionForId,
+  OWNED_SECTIONS, initiativeProgress, projectWideProgress,
 } from "../../scripts/plan-core.mjs";
+import { crossInitiativeConflicts } from "../../scripts/board-core.mjs";
 import { boardVersion as sharedBoardVersion } from "../../scripts/board-io.mjs";
 import { neuterRawHtml } from "./sanitize.mjs";
 import { findFreePort } from "./ports.mjs";
@@ -542,6 +544,8 @@ app.get("/api/plan", (req, res) => {
       sections: PLAN_SECTION_META,
       completeness: planCompleteness(plan),
       coverage: planCoverage(plan, data.tickets ?? [], arch.tickets ?? []),
+      initiatives: initiativeProgress(plan, data.tickets ?? [], arch.tickets ?? []),
+      projectWide: projectWideProgress(plan, data.tickets ?? [], arch.tickets ?? []),
       warnings: validatePlan(plan).warnings,
     });
   } catch (e) {
@@ -566,6 +570,17 @@ app.put("/api/plan/section/:key", (req, res) => {
 
   const { value, version } = req.body ?? {};
   if (value == null) return res.status(400).json({ error: "Body must be { value, version }." });
+
+  // Ownership on a project-level section is REFUSED, not quietly dropped. Silently returning
+  // 200 while discarding the field tells the caller their edit landed when it did not — and
+  // the CLI refuses the same request outright, so accepting it here would make the two writers
+  // disagree about what is legal.
+  if (Array.isArray(value) && !OWNED_SECTIONS.has(key) && value.some((/** @type {any} */ r) => r?.initiativeId)) {
+    return res.status(400).json({
+      error: `Initiative ownership does not apply to "${key}". Only ${[...OWNED_SECTIONS].join(", ")} ` +
+        `can belong to an initiative — gaps and open questions stay project-level.`,
+    });
+  }
 
   try {
     const r = mutatePlan({
@@ -593,10 +608,41 @@ app.put("/api/plan/section/:key", (req, res) => {
             while (seen.has(o.id)) o.id = bumpId(o.id);
             seen.add(o.id);
           }
+        } else if (meta.kind === "initiatives") {
+          // Ids are assigned HERE, inside the lock, from the plan on disk — never by the tab.
+          // Client-side allocation is what produces two different "I-2"s when a tab and an
+          // agent add an initiative in the same second.
+          const rows = Array.isArray(value) ? value : [];
+          const seen = new Set(rows.map((/** @type {any} */ r2) => r2?.id).filter(Boolean));
+          plan.sections.initiatives = rows
+            .filter((/** @type {any} */ row) => String(row?.name ?? "").trim())
+            .map((/** @type {any} */ row) => {
+              let id = row.id;
+              if (!id) {
+                id = nextId(plan, "initiatives");
+                while (seen.has(id)) id = bumpId(id);
+                seen.add(id);
+              }
+              const strings = (/** @type {any} */ v) => (Array.isArray(v) ? v.map(String).filter((x) => x.trim()) : []);
+              /** @type {Record<string, any>} */
+              const item = {
+                id,
+                name: String(row.name ?? ""),
+                outcome: String(row.outcome ?? ""),
+                scope: { in: strings(row.scope?.in), out: strings(row.scope?.out) },
+                metrics: strings(row.metrics),
+                depends_on: strings(row.depends_on),
+              };
+              if (row.notes) item.notes = String(row.notes);
+              return item;
+            });
         } else {
           const rows = Array.isArray(value) ? value : [];
           const allowed = ["text", "notes", ...(meta.fields ?? [])];
           if (meta.kind === "gaps") allowed.push("need", "status", "from", "resolvedAs");
+          // Ownership is legal on exactly the six OWNED_SECTIONS. Elsewhere the field is not
+          // ignored — validatePlan reports it as unknown and the write is refused.
+          if (OWNED_SECTIONS.has(key)) allowed.push("initiativeId");
           const seen = new Set(rows.map((/** @type {any} */ r2) => r2?.id).filter(Boolean));
           plan.sections[key] = rows
             .filter((/** @type {any} */ row) => String(row?.text ?? "").trim())
@@ -615,6 +661,21 @@ app.put("/api/plan/section/:key", (req, res) => {
               return item;
             });
         }
+
+        // REVERSE PREFLIGHT, the same one `maestro plan` runs (crossInitiativeConflicts in
+        // board-core), so the cockpit cannot be the looser of the two writers. Throwing —
+        // never exiting — unwinds the board lock properly and leaves the plan untouched.
+        const arch0 = readJSON(scope.archive, { epics: [], tickets: [] });
+        const conflicts = crossInitiativeConflicts(plan, {
+          data: readJSON(scope.data, { epics: [], tickets: [] }),
+          archivedEpics: arch0.epics ?? [],
+          archivedTickets: arch0.tickets ?? [],
+        });
+        if (conflicts.length) {
+          throw new Error(
+            `${conflicts.length} board reference(s) would break, so nothing was written:\n` +
+            conflicts.map((/** @type {string} */ c) => `• ${c}`).join("\n"));
+        }
         return plan;
       },
     });
@@ -626,6 +687,8 @@ app.put("/api/plan/section/:key", (req, res) => {
       plan: r.plan,
       completeness: planCompleteness(r.plan),
       coverage: planCoverage(r.plan, data.tickets ?? [], arch.tickets ?? []),
+      initiatives: initiativeProgress(r.plan, data.tickets ?? [], arch.tickets ?? []),
+      projectWide: projectWideProgress(r.plan, data.tickets ?? [], arch.tickets ?? []),
       warnings: r.warnings,
     });
   } catch (e) {

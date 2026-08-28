@@ -39,7 +39,7 @@ import {
 } from "./plan-core.mjs";
 import { planPaths, readPlan, planVersion, mutatePlan } from "./plan-io.mjs";
 import { BoardConflictError, BoardLockError } from "./board-io.mjs";
-import { epicOwnershipVerdict, ownershipVerdict, initiativeModeActive } from "./board-core.mjs";
+import { crossInitiativeConflicts } from "./board-core.mjs";
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
@@ -214,35 +214,8 @@ function boardForPreflight() {
  */
 function assertBoardSurvives(nextPlan, subject) {
   const board = boardForPreflight();
-  if (!board || !initiativeModeActive(nextPlan)) return;
-  const { data, archivedEpics, archivedTickets } = board;
-  const conflicts = [];
-  for (const e of data.epics ?? []) {
-    const v = epicOwnershipVerdict(e, nextPlan);
-    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(v.reason);
-  }
-  for (const e of archivedEpics) {
-    const v = epicOwnershipVerdict(e, nextPlan);
-    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(`archive: ${v.reason}`);
-  }
-  for (const t of data.tickets ?? []) {
-    const v = ownershipVerdict(t, { plan: nextPlan, data, archivedEpics });
-    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(v.reason);
-  }
-  // ARCHIVED TICKETS COUNT. A landed ticket's traces are not decoration — planCoverage reads
-  // them, and initiativeProgress groups those rows by the ITEM's owner. So moving FR-1 to I-2
-  // while an archived ticket delivered it under an I-1 epic silently re-attributes finished
-  // work to an initiative that never did it, and the delivery percentages both initiatives
-  // report are wrong from then on. There is no way to re-trace an archived ticket afterwards
-  // either — archived work is history and has no editing op — so the only place this can be
-  // caught is here, before the plan moves.
-  //
-  // The same live+archived epic index resolves them, because an archived ticket's epic is
-  // usually archived too but does not have to be.
-  for (const t of archivedTickets) {
-    const v = ownershipVerdict(t, { plan: nextPlan, data, archivedEpics });
-    if (v.state === "cross-initiative" || v.state === "unknown-initiative") conflicts.push(`archive: ${v.reason}`);
-  }
+  if (!board) return;
+  const conflicts = crossInitiativeConflicts(nextPlan, board);
   if (conflicts.length) {
     die(`Refusing to change ${subject} — ${conflicts.length} board reference(s) would break and ` +
         `nothing has been written:\n${conflicts.map((c) => `  • ${c}`).join("\n")}\n` +

@@ -4,7 +4,8 @@ import {
   Select, TextField, Tooltip, Typography,
 } from '@mui/material';
 import type {
-  Plan, PlanCoverageRow, PlanItem, PlanResponse, PlanSectionMeta, PlanSectionStatus,
+  InitiativeProgress, Plan, PlanCoverageRow, PlanInitiative, PlanItem, PlanResponse,
+  PlanSectionMeta, PlanSectionStatus,
 } from './types';
 import { getPlan, putPlanSection, putPlanGap, PlanConflict } from './api';
 
@@ -89,6 +90,7 @@ export default function PlanPage() {
           status={statusByKey.get(meta.key)}
           plan={data.plan}
           coverage={coverageById}
+          progress={data.initiatives ?? []}
           onSave={(value) => save(meta.key, value)}
           onTriage={triage}
         />
@@ -161,15 +163,23 @@ function Banner({ tone, children, onClose }: { tone: 'error' | 'ok'; children: R
 
 // ── One section ─────────────────────────────────────────────────────────────────
 
-function SectionCard({ meta, status, plan, coverage, onSave, onTriage }: {
+function SectionCard({ meta, status, plan, coverage, progress, onSave, onTriage }: {
   meta: PlanSectionMeta;
   status?: PlanSectionStatus;
   plan: Plan;
   coverage: Map<string, PlanCoverageRow>;
+  progress: InitiativeProgress[];
   onSave: (value: unknown) => void;
   onTriage: (id: string, patch: { status?: string; need?: string; resolvedAs?: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const initiatives = plan.sections.initiatives ?? [];
+  // What gets hidden with no initiatives is the per-item OWNERSHIP PICKER (see ListEditor) —
+  // an empty picker repeated on every requirement is pure noise. The Initiatives section card
+  // itself stays, collapsed and with an empty state that says most projects do not need one,
+  // because hiding it entirely leaves a fresh project no way to create its FIRST initiative
+  // except the CLI. "Avoid showing empty initiative controls" is about the pickers, not about
+  // making the feature unreachable.
   const filled = status?.filled ?? false;
   const count = status?.count ?? 0;
 
@@ -194,8 +204,12 @@ function SectionCard({ meta, status, plan, coverage, onSave, onTriage }: {
           <Typography sx={{ fontSize: 12.5, color: 'text.secondary', mb: 1.6 }}>{meta.blurb}</Typography>
           {meta.kind === 'prose' && <GoalEditor plan={plan} onSave={onSave} />}
           {meta.kind === 'scope' && <ScopeEditor plan={plan} onSave={onSave} />}
+          {meta.kind === 'initiatives' && (
+            <InitiativesEditor plan={plan} progress={progress} onSave={onSave} />
+          )}
           {meta.kind === 'list' && (
-            <ListEditor meta={meta} items={plan.sections[meta.key] as PlanItem[]} coverage={coverage} onSave={onSave} />
+            <ListEditor meta={meta} items={plan.sections[meta.key] as PlanItem[]} coverage={coverage}
+              initiatives={initiatives} onSave={onSave} />
           )}
           {meta.kind === 'gaps' && (
             <GapEditor items={plan.sections.gaps} onTriage={onTriage} />
@@ -295,10 +309,14 @@ const FIELD_HINT: Record<string, string> = {
   budget: 'a number or a named standard — p95 < 300ms, WCAG 2.2 AA',
 };
 
-function ListEditor({ meta, items, coverage, onSave }: {
+/** Ownership is legal on exactly these — OWNED_SECTIONS in scripts/plan-core.mjs. */
+const OWNED_SECTIONS = new Set(['deliverables', 'useCases', 'functional', 'nonFunctional', 'milestones', 'risks']);
+
+function ListEditor({ meta, items, coverage, initiatives, onSave }: {
   meta: PlanSectionMeta;
   items: PlanItem[];
   coverage: Map<string, PlanCoverageRow>;
+  initiatives: PlanInitiative[];
   onSave: (v: unknown) => void;
 }) {
   const [rows, setRows] = useState<PlanItem[]>(items);
@@ -336,6 +354,15 @@ function ListEditor({ meta, items, coverage, onSave }: {
                 size="small" fullWidth sx={{ mt: 1 }} helperText={FIELD_HINT[f]}
                 onChange={(e) => patch(i, f, e.target.value)} />
             ))}
+            {initiatives.length > 0 && OWNED_SECTIONS.has(meta.key) && (
+              <OwnershipPicker value={row.initiativeId} initiatives={initiatives}
+                onChange={(v) => setRows(rows.map((r, j) => {
+                  if (j !== i) return r;
+                  const next = { ...r };
+                  if (v) next.initiativeId = v; else delete next.initiativeId;
+                  return next;
+                }))} />
+            )}
           </Box>
         );
       })}
@@ -421,6 +448,154 @@ function SaveRow({ dirty, onSave }: { dirty: boolean; onSave: () => void }) {
   return (
     <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1.6 }}>
       <Button size="small" variant="contained" disabled={!dirty} onClick={onSave}>Save section</Button>
+    </Box>
+  );
+}
+
+// ── Initiatives ─────────────────────────────────────────────────────────────────
+
+/**
+ * The initiative editor. Structurally unlike every other section — an initiative is not a
+ * `text` row — which is why it gets its own component rather than another branch inside
+ * ListEditor.
+ *
+ * Progress is DERIVED (from the board, via the server) and therefore read-only here. Letting
+ * someone type "70% done" would put a number on the page that no evidence supports, which is
+ * the opposite of what this layer is for.
+ */
+function InitiativesEditor({ plan, progress, onSave }: {
+  plan: Plan;
+  progress: InitiativeProgress[];
+  onSave: (v: unknown) => void;
+}) {
+  const items = plan.sections.initiatives ?? [];
+  const [rows, setRows] = useState<PlanInitiative[]>(items);
+  useEffect(() => setRows(items), [items]);
+  const empty = items.length === 0 && rows.length === 0;
+
+  const byId = new Map(progress.map((p) => [p.id, p]));
+  const blank = (): PlanInitiative => ({ id: '', name: '', outcome: '', scope: { in: [], out: [] }, metrics: [], depends_on: [] });
+  const patch = (i: number, next: Partial<PlanInitiative>) =>
+    setRows(rows.map((r, j) => (j === i ? { ...r, ...next } : r)));
+
+  return (
+    <Box>
+      {empty && (
+        <Typography sx={{ fontSize: 13, color: 'text.secondary', mb: 1.6 }}>
+          None yet — and most projects should keep it that way. Add initiatives only when the
+          project holds several independently valuable outcomes that each need multiple epics;
+          a smaller one goes straight from plan to epics. Two to six is the usual range, each
+          with a distinct outcome, and never named after a technical layer.
+        </Typography>
+      )}
+      {rows.map((row, i) => {
+        const p = row.id ? byId.get(row.id) : undefined;
+        // An initiative may depend on any OTHER initiative that already has an id.
+        const others = rows.filter((r) => r.id && r.id !== row.id);
+        return (
+          <Box key={row.id || `new-${i}`} sx={{ mb: 1.4, p: 1.4, borderRadius: 1.5, bgcolor: 'action.hover' }}>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mb: 1 }}>
+              <Chip size="small" label={row.id || 'new'}
+                sx={{ fontFamily: 'monospace', height: 20, fontSize: 11, fontWeight: 700 }} />
+              {p && (
+                <Tooltip title={`${p.done} of ${p.total} owned item(s) delivered by a landed ticket`}>
+                  <Chip size="small" variant="outlined"
+                    color={p.percent >= 100 ? 'success' : p.percent > 0 ? 'default' : 'warning'}
+                    label={`${p.percent}% delivered`} sx={{ height: 20, fontSize: 11 }} />
+                </Tooltip>
+              )}
+              {p && p.uncovered.length > 0 && (
+                <Tooltip title={`No ticket works ${p.uncovered.join(', ')}`}>
+                  <Chip size="small" variant="outlined" color="warning"
+                    label={`${p.uncovered.length} with no ticket`} sx={{ height: 20, fontSize: 11 }} />
+                </Tooltip>
+              )}
+              <Box sx={{ flexGrow: 1 }} />
+              <IconButton size="small" aria-label="remove initiative"
+                onClick={() => setRows(rows.filter((_, j) => j !== i))}>✕</IconButton>
+            </Box>
+
+            <TextField label="Name" value={row.name} size="small" fullWidth
+              placeholder="Customer onboarding — never a technical layer like “Backend”"
+              onChange={(e) => patch(i, { name: e.target.value })} />
+            <TextField label="Outcome" value={row.outcome} size="small" fullWidth multiline sx={{ mt: 1 }}
+              helperText="What is true for someone once this lands. An initiative without one is a folder."
+              onChange={(e) => patch(i, { outcome: e.target.value })} />
+
+            <StringList label="In scope" values={row.scope.in}
+              onChange={(v) => patch(i, { scope: { ...row.scope, in: v } })} />
+            <StringList label="Out of scope for this initiative" values={row.scope.out}
+              onChange={(v) => patch(i, { scope: { ...row.scope, out: v } })} />
+            <StringList label="Metrics" values={row.metrics}
+              onChange={(v) => patch(i, { metrics: v })} />
+
+            {others.length > 0 && (
+              <Box sx={{ mt: 1.6 }}>
+                <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.6, color: 'text.secondary' }}>
+                  Depends on
+                </Typography>
+                <Typography sx={{ fontSize: 12, color: 'text.disabled', mb: 0.8 }}>
+                  Planning information only — it never changes ticket eligibility or lane scheduling.
+                </Typography>
+                <Select multiple size="small" fullWidth value={row.depends_on}
+                  onChange={(e) => patch(i, { depends_on: typeof e.target.value === 'string' ? [e.target.value] : e.target.value })}
+                  renderValue={(v) => (v as string[]).join(', ') || 'none'}>
+                  {others.map((o) => (
+                    <MenuItem key={o.id} value={o.id}>{o.id} — {o.name}</MenuItem>
+                  ))}
+                </Select>
+              </Box>
+            )}
+          </Box>
+        );
+      })}
+      <Button size="small" onClick={() => setRows([...rows, blank()])}>+ initiative</Button>
+      <SaveRow dirty onSave={() => onSave(rows.filter((r) => r.name.trim()))} />
+    </Box>
+  );
+}
+
+/** A repeatable list of plain strings — an initiative's scope halves and its metrics. */
+function StringList({ label, values, onChange }: {
+  label: string; values: string[]; onChange: (v: string[]) => void;
+}) {
+  const rows = values.length ? values : [''];
+  return (
+    <Box sx={{ mt: 1.6 }}>
+      <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.6, color: 'text.secondary' }}>{label}</Typography>
+      {rows.map((v, i) => (
+        <Box key={i} sx={{ display: 'flex', gap: 1, mb: 0.6 }}>
+          <TextField value={v} size="small" fullWidth
+            onChange={(e) => onChange(rows.map((x, j) => (j === i ? e.target.value : x)))} />
+          <IconButton size="small" aria-label={`remove from ${label}`}
+            onClick={() => onChange(rows.filter((_, j) => j !== i))}>✕</IconButton>
+        </Box>
+      ))}
+      <Button size="small" onClick={() => onChange([...rows, ''])}>+ {label.toLowerCase()}</Button>
+    </Box>
+  );
+}
+
+/**
+ * Who owns this plan item. "Project-wide" is the default and the honest one: an item that
+ * applies to every initiative must NOT be assigned to one, or its delivery gets counted toward
+ * a single initiative's percentage.
+ */
+function OwnershipPicker({ value, initiatives, onChange }: {
+  value: string | undefined;
+  initiatives: PlanInitiative[];
+  onChange: (v: string | undefined) => void;
+}) {
+  return (
+    <Box sx={{ mt: 1 }}>
+      <Typography sx={{ fontSize: 12, fontWeight: 700, mb: 0.5, color: 'text.secondary' }}>Owned by</Typography>
+      <Select size="small" fullWidth value={value ?? ''}
+        onChange={(e) => onChange(e.target.value ? String(e.target.value) : undefined)}>
+        <MenuItem value="">Project-wide — applies to every initiative</MenuItem>
+        {initiatives.map((i) => (
+          <MenuItem key={i.id} value={i.id}>{i.id} — {i.name}</MenuItem>
+        ))}
+      </Select>
     </Box>
   );
 }

@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   validateBoard, eligibleTickets, scopeBlockedTickets,
-  ownershipVerdict, epicOwnershipVerdict, initiativeModeActive,
+  ownershipVerdict, epicOwnershipVerdict, initiativeModeActive, crossInitiativeConflicts,
 } from "../scripts/board-core.mjs";
 import { assignLanes } from "../scripts/lane-core.mjs";
 import { emptyPlan } from "../scripts/plan-core.mjs";
@@ -281,4 +281,43 @@ test("validate-board.mjs reports a cross-initiative ticket whose epic is archive
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── Dangling initiative references outlive initiative mode ──────────────────────
+
+test("an epic pointing at an initiative the plan no longer defines is an error, mode or not", () => {
+  // Deleting the LAST initiative turns initiative mode off. Every ownership check that is
+  // gated on that mode therefore goes quiet at exactly the moment the board is most likely to
+  // be wrong — the epics are all still carrying ids that now point at nothing.
+  const gone = plan();
+  gone.sections.initiatives = [];
+  const b = board({ epics: [{ id: "e1", initiativeId: "I-1", name: "Registration" }], tickets: [] });
+
+  assert.equal(initiativeModeActive(gone), false);
+  const errs = validateBoard(b, { plan: gone }).errors;
+  assert.ok(errs.some((e) => /Epic e1 names initiative I-1, which the plan does not define/.test(e)), errs.join("\n"));
+  assert.deepEqual(crossInitiativeConflicts(gone, { data: b }).length, 1);
+});
+
+test("an archived epic's dangling reference is reported too", () => {
+  const gone = plan();
+  gone.sections.initiatives = [];
+  const archivedEpics = [{ id: "eA", initiativeId: "I-2", name: "Landed" }];
+  const errs = validateBoard({ epics: [], tickets: [] }, { plan: gone, archivedEpics }).errors;
+  assert.ok(errs.some((e) => /^archive: Epic eA names initiative I-2/.test(e)), errs.join("\n"));
+});
+
+test("a legacy board with no initiativeId anywhere is untouched by that check", () => {
+  const gone = plan();
+  gone.sections.initiatives = [];
+  const legacy = { epics: [{ id: "e1", name: "Registration", traces_to: ["FR-1"] }], tickets: [] };
+  assert.deepEqual(validateBoard(legacy, { plan: gone }).errors, []);
+  assert.deepEqual(crossInitiativeConflicts(gone, { data: legacy }), []);
+});
+
+test("a sample epic is exempt from the dangling check, as it is from the rest", () => {
+  const gone = plan();
+  gone.sections.initiatives = [];
+  const b = { epics: [{ id: "e9", initiativeId: "I-1", name: "Sample", sample: true }], tickets: [] };
+  assert.deepEqual(validateBoard(b, { plan: gone }).errors, []);
 });
