@@ -476,6 +476,42 @@ test("the preflight sees ARCHIVED epics too", () => {
   assert.throws(() => p.plan(["edit", "FR-1", "--initiative", "I-2"]), /archive: Epic eA belongs to initiative I-1/);
 });
 
+test("the preflight sees ARCHIVED TICKETS, even when the archived epic never traced the item", () => {
+  // The subtle case: nothing LIVE references FR-1 at all, and the archived epic does not trace
+  // it either — only the archived ticket underneath it does. Miss this and the plan write
+  // succeeds while finished work is silently re-attributed: planCoverage reads archived traces,
+  // and initiativeProgress groups those rows by the ITEM's owner, so I-2 would start reporting
+  // delivery for work I-1 actually did. An archived ticket cannot be re-traced afterwards —
+  // archived work is history and has no editing op — so this is the only place to catch it.
+  const p = project();
+  seedInitiatives(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({ epics: [], tickets: [] }));
+  writeFileSync(join(p.boardDir, "archive.json"), JSON.stringify({
+    epics: [{ id: "eA", initiativeId: "I-1", name: "Landed registration" }], // no traces_to
+    tickets: [{ id: "T-900", epicId: "eA", status: "done", traces_to: ["FR-1"] }],
+  }));
+
+  let err;
+  try { p.plan(["edit", "FR-1", "--initiative", "I-2"]); } catch (e) { err = e; }
+  assert.ok(err, "moving FR-1 strands the archived ticket that delivered it");
+  const msg = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+  assert.match(msg, /archive: T-900 belongs to initiative I-1 through epic eA, but traces to FR-1 owned by I-2/);
+  assert.equal(p.read().sections.functional[0].initiativeId, "I-1", "nothing was written");
+});
+
+test("an archived ticket whose trace stays consistent does not block a plan move", () => {
+  const p = project();
+  seedInitiatives(p);
+  writeFileSync(join(p.boardDir, "data.json"), JSON.stringify({ epics: [], tickets: [] }));
+  writeFileSync(join(p.boardDir, "archive.json"), JSON.stringify({
+    epics: [{ id: "eA", initiativeId: "I-2", name: "Landed billing" }],
+    tickets: [{ id: "T-900", epicId: "eA", status: "done", traces_to: ["FR-1"] }],
+  }));
+  // T-900 sits in I-2 and traces FR-1; moving FR-1 into I-2 makes history consistent, not less.
+  p.plan(["edit", "FR-1", "--initiative", "I-2"]);
+  assert.equal(p.read().sections.functional[0].initiativeId, "I-2");
+});
+
 test("initiative-remove refuses while anything still references it, and offers no --force", () => {
   const p = project();
   seedInitiatives(p);
