@@ -18,6 +18,7 @@ import {
   emptyPlan, normalisePlan, isPlaceholder, sectionFilled, planCompleteness, planCoverage,
   nextId, nextOutId, sectionForId, validatePlan, planIsGating, scopeVerdict, renderPlanMd,
   planItems, initiativeCycles, PLAN_SECTIONS, TRACEABLE_PREFIXES, OWNED_SECTIONS,
+  initiativeMap, initiativeForItem, initiativeProgress, projectWideProgress,
 } from "../scripts/plan-core.mjs";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -526,4 +527,88 @@ test("an id-less initiative never reaches the id map or the rendered Markdown", 
   const md = renderPlanMd(p, "P");
   assert.ok(!md.includes("undefined"), "an id-less entry must not render as `### `undefined``");
   assert.ok(!md.includes("Nameless"));
+});
+
+// ── Initiative progress (T-023) ─────────────────────────────────────────────────
+
+/** initiativePlan() plus milestones, and tickets in every relevant state. */
+function progressPlan() {
+  const p = initiativePlan();
+  p.sections.deliverables.push({ id: "D-2", initiativeId: "I-2", text: "Ledger reconciliation" });
+  p.sections.useCases = [{ id: "UC-1", initiativeId: "I-1", actor: "customer", text: "activates an account" }];
+  p.sections.milestones = [{ id: "M-1", initiativeId: "I-1", text: "Onboarding demo" }];
+  return p;
+}
+
+test("initiativeMap and initiativeForItem report ownership", () => {
+  const p = progressPlan();
+  assert.deepEqual([...initiativeMap(p).keys()], ["I-1", "I-2"]);
+  assert.equal(initiativeForItem(p, "FR-1"), "I-1");
+  assert.equal(initiativeForItem(p, "NFR-1"), null, "a project-wide item is owned by nobody");
+  assert.equal(initiativeForItem(p, "FR-404"), null, "an unknown item is owned by nobody too");
+});
+
+test("progress counts live and archived tickets, and only a landed one moves the percentage", () => {
+  const p = progressPlan();
+  // I-1 owns D-1, UC-1, FR-1 (scored) and M-1 (reported, never scored).
+  const live = [{ id: "T-1", status: "in-progress", traces_to: ["UC-1"] }];
+  const archived = [{ id: "T-2", status: "done", traces_to: ["D-1"] }];
+  const [i1] = initiativeProgress(p, live, archived);
+  assert.equal(i1.id, "I-1");
+  assert.equal(i1.total, 3, "milestones are reported but not scored");
+  assert.equal(i1.covered, 2);
+  assert.equal(i1.done, 1);
+  assert.deepEqual(i1.uncovered, ["FR-1"], "no ticket at all");
+  assert.deepEqual(i1.incomplete, ["UC-1"], "has a ticket that has not landed");
+  assert.deepEqual(i1.milestones, ["M-1"]);
+  assert.equal(i1.percent, 33, "done / total — filing a ticket must not move the number");
+});
+
+test("a project-wide item is excluded from every initiative and reported once", () => {
+  const p = progressPlan();
+  const archived = [{ id: "T-1", status: "done", traces_to: ["NFR-1"] }];
+  for (const row of initiativeProgress(p, [], archived)) {
+    assert.ok(!row.uncovered.includes("NFR-1"));
+    assert.ok(!row.incomplete.includes("NFR-1"));
+  }
+  // I-1 owns 3 scored items, I-2 owns 2 (D-2, FR-2); NFR-1 belongs to neither.
+  assert.deepEqual(initiativeProgress(p, [], archived).map((r) => r.total), [3, 2]);
+  const global = projectWideProgress(p, [], archived);
+  assert.deepEqual(global, { id: null, name: "Project-wide", total: 1, covered: 1, done: 1, uncovered: [], incomplete: [], milestones: [], percent: 100 });
+});
+
+test("progress is derived from planCoverage, so the two never disagree", () => {
+  const p = progressPlan();
+  const archived = [{ id: "T-1", status: "done", traces_to: ["D-1", "FR-2"] }];
+  const rows = planCoverage(p, [], archived);
+  const byInitiative = initiativeProgress(p, [], archived);
+  for (const row of byInitiative) {
+    const fromCoverage = rows.filter((r) => r.initiativeId === row.id && r.section !== "milestones");
+    assert.equal(row.total, fromCoverage.length);
+    assert.equal(row.done, fromCoverage.filter((r) => r.done).length);
+  }
+});
+
+test("an initiative owning nothing reports 0 rather than dividing by zero", () => {
+  const p = initiativePlan();
+  p.sections.functional = p.sections.functional.filter((f) => f.initiativeId !== "I-2");
+  const i2 = initiativeProgress(p).find((r) => r.id === "I-2");
+  assert.equal(i2.total, 0);
+  assert.equal(i2.percent, 0);
+  assert.ok(Number.isFinite(i2.percent));
+});
+
+test("a plan with no initiatives returns no progress rows at all", () => {
+  assert.deepEqual(initiativeProgress(emptyPlan()), []);
+  assert.deepEqual(initiativeProgress(fullPlan(), [], []), []);
+  // Existing coverage callers are untouched: fullPlan has no initiatives, so every item is
+  // project-wide and planCoverage still reports exactly what it always did.
+  assert.equal(planCoverage(fullPlan()).length, 5);
+});
+
+test("progress never counts an initiative id as a plan item", () => {
+  const p = progressPlan();
+  for (const row of initiativeProgress(p)) {
+    assert.ok(!row.uncovered.some((id) => id.startsWith("I-")));
+  }
 });
