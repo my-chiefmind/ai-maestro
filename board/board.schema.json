@@ -13,6 +13,7 @@
         "required": ["id", "name"],
         "properties": {
           "id":        { "type": "string" },
+          "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The plan initiative this epic delivers. Schema-OPTIONAL for backward compatibility — a board written before initiatives existed must stay valid. Semantic validation supplies the conditional requirement: once board/plan.json defines an initiative, an unassigned live epic warns and its tickets are refused at pick time, and a trace crossing initiative ownership is an error. Cross-file conditions belong in validateBoard, not in JSON Schema." },
           "name":      { "type": "string" },
           "desc":      { "type": "string" },
           "collapsed": { "type": "boolean" },

@@ -89,13 +89,13 @@ const effectiveConfig = flag("max")
 let plan = null;
 try { plan = readPlanForBoard(boardPath); } catch { plan = null; }
 
-const ready = eligibleTickets(board, archive.tickets ?? [], { plan });
+const ready = eligibleTickets(board, archive.tickets ?? [], { plan, archivedEpics: archive.epics ?? [] });
 
 // Ready by dependency but refused by the plan. Reported separately, never folded into "nothing
 // to schedule": a board with three scope-blocked tickets and a board with no work left look
 // identical otherwise, and only one of them is fixed by /plan-update. The orchestrator, the
 // validator and the portfolio survey all keep these apart; this report has to as well.
-const blockedByScope = scopeBlockedTickets(board, archive.tickets ?? [], plan);
+const blockedByScope = scopeBlockedTickets(board, archive.tickets ?? [], plan, archive.epics ?? []);
 
 // ── check ───────────────────────────────────────────────────────────────────────
 if (op === "check") {

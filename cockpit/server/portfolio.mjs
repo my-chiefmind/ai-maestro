@@ -100,12 +100,14 @@ export function survey(portfolio, now) {
     if (!b.setUp) return { name: b.name, setUp: false, total: 0, ready: [], byStatus: {} };
     const byStatus = {};
     for (const t of b.tickets) byStatus[t.status] = (byStatus[t.status] || 0) + 1;
-    const ready = eligibleTickets({ tickets: b.tickets }, b.archived, { plan: b.plan })
+    // Epics are passed too: initiative ownership is derived through a ticket's epic, and a
+    // survey handed tickets alone would silently skip that half of the pick-time gate.
+    const ready = eligibleTickets({ epics: b.epics, tickets: b.tickets }, b.archived, { plan: b.plan, archivedEpics: b.archivedEpics })
       .map((t) => ({ id: t.id, name: t.name, priority: t.priority, epicId: t.epicId, area: t.area }));
     // Reported separately rather than folded into `ready`: a project with five scope-blocked
     // tickets and a project with nothing to do are not the same situation, and only one of
     // them is fixed by /plan-update.
-    const outOfScope = eligibleTickets({ tickets: b.tickets }, b.archived)
+    const outOfScope = eligibleTickets({ epics: b.epics, tickets: b.tickets }, b.archived)
       .filter((t) => !ready.some((r) => r.id === t.id)).length;
     return { name: b.name, setUp: true, total: b.tickets.length, ready, outOfScope, byStatus };
   });
