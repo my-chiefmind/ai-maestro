@@ -571,8 +571,23 @@ const RUN = {
     // states, not one atomic act, and an epic between assignments has to be representable —
     // the validator warns and pick-time blocks its tickets, which stops the work without
     // bricking the board. Forbidding it here would leave no way back from a wrong assignment.
-    if (has("clear-initiative")) delete epic.initiativeId;
-    else if (initiative != null) { assertInitiativeExists(initiative); epic.initiativeId = initiative; }
+    // Keep any archived SHADOW of this epic in step, inside this same lock and this same atomic
+    // write. `maestro ticket archive` copies a ticket's epic into archive.epics, so an epic
+    // routinely exists in both files; updating only the live one let the two diverge with no
+    // operation able to reconcile them, which blocked a legitimate initiative migration (T-031).
+    // Two writes would leave a window where they disagree — the exact state being fixed.
+    const shadow = (archive.epics ?? []).find((e) => e.id === ticketId);
+    if (has("clear-initiative")) {
+      delete epic.initiativeId;
+      if (shadow) delete shadow.initiativeId;
+    }
+    else if (initiative != null) {
+      assertInitiativeExists(initiative);
+      epic.initiativeId = initiative;
+      // Only initiativeId is synced. name/desc/traces_to on an archived epic are the record of
+      // what it was when its tickets landed; rewriting those really would be editing history.
+      if (shadow) shadow.initiativeId = initiative;
+    }
     if (name != null) epic.name = name;
     if (desc != null) epic.desc = desc;
     if (traces != null) { assertTraceable(traces); epic.traces_to = traces; }
@@ -589,8 +604,19 @@ const RUN = {
     ].filter(Boolean);
     return {
       data,
-      result: { id: ticketId, initiativeId: epic.initiativeId ?? null, name: epic.name, traces_to: epic.traces_to ?? [] },
-      human: `epic ${ticketId}: ${changed.join("; ")}`,
+      // The archive is returned whether or not a shadow was touched: mutateBoard only writes it
+      // when `out.archive` is defined, and it compares the rendered text, so an untouched
+      // archive is a no-op. Returning it conditionally would mean the sync above silently
+      // failed to persist in exactly the case it exists for.
+      archive,
+      result: {
+        id: ticketId,
+        initiativeId: epic.initiativeId ?? null,
+        name: epic.name,
+        traces_to: epic.traces_to ?? [],
+        syncedArchivedCopy: Boolean(shadow) && (initiative != null || has("clear-initiative")),
+      },
+      human: `epic ${ticketId}: ${changed.join("; ")}${shadow && (initiative != null || has("clear-initiative")) ? " (archived copy kept in step)" : ""}`,
     };
   },
 

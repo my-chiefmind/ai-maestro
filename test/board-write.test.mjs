@@ -540,6 +540,69 @@ test("clearing is refused while the epic still traces an initiative-owned item",
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("edit-epic keeps an archived copy of the same epic in step", async () => {
+  // The T-031 reproduction. `maestro ticket archive` copies a ticket's epic into archive.epics,
+  // so the epic exists in both files; updating only the live one let them diverge with no
+  // operation able to reconcile them, and that divergence then refused a legitimate plan write.
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const archivePath = join(dirname(board), "archive.json");
+    writeFileSync(archivePath, JSON.stringify({
+      epics: [{ id: "e1", name: "Registration", traces_to: [] }], // stale shadow: no initiativeId
+      tickets: [{ id: "T-900", epicId: "e1", status: "done", traces_to: ["NFR-1"] }],
+    }, null, 2));
+    // Re-trace to the project-wide NFR-1 first: e1 and T-001 both serve FR-1, which I-1 owns,
+    // so moving the epic to I-2 while they still point at it is a genuine cross-initiative move
+    // and is refused — correctly, and by a different rule than the one under test here.
+    await execFileP("node", [WRITER, "retrace", "T-001", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--traces-to", "NFR-1"]);
+
+    const { stdout } = await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--initiative", "I-2", "--json"]);
+    const r = JSON.parse(stdout);
+    assert.equal(r.initiativeId, "I-2");
+    assert.equal(r.syncedArchivedCopy, true);
+    const arch = JSON.parse(readFileSync(archivePath, "utf8"));
+    assert.equal(arch.epics[0].initiativeId, "I-2", "the archived shadow followed the live epic");
+    // Only initiativeId syncs — the rest of an archived epic is the record of what it was.
+    assert.equal(arch.epics[0].name, "Registration");
+    assert.deepEqual(arch.epics[0].traces_to, [], "name and traces on the archived copy are untouched");
+    // And the archived ticket beneath it now derives the new initiative.
+    assert.equal(arch.tickets[0].epicId, "e1");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("reassignment and clearing both reach the archived copy", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    const archivePath = join(dirname(board), "archive.json");
+    const shadow = () => JSON.parse(readFileSync(archivePath, "utf8")).epics[0];
+    writeFileSync(archivePath, JSON.stringify({
+      epics: [{ id: "e1", initiativeId: "I-1", name: "Registration", traces_to: [] }], tickets: [],
+    }, null, 2));
+
+    await execFileP("node", [WRITER, "retrace", "T-001", "--board", board, "--traces-to", "NFR-1"]);
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--traces-to", "NFR-1"]);
+
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--initiative", "I-2"]);
+    assert.equal(shadow().initiativeId, "I-2", "reassignment syncs");
+
+    await execFileP("node", [WRITER, "edit-epic", "e1", "--board", board, "--clear-initiative"]);
+    assert.equal("initiativeId" in shadow(), false, "clearing syncs too");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an archived-only epic is still refused — syncing a shadow is not editing history", async () => {
+  const { dir, board } = seedInitiativeBoard();
+  try {
+    writeFileSync(join(dirname(board), "archive.json"), JSON.stringify({
+      epics: [{ id: "eA", initiativeId: "I-1", name: "Landed" }], tickets: [],
+    }, null, 2));
+    const e = await execFileP("node", [WRITER, "edit-epic", "eA", "--board", board, "--initiative", "I-2"]).catch((x) => x);
+    assert.equal(e.code, 1);
+    assert.match(`${e.stderr}`, /archived\. Archived work is history/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("edit-epic rejects an empty change, a contradiction, and a missing epic", async () => {
   const { dir, board } = seedInitiativeBoard();
   try {
