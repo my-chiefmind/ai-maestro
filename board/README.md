@@ -42,6 +42,7 @@ maestro ticket add --name "…" --desc "…" --traces-to FR-3
 maestro ticket add-epic --name "…" --traces-to D-1
 maestro ticket import plan.json --replace-sample   # a whole planned board, in one write
 maestro ticket set-status T-010 in-progress   # optionally --agent-plan/--current-agent/…
+maestro ticket set-epic T-010 --epic e3       # move a ticket to another epic
 maestro ticket retrace T-010 --traces-to FR-3 | --scope-exception "…"
 maestro ticket block T-010 --name "BLOCKER: …" --desc "…"
 maestro ticket archive T-010 --evidence "merged abc123: …" --done-at 2026-08-09
@@ -154,7 +155,9 @@ structure. Items left untagged are **project-wide** and apply to every initiativ
 | Delivery per initiative is derived, never declared. | Covered when a ticket traces to an owned item; done when a landed one does. There is no percentage anyone can type. |
 
 Write them through `maestro plan initiative-add|initiative-edit|initiative-remove`, and assign
-epics with `maestro ticket edit-epic <id> --initiative <I-n>`. `initiative-remove` refuses while
+epics with `maestro ticket edit-epic <id> --initiative <I-n>`, and move a ticket between epics
+with `maestro ticket set-epic <id> --epic <e-n>` — both refuse a result that would leave any
+trace crossing initiative ownership. `initiative-remove` refuses while
 anything still references the initiative, and offers no `--force`.
 
 **A project that defines no initiative behaves exactly as it did before they existed** — same

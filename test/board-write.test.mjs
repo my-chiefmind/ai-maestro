@@ -680,3 +680,149 @@ test("maestro ticket has no initiative id allocator", async () => {
     if (!e.code) assert.ok(!/^I-/.test(`${e.stdout}`.trim()), "--initiatives must not allocate an I- id");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── set-epic: moving a ticket between epics ───────────────────────────────────────────────
+//
+// WHY THIS EXISTS: `edit-epic` changes an EPIC, but until T-036 nothing changed a TICKET's
+// epicId. The only ways to re-home a ticket were the cockpit or a hand edit — and hand-editing
+// a board is forbidden by the kit's own rules, so a headless or CI context had no path at all.
+// The op has to inherit every safety property the other writes have (lock, validation,
+// --expect-version, --dry-run, atomic replace) and add the two refusals specific to re-homing.
+
+/** A board with two initiatives, so ownership can actually be crossed. */
+function seedOwnedBoard() {
+  const { dir, boardDir, dataPath, archivePath } = seedBoard(1);
+  writeFileSync(dataPath, JSON.stringify({
+    epics: [
+      { id: "e1", name: "Alpha", initiativeId: "I-1", traces_to: ["D-1"] },
+      { id: "e2", name: "Beta", initiativeId: "I-2", traces_to: ["D-2"] },
+      { id: "e3", name: "Alpha two", initiativeId: "I-1", traces_to: ["D-1"] },
+      { id: "e4", name: "Unowned" },
+    ],
+    tickets: [
+      { id: "T-001", epicId: "e1", name: "Owned by I-1", area: "infra", priority: "P2", swag: "S", status: "todo", depends_on: [], traces_to: ["FR-1"] },
+      { id: "T-002", epicId: "e4", name: "Under an unassigned epic", area: "infra", priority: "P2", swag: "S", status: "todo", depends_on: [], traces_to: ["FR-2"] },
+    ],
+  }, null, 2) + "\n");
+  writeFileSync(join(boardDir, "plan.json"), JSON.stringify({
+    version: 1,
+    sections: {
+      initiatives: [{ id: "I-1", name: "One", outcome: "x" }, { id: "I-2", name: "Two", outcome: "y" }],
+      deliverables: [{ id: "D-1", text: "d1", initiativeId: "I-1" }, { id: "D-2", text: "d2", initiativeId: "I-2" }],
+      functional: [{ id: "FR-1", text: "f1", initiativeId: "I-1" }, { id: "FR-2", text: "f2", initiativeId: "I-2" }],
+    },
+  }, null, 2) + "\n");
+  return { dir, boardDir, dataPath, archivePath };
+}
+
+test("set-epic moves a ticket between epics in the same initiative", async () => {
+  const { dataPath } = seedOwnedBoard();
+  const r = await ticket(["set-epic", "T-001", "--epic", "e3"], dataPath);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.from, "e1");
+  assert.equal(r.out.to, "e3");
+  assert.equal(read(dataPath).tickets.find((t) => t.id === "T-001").epicId, "e3");
+});
+
+test("set-epic moves a ticket off an unassigned epic onto an owned one", async () => {
+  // The case T-036 itself was filed from: a ticket sitting under a historical epic that
+  // predates initiatives, being re-homed under one that owns the plan items it traces.
+  const { dataPath } = seedOwnedBoard();
+  const r = await ticket(["set-epic", "T-002", "--epic", "e2"], dataPath);
+  assert.equal(r.code, 0);
+  assert.equal(read(dataPath).tickets.find((t) => t.id === "T-002").epicId, "e2");
+});
+
+test("set-epic refuses an epic that does not exist, and names the ones that do", async () => {
+  const { dataPath } = seedOwnedBoard();
+  const before = readFileSync(dataPath, "utf8");
+  const r = await ticket(["set-epic", "T-001", "--epic", "e99"], dataPath);
+  assert.equal(r.code, 1);
+  assert.match(r.out.error, /Epic e99 does not exist/);
+  assert.match(r.out.error, /e1, e2, e3, e4/, "a refusal that lists the real options costs one round-trip, not two");
+  assert.equal(readFileSync(dataPath, "utf8"), before, "nothing written");
+});
+
+test("set-epic refuses a move that would put the ticket's traces across an initiative", async () => {
+  // The same invariant edit-epic enforces from the epic's side (FR-2). A ticket's ownership
+  // comes from its epic, so re-homing it can strand its own traces on the wrong side.
+  const { dataPath } = seedOwnedBoard();
+  const before = readFileSync(dataPath, "utf8");
+  const r = await ticket(["set-epic", "T-001", "--epic", "e2"], dataPath);
+  assert.equal(r.code, 1);
+  assert.match(r.out.error, /cross initiative boundaries/);
+  assert.match(r.out.error, /FR-1 owned by I-1/, "the refusal names the offending trace");
+  assert.equal(readFileSync(dataPath, "utf8"), before, "a refused move leaves the file byte-identical");
+});
+
+test("set-epic honours --expect-version, so two writers cannot silently clobber each other", async () => {
+  const { dataPath } = seedOwnedBoard();
+  const before = readFileSync(dataPath, "utf8");
+  const r = await ticket(["set-epic", "T-001", "--epic", "e3", "--expect-version", "sha256:stale"], dataPath);
+  assert.equal(r.code, 2, "exit 2 means the board moved — re-read and retry");
+  assert.equal(readFileSync(dataPath, "utf8"), before);
+
+  const version = boardVersion(dataPath);
+  const ok = await ticket(["set-epic", "T-001", "--epic", "e3", "--expect-version", version], dataPath);
+  assert.equal(ok.code, 0, "the current version is accepted");
+});
+
+test("set-epic --dry-run reports the move and writes nothing", async () => {
+  const { dataPath } = seedOwnedBoard();
+  const before = readFileSync(dataPath, "utf8");
+  const r = await ticket(["set-epic", "T-001", "--epic", "e3", "--dry-run"], dataPath);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.dryRun, true);
+  assert.equal(r.out.to, "e3");
+  assert.equal(readFileSync(dataPath, "utf8"), before);
+});
+
+test("set-epic --clear is refused rather than stranding a ticket with no initiative", async () => {
+  // Detaching is legal in principle, but a ticket with no epic derives no initiative and may
+  // then trace only project-wide items. Writing an empty epicId here would produce exactly the
+  // invalid board the validator exists to prevent, so the op refuses and says why.
+  const { dataPath } = seedOwnedBoard();
+  const before = readFileSync(dataPath, "utf8");
+  const r = await ticket(["set-epic", "T-001", "--clear"], dataPath);
+  assert.equal(r.code, 1);
+  assert.match(r.out.error, /no epic, so it derives no initiative/);
+  assert.equal(readFileSync(dataPath, "utf8"), before);
+});
+
+test("set-epic --clear succeeds when the ticket's traces do not belong to an initiative", async () => {
+  const { dataPath } = seedBoard(1); // no plan, no initiatives
+  const r = await ticket(["set-epic", "T-001", "--clear"], dataPath);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.to, null);
+  assert.ok(!("epicId" in read(dataPath).tickets[0]), "the key is removed, not blanked");
+});
+
+test("set-epic rejects contradictory and missing flags before touching the board", async () => {
+  const { dataPath } = seedOwnedBoard();
+  const both = await ticket(["set-epic", "T-001", "--epic", "e3", "--clear"], dataPath);
+  assert.equal(both.code, 1);
+  assert.match(both.out.error, /contradict each other/);
+
+  const neither = await ticket(["set-epic", "T-001"], dataPath);
+  assert.equal(neither.code, 1);
+  assert.match(neither.out.error, /needs --epic <epic-id>, or --clear/);
+});
+
+test("set-epic on an unknown or archived ticket says which it is", async () => {
+  const { dataPath, archivePath } = seedOwnedBoard();
+  const missing = await ticket(["set-epic", "T-404", "--epic", "e1"], dataPath);
+  assert.equal(missing.code, 1);
+  assert.match(missing.out.error, /not on the active board/);
+
+  writeFileSync(archivePath, JSON.stringify({ epics: [], tickets: [{ id: "T-900", status: "done" }] }, null, 2) + "\n");
+  const archived = await ticket(["set-epic", "T-900", "--epic", "e1"], dataPath);
+  assert.equal(archived.code, 1);
+  assert.match(archived.out.error, /archived/, "history is not edited in place");
+});
+
+test("set-epic is idempotent — moving a ticket where it already is changes nothing", async () => {
+  const { dataPath } = seedOwnedBoard();
+  const r = await ticket(["set-epic", "T-001", "--epic", "e1"], dataPath);
+  assert.equal(r.code, 0);
+  assert.equal(r.out.unchanged, true);
+});
