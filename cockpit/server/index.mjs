@@ -571,6 +571,17 @@ app.put("/api/plan/section/:key", (req, res) => {
   const { value, version } = req.body ?? {};
   if (value == null) return res.status(400).json({ error: "Body must be { value, version }." });
 
+  // Ownership on a project-level section is REFUSED, not quietly dropped. Silently returning
+  // 200 while discarding the field tells the caller their edit landed when it did not — and
+  // the CLI refuses the same request outright, so accepting it here would make the two writers
+  // disagree about what is legal.
+  if (Array.isArray(value) && !OWNED_SECTIONS.has(key) && value.some((/** @type {any} */ r) => r?.initiativeId)) {
+    return res.status(400).json({
+      error: `Initiative ownership does not apply to "${key}". Only ${[...OWNED_SECTIONS].join(", ")} ` +
+        `can belong to an initiative — gaps and open questions stay project-level.`,
+    });
+  }
+
   try {
     const r = mutatePlan({
       planPath: scope.plan,

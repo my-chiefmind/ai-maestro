@@ -174,10 +174,12 @@ function SectionCard({ meta, status, plan, coverage, progress, onSave, onTriage 
 }) {
   const [open, setOpen] = useState(false);
   const initiatives = plan.sections.initiatives ?? [];
-  // The whole layer is hidden until a project opts in. An empty "Initiatives" card on every
-  // plan would advertise a concept most projects should not use — small ones go straight from
-  // plan to epics — and an empty ownership picker on every item is pure noise.
-  if (meta.kind === 'initiatives' && initiatives.length === 0) return null;
+  // What gets hidden with no initiatives is the per-item OWNERSHIP PICKER (see ListEditor) —
+  // an empty picker repeated on every requirement is pure noise. The Initiatives section card
+  // itself stays, collapsed and with an empty state that says most projects do not need one,
+  // because hiding it entirely leaves a fresh project no way to create its FIRST initiative
+  // except the CLI. "Avoid showing empty initiative controls" is about the pickers, not about
+  // making the feature unreachable.
   const filled = status?.filled ?? false;
   const count = status?.count ?? 0;
 
@@ -469,6 +471,7 @@ function InitiativesEditor({ plan, progress, onSave }: {
   const items = plan.sections.initiatives ?? [];
   const [rows, setRows] = useState<PlanInitiative[]>(items);
   useEffect(() => setRows(items), [items]);
+  const empty = items.length === 0 && rows.length === 0;
 
   const byId = new Map(progress.map((p) => [p.id, p]));
   const blank = (): PlanInitiative => ({ id: '', name: '', outcome: '', scope: { in: [], out: [] }, metrics: [], depends_on: [] });
@@ -477,6 +480,14 @@ function InitiativesEditor({ plan, progress, onSave }: {
 
   return (
     <Box>
+      {empty && (
+        <Typography sx={{ fontSize: 13, color: 'text.secondary', mb: 1.6 }}>
+          None yet — and most projects should keep it that way. Add initiatives only when the
+          project holds several independently valuable outcomes that each need multiple epics;
+          a smaller one goes straight from plan to epics. Two to six is the usual range, each
+          with a distinct outcome, and never named after a technical layer.
+        </Typography>
+      )}
       {rows.map((row, i) => {
         const p = row.id ? byId.get(row.id) : undefined;
         // An initiative may depend on any OTHER initiative that already has an id.

@@ -205,10 +205,23 @@ export function ownershipVerdict(ticket, opts = {}) {
  *          subject is archived. Empty when the board is consistent with the plan.
  */
 export function crossInitiativeConflicts(plan, { data = null, archivedEpics = [], archivedTickets = [] } = {}) {
-  if (!initiativeModeActive(plan)) return [];
   const board = data ?? { epics: [], tickets: [] };
   const broken = (v) => v.state === "cross-initiative" || v.state === "unknown-initiative";
   const out = [];
+
+  // DANGLING REFERENCES ARE CHECKED REGARDLESS OF MODE, and this is the whole reason the check
+  // is not simply gated on initiativeModeActive. Deleting the LAST initiative turns the mode
+  // off, so a mode-gated check would wave through every epic still pointing at it — the one
+  // removal the CLI refuses outright would become the one the cockpit performs silently.
+  if (!initiativeModeActive(plan)) {
+    for (const e of board.epics ?? []) {
+      if (e.initiativeId) out.push(danglingEpicReason(e));
+    }
+    for (const e of archivedEpics) {
+      if (e.initiativeId) out.push(`archive: ${danglingEpicReason(e)}`);
+    }
+    return out;
+  }
   for (const e of board.epics ?? []) {
     const v = epicOwnershipVerdict(e, plan);
     if (broken(v)) out.push(v.reason);
@@ -226,6 +239,12 @@ export function crossInitiativeConflicts(plan, { data = null, archivedEpics = []
     if (broken(v)) out.push(`archive: ${v.reason}`);
   }
   return out;
+}
+
+/** @param {any} e */
+function danglingEpicReason(e) {
+  return `Epic ${e.id} names initiative ${e.initiativeId}, which the plan does not define. ` +
+    `Recreate it, or clear the epic first ('maestro ticket edit-epic ${e.id} --clear-initiative').`;
 }
 
 /**
@@ -567,6 +586,20 @@ export function validateBoard(data, opts = {}) {
   //
   // A trace wired to another initiative's requirement is different in kind: nothing about it is
   // a transitional state, and it is always someone's mistake. That errors.
+  // A dangling initiativeId is a board integrity error whether or not the plan still defines
+  // initiatives — an epic pointing at something that does not exist has no reading under which
+  // it is correct, and every ticket beneath it inherits it. Checked outside the mode gate so
+  // that removing the last initiative cannot make the problem invisible by turning the gate off.
+  // A legacy board carries no initiativeId at all and is untouched by this.
+  if (plan && !initiativeModeActive(plan)) {
+    for (const e of data.epics) {
+      if (!e.sample && e.initiativeId) err(danglingEpicReason(e));
+    }
+    for (const e of archivedEpics) {
+      if (!e.sample && e.initiativeId) err(`archive: ${danglingEpicReason(e)}`);
+    }
+  }
+
   if (initiativeModeActive(plan)) {
     for (const e of data.epics) {
       if (e.sample) continue; // starter placeholder, not real work

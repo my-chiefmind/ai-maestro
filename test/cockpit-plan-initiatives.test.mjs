@@ -152,14 +152,15 @@ test("REVERSE PREFLIGHT: the cockpit is refused the same ownership move the CLI 
   assert.equal(r.body.current, undefined);
 });
 
-test("ownership on a project-level section is refused, not silently accepted", { skip: SKIP }, async () => {
+test("ownership on a project-level section is refused, not silently discarded", { skip: SKIP }, async () => {
+  // A 200 that quietly drops the field tells the caller their edit landed when it did not, and
+  // the CLI refuses the same request outright — accepting it here would make the two writers
+  // disagree about what is legal.
   const before = await getPlan();
   const r = await putSection("openQuestions", [{ id: "", text: "Who owns support?", initiativeId: "I-1" }], before.version);
-  // The field is not in openQuestions' allowed list, so it is dropped before validation —
-  // what must never happen is the plan recording an ownership the validator would reject.
-  assert.equal(r.status, 200);
-  assert.equal(r.body.plan.sections.openQuestions[0].initiativeId, undefined);
-  await putSection("openQuestions", [], r.body.version);
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.match(r.body.error, /Initiative ownership does not apply to "openQuestions"/);
+  assert.equal((await getPlan()).plan.sections.openQuestions.length, 0, "nothing was written");
 });
 
 test("an unknown initiative on an item is refused by validation", { skip: SKIP }, async () => {
@@ -177,9 +178,29 @@ test("a stale version is a 409 that hands back the current plan to reapply again
   assert.ok(r.body.current?.plan, "a conflict returns the latest so the tab can reload");
 });
 
-test("a plan with no initiatives reports an empty layer, so the UI can hide it", { skip: SKIP }, async () => {
+test("removing the LAST initiative is refused while an epic still references it", { skip: SKIP }, async () => {
+  // The bypass this closes: deleting the final initiative turns initiative mode OFF, so a
+  // mode-gated preflight would wave through every epic still pointing at it — the one removal
+  // the CLI refuses outright would become the one the cockpit performs silently.
   const before = await getPlan();
-  // Detach everything, then remove both initiatives — the same sequence a migration would run.
+  const onDisk = readFileSync(join(boardDir, "plan.json"), "utf8");
+  const detached = (await putSection("functional", before.plan.sections.functional.map(({ initiativeId, ...rest }) => rest), before.version));
+  assert.equal(detached.status, 200, JSON.stringify(detached.body));
+
+  // e1 still says initiativeId: I-1. Emptying the array must not be allowed to strand it.
+  const r = await putSection("initiatives", [], detached.body.version);
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.match(r.body.error, /Epic e1 names initiative I-1, which the plan does not define/);
+  assert.match(r.body.error, /maestro ticket edit-epic e1 --clear-initiative/);
+  assert.deepEqual(JSON.parse(readFileSync(join(boardDir, "plan.json"), "utf8")).sections.initiatives.map((/** @type {any} */ i) => i.id), ["I-1", "I-2"],
+    "both initiatives survive the refused write");
+
+  // Restore ownership for the tests that follow.
+  await putSection("functional", JSON.parse(onDisk).sections.functional, (await getPlan()).version);
+});
+
+test("removing every initiative succeeds once the board no longer references them", { skip: SKIP }, async () => {
+  const before = await getPlan();
   const v1 = (await putSection("functional", before.plan.sections.functional.map(({ initiativeId, ...rest }) => rest), before.version)).body.version;
   writeFileSync(join(boardDir, "data.json"), JSON.stringify({ epics: [], tickets: [] }, null, 2));
   const r = await putSection("initiatives", [], v1);
@@ -187,5 +208,8 @@ test("a plan with no initiatives reports an empty layer, so the UI can hide it",
   assert.deepEqual(r.body.initiatives, []);
   assert.deepEqual(r.body.plan.sections.initiatives, []);
   const p = await getPlan();
-  assert.deepEqual(p.initiatives, [], "an empty array is what the Plan tab checks to hide the whole layer");
+  assert.deepEqual(p.initiatives, [], "an empty array is what the Plan tab reads to hide the ownership pickers");
+  // The section itself is still offered, so a project with none can create its first.
+  assert.ok(p.sections.some((/** @type {any} */ s2) => s2.key === "initiatives"),
+    "the Initiatives section stays in the registry — hiding it entirely would leave a fresh project no way in");
 });
