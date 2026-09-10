@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { DEFAULT_SWARM, swarmPolicy, updateSwarmConfig, validateSwarmConfig } from "../scripts/swarm-core.mjs";
+import {
+  DEFAULT_SWARM,
+  SWARM_EXECUTION_CONTRACT,
+  swarmPolicy,
+  swarmRuntimeStatus,
+  updateSwarmConfig,
+  validateSwarmConfig,
+} from "../scripts/swarm-core.mjs";
 
 const cli = fileURLToPath(new URL("../scripts/swarm-config.mjs", import.meta.url));
 const rootCli = fileURLToPath(new URL("../bin/cli.mjs", import.meta.url));
@@ -40,6 +47,25 @@ test("updates preserve unrelated config and existing policy", () => {
   assert.equal(source.orchestration.maxWorktrees, undefined);
 });
 
+test("runtime contract names the session coordinator and fails auto-merge closed", () => {
+  const runtime = swarmRuntimeStatus({ orchestration: { swarm: { autoMerge: true } } });
+  assert.equal(SWARM_EXECUTION_CONTRACT.coordinator, "invoking-swarm-session");
+  assert.equal(runtime.spawnedCoordinator, false);
+  assert.equal(runtime.stageAgents.qa, "qa");
+  assert.equal(runtime.stageAgents.delivery, "principal-delivery");
+  assert.equal(runtime.observedHarnessCapacity, null);
+  assert.equal(runtime.effectiveWorkerCapacity, null);
+  assert.equal(runtime.requestedAutoMerge, true);
+  assert.equal(runtime.mergeLock.available, false);
+  assert.equal(runtime.effectiveAutoMerge, false);
+  assert.match(runtime.autoMergeBlocker, /merge-lock primitive/i);
+
+  const manualMerge = swarmRuntimeStatus({});
+  assert.equal(manualMerge.requestedAutoMerge, false);
+  assert.equal(manualMerge.effectiveAutoMerge, false);
+  assert.equal(manualMerge.autoMergeBlocker, null);
+});
+
 test("validates every configurable bound", () => {
   const invalid = updateSwarmConfig({}, { enabled: true });
   invalid.orchestration.maxWorktrees = 6;
@@ -70,7 +96,10 @@ test("top-level CLI dispatch enables, reports, and gracefully disables the pool"
     rootCli, "swarm", "status", "--config", configPath, "--json",
   ], { encoding: "utf8" });
   assert.equal(status.status, 0, status.stderr);
-  assert.equal(JSON.parse(status.stdout).policy.waveMinutes, 15);
+  const reported = JSON.parse(status.stdout);
+  assert.equal(reported.policy.waveMinutes, 15);
+  assert.equal(reported.runtime.coordinator, "invoking-swarm-session");
+  assert.equal(reported.runtime.effectiveAutoMerge, false);
 
   const disabled = spawnSync(process.execPath, [
     rootCli, "swarm", "disable", "--config", configPath,

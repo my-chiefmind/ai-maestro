@@ -7,8 +7,8 @@ description: "Run, stop, enable, disable, or inspect a continuously replenished 
 
 Run one coordinator over a bounded pool of agents. The board is the durable queue; Maestro
 lanes decide which tickets may run together. This skill supplies the control policy around
-those existing mechanisms. It does not create another scheduler, bypass the orchestrator, or
-promise more concurrency than the active harness provides.
+those existing mechanisms. It inherits the orchestrator's scheduling and gate rules, but does
+not spawn orchestrator agents or promise more concurrency than the active harness provides.
 
 ## Modes
 
@@ -39,6 +39,33 @@ maestro swarm status --json
 additional. Actual worker occupancy is the smaller of that target and the harness capacity left
 after the coordinator. Report a capacity shortfall; do not simulate extra agents or count
 completed agents as active.
+
+## Coordinator execution model
+
+The assistant session in which this skill was invoked is the **one coordinator**. It owns the
+wave loop, lane-to-ticket state, board reconciliation, stage transitions, and merge queue. It
+must not delegate that responsibility or spawn an `orchestrator` agent. The coordinator applies
+the orchestrator contract itself and dispatches bounded specialist tasks through the host's
+agent spawn/delegation facility:
+
+| Stage | Concrete agent type |
+| --- | --- |
+| Missing acceptance criteria, planning, or stale-work split | `principal-engineer` |
+| Implementation | the ticket's area/plan agent: `backend-developer`, `frontend-developer`, `pipeline-developer`, `devops`, or `technical-writer` |
+| Independent review | `qa` |
+| Delivery approval | `principal-delivery` |
+| Repair | the affected implementation agent, never `qa` or `principal-delivery` |
+
+Use the host's live-agent inventory before dispatch, its spawn/delegate primitive to start a
+stage, its follow-up primitive only to continue the same owned task, and its event/wait primitive
+to collect completions. The coordinator never implements, repairs, or reviews ticket code.
+
+Harness capacity is runtime state, not configuration. If the harness reports a limit, subtract
+the coordinator and currently active workers, then cap new dispatch at the remaining slots. If
+it does not report a limit, label capacity **unknown**, start at most one new worker at a time,
+and treat a refused spawn as the observed ceiling for that wave. Never report `targetAgents` as
+actual capacity. If the host has no agent delegation facility, Run mode is unavailable; Status,
+Enable, Disable, and Stop still work.
 
 ## Pre-flight
 
@@ -76,8 +103,11 @@ swarm remains enabled:
 4. **Repair.** Route concrete QA or delivery findings to an implementation agent selected by
    the affected files. QA and delivery agents never fix the work they review. Cap a ticket at
    two repair rounds; after that, block it with evidence and continue unrelated lanes.
-5. **Land.** Revalidate against the latest default branch and merge approved work through one
-   serialized merge queue. Update and archive the ticket through Maestro's supported commands.
+5. **Land.** Revalidate against the latest default branch and process approved work through the
+   coordinator's one-at-a-time merge queue. Update and archive the ticket through Maestro's
+   supported commands. Automatic merge remains blocked unless runtime status confirms a real
+   exclusive merge lock; otherwise leave the approved PR queued for an explicitly authorized
+   manual merge.
 6. **Recompute.** Run `maestro lanes next` again. Refill safe capacity immediately; do not wait
    for the user between healthy waves.
 7. **Report.** At the configured wave interval, report active lane → ticket → stage, queued
@@ -154,7 +184,13 @@ Elapsed time alone is a signal to checkpoint and split, not permission to discar
 
 ## Merge and authority policy
 
-Automatic merge is allowed only when `autoMerge` is enabled and all of these are true:
+`autoMerge` is a requested policy, not proof that automatic merging is available. Read
+`maestro swarm status --json` and require `runtime.effectiveAutoMerge: true`. The shipped local
+coordinator currently reports it as false because it has no exclusive merge-lock primitive;
+therefore it fails closed and queues approved PRs for manual merge.
+
+A future runtime may allow automatic merge only when `autoMerge` is enabled and all of these
+are true:
 
 - independent QA passed the current revision;
 - the delivery gate passed the current revision;
@@ -162,7 +198,8 @@ Automatic merge is allowed only when `autoMerge` is enabled and all of these are
 - the branch was refreshed and revalidated against the latest default branch;
 - the ticket has no uncleared human gate;
 - the action does not deploy to or mutate production;
-- the merge queue lock is held and no other merge is running.
+- runtime status identifies the exclusive merge-lock primitive, the coordinator holds it, and
+  no other merge is running.
 
 Human-gated tickets and production actions always wait for explicit approval. Development that
 prepares production tooling may continue when it has no production side effect.

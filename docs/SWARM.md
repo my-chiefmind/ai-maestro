@@ -17,6 +17,17 @@ limit. Run the rendered `$swarm` skill in Codex or `/swarm` in
 Claude. For unattended operation, arrange for one supported host scheduler to wake one
 coordinator. The board and lane worktrees are its recovery state.
 
+The invoking swarm session is the executor. It does not create an `orchestrator` agent per
+lane. It reads the lane plan, then directly delegates planning to `principal-engineer`, build
+work to the ticket's implementation agent, independent review to `qa`, and delivery approval
+to `principal-delivery`. It discovers capacity from the host's live-agent inventory and spawn
+results; the configured target is never presented as measured capacity.
+
+`autoMerge` records intent, but the shipped local coordinator has no cross-process exclusive
+merge lock. `maestro swarm status --json` therefore reports `effectiveAutoMerge: false`, and
+approved PRs wait for an explicitly authorized manual merge. A durable coordinator can enable
+automatic merging only after it supplies and reports a real exclusive merge-lock primitive.
+
 ## Reuse decision
 
 **Need.** Keep a delivery pool occupied, rebalance implementation/QA/repair work, enforce time
@@ -46,6 +57,21 @@ is needed because none of the candidates is installed or executed. A future
 durability ticket may evaluate Temporal if customers require crash-proof multi-host execution;
 that is outside this skill's local coordinator contract.
 
-**Validation and ownership.** `scripts/swarm-core.test.mjs` covers defaults, preservation, and
-limits. Maestro maintainers own policy upgrades; host operators own model cost, credentials,
-scheduler availability, and production approvals.
+## Example: one two-lane wave
+
+1. The swarm session reads `maestro lanes next`; it returns `T-201` and `T-202` on two safe
+   lanes. Live harness inventory shows three free worker slots.
+2. The session spawns `backend-developer` for `T-201` and `frontend-developer` for `T-202`; it
+   remains the coordinator and does not spawn an `orchestrator`.
+3. `T-201` finishes first. The coordinator uses the freed slot for `qa`, waits for the verdict,
+   then assigns `principal-delivery`. `T-202` continues independently.
+4. Delivery approves `T-201`. Because runtime status says `effectiveAutoMerge: false`, the PR
+   enters the manual merge queue instead of being merged. The coordinator can assign the newly
+   free worker slot to QA for `T-202`.
+5. After an authorized one-at-a-time merge, the coordinator archives `T-201`, recomputes lanes,
+   and fills only capacity the harness actually reports.
+
+**Validation and ownership.** `test/swarm.test.mjs` covers defaults, preservation, limits, the
+session-owned execution contract, truthful capacity reporting, and fail-closed auto-merge.
+Maestro maintainers own policy upgrades; host operators own model cost, credentials, scheduler
+availability, and production approvals.

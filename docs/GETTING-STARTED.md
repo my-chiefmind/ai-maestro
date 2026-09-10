@@ -265,7 +265,7 @@ second scheduler, and is disabled by default:
 
 ```sh
 maestro swarm enable --agents 10 --worktrees 5 --wave-minutes 30
-maestro swarm enable --auto-merge   # explicit opt-in; QA + delivery still required
+maestro swarm enable --auto-merge   # requests it; status stays fail-closed without a real merge lock
 maestro swarm status
 maestro swarm disable
 ```
