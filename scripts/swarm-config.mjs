@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { writeAtomic } from "./board-io.mjs";
-import { swarmPolicy, updateSwarmConfig, validateSwarmConfig } from "./swarm-core.mjs";
+import { swarmPolicy, swarmRuntimeStatus, updateSwarmConfig, validateSwarmConfig } from "./swarm-core.mjs";
 
 const argv = process.argv.slice(2);
 const op = argv[0];
@@ -81,6 +81,7 @@ if (op === "status") {
     config: configPath,
     maxWorktrees: config?.orchestration?.maxWorktrees ?? 3,
     policy: swarmPolicy(config),
+    runtime: swarmRuntimeStatus(config),
     errors: currentErrors,
   };
   if (JSON_OUT) process.stdout.write(JSON.stringify(result) + "\n");
@@ -91,7 +92,9 @@ if (op === "status") {
   Target agents: ${p.targetAgents} workers plus one coordinator
   Worktree lanes: ${result.maxWorktrees}
   Wave interval: ${p.waveMinutes} minutes
-  Auto-merge: ${p.autoMerge ? "enabled after QA + delivery" : "disabled"}
+  Coordinator: invoking /swarm session (dispatches specialist agents directly)
+  Harness capacity: observe from the active harness at run time
+  Auto-merge: ${result.runtime.effectiveAutoMerge ? "enabled after QA + delivery" : p.autoMerge ? "requested, but blocked — no exclusive merge lock" : "disabled"}
   Stale deadlines: XS ${p.timeoutsMinutes.xs}m · S ${p.timeoutsMinutes.s}m · M ${p.timeoutsMinutes.m}m · L ${p.timeoutsMinutes.l}m
   Config: ${configPath}
 ${currentErrors.length ? `  Errors: ${currentErrors.join("; ")}\n` : ""}`);
@@ -120,7 +123,7 @@ writeAtomic(configPath, JSON.stringify(updated, null, 2) + "\n");
 const p = swarmPolicy(updated);
 process.stdout.write(`
   ✓ Swarm ${p.enabled ? "enabled" : "disabled"} in ${configPath}.
-  ${p.enabled ? `Target ${p.targetAgents} worker agents plus one coordinator across at most ${updated.orchestration.maxWorktrees ?? 3} worktree lanes; auto-merge ${p.autoMerge ? "on" : "off"}.` : "No new work will be dispatched; active work should checkpoint gracefully."}
+  ${p.enabled ? `Target ${p.targetAgents} worker agents plus one coordinator across at most ${updated.orchestration.maxWorktrees ?? 3} worktree lanes; auto-merge ${p.autoMerge ? "requested but fail-closed until an exclusive merge lock exists" : "off"}.` : "No new work will be dispatched; active work should checkpoint gracefully."}
   Run Maestro sync so generated runtime skills match the configuration.
 
 `);
