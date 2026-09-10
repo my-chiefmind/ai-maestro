@@ -257,6 +257,24 @@ maestro lanes check T-004 T-007  # would these two conflict? (exit 1 if yes)
 `maestro lanes plan` also lists the pairs held back **only** because their file scope is
 undeclared — the one thing you can fix to get more parallelism.
 
+### Continuous delivery pool — swarm mode
+
+Swarm mode keeps safe lane heads moving through implementation, independent QA, repair,
+delivery, and a serialized merge queue. It is an optional coordinator policy over lanes, not a
+second scheduler, and is disabled by default:
+
+```sh
+maestro swarm enable --agents 10 --worktrees 5 --wave-minutes 30
+maestro swarm enable --auto-merge   # explicit opt-in; QA + delivery still required
+maestro swarm status
+maestro swarm disable
+```
+
+Run the generated `$swarm`/`/swarm` skill after enabling. The configured agent count is a
+target; the active coding harness's concurrency limit remains authoritative. Disable performs
+a graceful stop: no new dispatch, while active work checkpoints without losing its branch or
+worktree. See [Swarm mode](SWARM.md) for policy and reuse evidence.
+
 ## Tuning areas & models — `maestro/config.json`
 
 `setup` already wrote sensible defaults. Adjust to taste:

@@ -49,6 +49,7 @@
     "validate": "node scripts/validate-board.mjs starters/orchestrated-project/board/data.json",
     "validate:mine": "node scripts/validate-board.mjs board/data.json",
     "sync": "node render/sync.mjs --project .",
+    "swarm": "node scripts/swarm-config.mjs",
     "dev": "npm run board",
     "preboard": "node scripts/cockpit-install.mjs",
     "board": "npm --prefix cockpit run dev",
