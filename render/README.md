@@ -74,5 +74,7 @@ See `starters/orchestrated-project/config.json` for a full example. Keys:
 | `skills` | Skill dir names to include (omit = all). |
 | `model.default` / `model.floors` | Default model tier + per-area floors. |
 | `humanGates` | Allowed `human_gate` phrases for tickets. |
+| `orchestration.maxWorktrees` | Maximum concurrent worktree lanes (1–5). |
+| `orchestration.swarm` | Optional continuous-pool policy; disabled by default. Configure with `maestro swarm`. |
 | `targets.claude` / `targets.codex` | Enable either runtime target; both default to `true`. |
 | `kitSource.mode` / `kitSource.path` | Where the kit lives (`sibling` / `vendor`). |

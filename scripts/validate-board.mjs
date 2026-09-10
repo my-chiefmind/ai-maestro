@@ -19,6 +19,7 @@ import { readPlanForBoard } from "./plan-io.mjs";
 import { planCompleteness, planIsGating, planCoverage } from "./plan-core.mjs";
 import { assignLanes, parallelismLostToVagueness, laneCount } from "./lane-core.mjs";
 import { eligibleTickets } from "./board-core.mjs";
+import { validateSwarmConfig } from "./swarm-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -126,6 +127,7 @@ function main() {
     config,
     plan,
   });
+  if (config) errors.push(...validateSwarmConfig(config));
 
   const pre = [];
   if (configWarning) pre.push(configWarning);

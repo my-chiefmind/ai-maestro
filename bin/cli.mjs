@@ -7,6 +7,7 @@
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *   maestro run <id> [...]    (thin passthrough to scripts/run-ticket.mjs)
+ *   maestro swarm <op> [...]  (enable, disable, or inspect continuous pool policy)
  *   maestro usage [...]       (thin passthrough to scripts/usage-report.mjs)
  *
  * `init` is interactive: it asks a few questions, copies a starter into <repo>/maestro/,
@@ -146,6 +147,7 @@ function writeVendorPackageJson(dest) {
       ticket: "node scripts/board-write.mjs",
       plan: "node scripts/plan-write.mjs",
       lanes: "node scripts/lane-plan.mjs",
+      swarm: "node scripts/swarm-config.mjs",
       update: "npx @mychiefmind/ai-maestro@latest update --kit .",
       preboard: "node scripts/cockpit-install.mjs",
       board: "npm --prefix cockpit run dev",
@@ -1399,6 +1401,10 @@ function help() {
               A lane is a worktree running a QUEUE of tickets one at a time. Two tickets go in
               different lanes only when nothing suggests they touch the same files. Pool size
               is config.orchestration.maxWorktrees (default 3, ceiling 5).
+  swarm       Configure the optional continuous delivery pool — enable | disable | status
+              Enabling stores bounded staffing, lane, wave, timeout and auto-merge policy;
+              it does not install a daemon or bypass the harness concurrency limit. The
+              rendered swarm skill runs the supervised wave loop.
   plan        The project plan every ticket is scoped against — status | questions | add | ...
               'maestro plan status' prints how complete the plan is and what's still thin;
               'coverage' shows which requirements no ticket is working. Written under the same
@@ -1440,6 +1446,7 @@ const COMMANDS = [
   { key: "plan", label: "The project plan and its completeness (status | questions | add)" },
   { key: "run", label: "Run a cross-review-enabled ticket: dev → PR → reviewer" },
   { key: "lanes", label: "What can safely run in parallel (plan | next | check)" },
+  { key: "swarm", label: "Enable, disable, or inspect continuous delivery pool policy" },
   { key: "usage", label: "Time and tokens per ticket, by agent, model, runtime and stage" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
@@ -1477,6 +1484,7 @@ async function dispatch(command, args) {
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
     case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
+    case "swarm": process.exit(run("scripts/swarm-config.mjs", args)); break;
     case "usage": process.exit(run("scripts/usage-report.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);

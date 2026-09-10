@@ -44,7 +44,7 @@ session. The idea in three sentences:
 | :--: | --- |
 | **1** | You keep a **board** of epics and tickets, bounded by a **project plan**. |
 | **2** | Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on. |
-| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it — **one ticket per run**, so you stay in the loop between tickets. |
+| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it. The default is one ticket per run; optional [swarm mode](./docs/SWARM.md) continuously replenishes a bounded lane pool. |
 
 It's the distilled, product-neutral version of a system I've been running across a
 multi-repo portfolio for months. This repo shares the structure so you can adopt the
@@ -90,7 +90,7 @@ the full mapping.
 | --- | --- |
 | [`board/`](./board/) | The board + project-plan formats (`board.schema.json`, `plan.schema.json`) and this repo's own workboard. A runnable example board ships in [`starters/orchestrated-project/board/`](./starters/orchestrated-project/board/) instead — that's what `setup` seeds a new project from, never this one's. |
 | [`agents/`](./agents/) | A generic agent roster: orchestrator, principal-engineer, backend, frontend, devops, technical-writer, qa, principal-delivery |
-| [`skills/`](./skills/) | Reusable skills — the `/project-plan`, `/plan-update` and `/orchestrator` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
+| [`skills/`](./skills/) | Reusable skills — the `/project-plan`, `/plan-update`, `/orchestrator`, and optional `/swarm` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
 | [`render/`](./render/) | `sync.mjs` — generates native Claude Code and Codex files from one config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
 | [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
 | [`cockpit/`](./cockpit/) | A React/MUI board console — list and Kanban views, config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |

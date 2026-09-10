@@ -26,6 +26,7 @@
   ],
   "skills": [
     "orchestrator",
+    "swarm",
     "project-plan",
     "plan-update",
     "board-validate",
@@ -59,6 +60,21 @@
     "owner sign-off",
     "irreversible change approved"
   ],
+  "orchestration": {
+    "maxWorktrees": 3,
+    "swarm": {
+      "enabled": false,
+      "targetAgents": 10,
+      "waveMinutes": 30,
+      "autoMerge": false,
+      "timeoutsMinutes": {
+        "xs": 60,
+        "s": 120,
+        "m": 240,
+        "l": 480
+      }
+    }
+  },
   "targets": {
     "claude": true,
     "codex": true
