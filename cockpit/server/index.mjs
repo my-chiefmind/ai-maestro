@@ -1,0 +1,1212 @@
+#!/usr/bin/env node
+// @ts-check
+/**
+ * AI Maestro cockpit data service.
+ *
+ * Serves a single AI Maestro board and its neighbours (config, specs, rendered roster) and
+ * writes board edits through the same locked, atomic writer as the CLI. Every write is
+ * validated with the same rules as the CLI (scripts/board-core.mjs) so the UI can't save a
+ * broken board, and is guarded by an optimistic-concurrency version so a stale tab can't
+ * clobber changes an agent made on disk.
+ *
+ * Board location resolves from:
+ *   1. --board <dir>, when supplied (authoritative even before data.json exists)
+ *   2. MAESTRO_BOARD_DIR, when supplied (same)
+ *   3. first existing fallback: ../board relative to this cockpit, then ./board (cwd)
+ *
+ * Endpoints (every one below also accepts ?project=<registry name> in portfolio mode,
+ * scoping it to that project's board/kit dir; without it they address the single board
+ * this service was started for, unchanged):
+ *   GET  /api/board            -> { boardDir, project, epics, tickets, archived, archivedEpics, version }
+ *   GET  /api/board/version    -> { version }                (cheap poll for auto-refresh)
+ *   PUT  /api/board            -> { epics, tickets, version } (409 on stale version, 400 on invalid)
+ *   GET  /api/config           -> { name, areas, planSteps, models, humanGates } | null
+ *   GET  /api/roster           -> { agents: [...], skills: [...] }
+ *   GET  /api/spec/:id         -> { id, content }
+ *   PUT  /api/spec/:id         -> { ok }                     ({ content })
+ *   GET  /api/docs             -> { sections: [{ key, label, files: [{ path, title }] }] }
+ *   GET  /api/docs/render      -> { path, html }             (?path=<root-relative .md>)
+ *   GET  /api/usage            -> the ticket usage report (see scripts/usage-core.mjs)
+ *   GET  /api/usage/export     -> ?format=json|csv|html [&view=tickets|model|agent|...]
+ *   GET  /api/portfolio/usage  -> the same report merged across every registry project
+ *   GET  /api/reports          -> { reports: [{ name, mtime, size }] }   (board/reports/)
+ *   GET  /api/reports/render   -> { name, kind, html } for .md; sandboxed file for .html
+ *
+ * Portfolio mode (T-003; opt-in via --registry <file> / MAESTRO_REGISTRY):
+ *   GET  /api/portfolio/boards -> { registry, boards: [...] } (each board dir read in place)
+ *   GET  /api/portfolio/today  -> { week, projects: [...] }   (ready-to-run tickets per board)
+ */
+
+import express from "express";
+import {
+  readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync,
+} from "fs";
+import { resolve, dirname, join, sep } from "path";
+import { fileURLToPath } from "url";
+import { marked } from "marked";
+import { validateBoard, MODELS, agentFileToCode } from "../../scripts/board-core.mjs";
+import { readPlan, planVersion, mutatePlan, PlanConflictError } from "../../scripts/plan-io.mjs";
+import {
+  PLAN_SECTIONS, SECTION_BY_KEY, GAP_NEEDS, GAP_STATUSES,
+  planCompleteness, planCoverage, validatePlan, nextId, nextOutId, sectionForId,
+  OWNED_SECTIONS, initiativeProgress, projectWideProgress,
+} from "../../scripts/plan-core.mjs";
+import { crossInitiativeConflicts } from "../../scripts/board-core.mjs";
+import { readSpec, writeSpec, SpecInputError, SpecNotFoundError, SpecConflictError, SpecLockError, ABSENT_SPEC_VERSION } from "../../scripts/spec-api.mjs";
+import {
+  boardVersion as sharedBoardVersion, mutateBoard, BoardConflictError, BoardLockError,
+} from "../../scripts/board-io.mjs";
+import { neuterRawHtml } from "./sanitize.mjs";
+import { findFreePort } from "./ports.mjs";
+import {
+  loadPortfolio, readBoardSnapshot, readPortfolioBoards, survey as portfolioSurvey,
+} from "./portfolio.mjs";
+import { usageToCsv, buildPortfolioUsage, projectsFromRegistry } from "../../scripts/usage-api.mjs";
+import { renderUsageSnapshot } from "../../scripts/usage-snapshot.mjs";
+import { usageFor, usageCsvViews } from "./usage.mjs";
+
+// Raw HTML in a doc must not pass through to the UI's dangerouslySetInnerHTML untouched:
+// the rendered set includes agent-authored files (agents/*.md, skills/*/SKILL.md), so it
+// is script-injection surface, not just prose. See sanitize.mjs for the model.
+marked.use({ renderer: { html: ({ text }) => neuterRawHtml(text) } });
+
+/**
+ * Board and config shapes are described loosely on purpose. `board/board.schema.json` and
+ * `scripts/board-core.mjs` own that contract — restating it here would give us a second
+ * definition free to drift from the one the validator actually enforces. These typedefs
+ * cover only what this file reaches into.
+ *
+ * @typedef {Record<string, string>} Frontmatter  Parsed YAML frontmatter (flat string map).
+ * @typedef {{ epics?: object[], tickets?: object[] }} BoardFile  data.json / archive.json.
+ * @typedef {{
+ *   project?: { name?: string, areas?: string[] },
+ *   roster?: string[],
+ *   humanGates?: unknown[],
+ *   targets?: Record<string, boolean>,
+ *   crossReview?: { dev: { runtime: string, model: string }, reviewer: { runtime: string, model: string } },
+ * }} MaestroConfig  The project's config.json, as far as the cockpit reads it.
+ *
+ * @typedef {{ key: string, label: string, files?: string[], dir?: string }} DocSectionDef
+ * @typedef {{ path: string, title: string }} DocFile  A doc the UI may list and render.
+ * @typedef {{ key: string, label: string, files: DocFile[] }} DocSection
+ */
+
+const __dir = dirname(fileURLToPath(import.meta.url));
+const COCKPIT = resolve(__dir, "..");
+const KIT_ROOT = resolve(COCKPIT, ".."); // the cockpit lives inside the kit
+// The port every kit defaults to — and therefore the one two projects collide on. Whether
+// we're allowed to move off it depends on who asked for it; see PINNED_PORT below.
+const DEFAULT_PORT = 4600;
+const PORT_SCAN_LIMIT = 20;
+
+/** Narrow an unknown catch binding to something printable. */
+const errMessage = (/** @type {unknown} */ e) =>
+  e instanceof Error ? e.message : String(e);
+
+// Containment check for any path built from request input. Uses `sep` rather than a
+// hardcoded "/" because on Windows resolve() returns backslashes, so the "/" form never
+// matched and every docs request 404'd there — failing closed, but failing.
+// Generalized from the old isInsideKit (T-003): the boundary is the requesting scope's
+// root — the kit root in single-board mode, a registry project's kit dir in portfolio mode.
+// Portfolio mode widens which roots are legal; it must not widen whether paths are checked.
+const isInside = (/** @type {string} */ root, /** @type {string} */ abs) =>
+  abs === root || abs.startsWith(root + sep);
+
+/**
+ * Value of a `--flag <value>` argv pair.
+ * @param {string} flag
+ * @returns {string | null}
+ */
+function argValue(flag) {
+  const i = process.argv.indexOf(flag);
+  return i !== -1 ? process.argv[i + 1] ?? null : null;
+}
+
+/** @returns {string} absolute path to the board directory */
+function resolveBoardDir() {
+  const cliBoard = argValue("--board");
+  if (typeof cliBoard === "string" && cliBoard.length > 0) return resolve(cliBoard);
+
+  const envBoard = process.env.MAESTRO_BOARD_DIR;
+  if (typeof envBoard === "string" && envBoard.length > 0) return resolve(envBoard);
+
+  const packageBoard = resolve(COCKPIT, "..", "board");
+  /** @type {string[]} */
+  const candidates = [
+    packageBoard,
+    resolve(process.cwd(), "board"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(join(c, "data.json"))) return c;
+  }
+  return packageBoard;
+}
+
+const BOARD_DIR = resolveBoardDir();
+
+// Portfolio mode (T-003): opt-in only, via --registry or MAESTRO_REGISTRY — no default path,
+// so single-board mode is unchanged when neither is set (AC2).
+const REGISTRY_PATH = argValue("--registry") || process.env.MAESTRO_REGISTRY || null;
+
+/**
+ * Everything path-shaped the handlers need, derived once per scope instead of baked into
+ * module constants — the generalization the T-003 write half needed. A scope is either the
+ * default single-board one (below) or a registry entry resolved per-request by scopeOf().
+ *
+ * `root` doubles as the docs/asset containment boundary: the kit root in single-board mode,
+ * the project's vendored kit dir (maestro/) in portfolio mode. Every path check that used
+ * to be isInsideKit is now "inside this scope's root".
+ *
+ * @typedef {{
+ *   name: string | null, boardDir: string, projectDir: string, root: string,
+ *   data: string, archive: string, specs: string, reports: string,
+ *   plan: string, config: string,
+ * }} Scope
+ */
+/**
+ * @param {string} boardDir
+ * @param {string} root containment boundary for docs/assets/reports in this scope
+ * @param {string | null} [name] registry name (null for the single-board default)
+ * @returns {Scope}
+ */
+function scopeFor(boardDir, root, name = null) {
+  const projectDir = resolve(boardDir, ".."); // config.json / .claude live one level up
+  return {
+    name, boardDir, projectDir, root,
+    data: join(boardDir, "data.json"),
+    archive: join(boardDir, "archive.json"),
+    specs: join(boardDir, "specs"),
+    plan: join(boardDir, "plan.json"),
+    reports: join(boardDir, "reports"),
+    config: join(projectDir, "config.json"),
+  };
+}
+
+const DEFAULT_SCOPE = scopeFor(BOARD_DIR, KIT_ROOT);
+
+// Registry names are matched exactly; the path always comes from the registry file, never
+// from the request. That keeps the registry as the write/read allowlist (T-003 §1) even now
+// that every board/spec/docs/report endpoint accepts ?project=<name>.
+/**
+ * Resolve the scope a request addresses: the default single-board scope when no ?project=
+ * is given (so single-board mode is byte-for-byte unchanged), else the named registry entry.
+ * Writes the error response and returns null when the name can't be resolved.
+ * @param {import("express").Request} req
+ * @param {import("express").Response} res
+ * @returns {Scope | null}
+ */
+function scopeOf(req, res) {
+  const name = typeof req.query.project === "string" ? req.query.project : null;
+  if (!name) return DEFAULT_SCOPE;
+  if (!REGISTRY_PATH) {
+    res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+    return null;
+  }
+  try {
+    const portfolio = loadPortfolio(REGISTRY_PATH);
+    const entry = portfolio?.find((/** @type {{ name: string, path: string, kitDir: string | null }} */ p) => p.name === name);
+    if (!entry) {
+      res.status(404).json({ error: `No project named "${name}" in the registry.` });
+      return null;
+    }
+    if (!entry.kitDir) {
+      res.status(404).json({ error: `Project "${name}" is registered but was never set up (no maestro kit dir).` });
+      return null;
+    }
+    return scopeFor(join(entry.kitDir, "board"), entry.kitDir, name);
+  } catch (e) {
+    res.status(500).json({ error: `cannot read registry: ${errMessage(e)}` });
+    return null;
+  }
+}
+
+/**
+ * Read and parse a JSON file, falling back on any error (missing, unreadable, malformed).
+ * @template T
+ * @param {string} p
+ * @param {T} fallback
+ * @returns {T}
+ */
+function readJSON(p, fallback) {
+  try { return JSON.parse(readFileSync(p, "utf8")); }
+  catch { return fallback; }
+}
+
+// Content version, shared with the CLI writer (scripts/board-io.mjs) so the UI and the
+// command line cannot disagree about whether the board moved — one concurrency rule for
+// the board, not one per caller. It was mtime+size here; a hash also distinguishes two
+// same-size boards, which is exactly what a swapped ticket looks like.
+/** @param {Scope} scope */
+function boardVersion(scope) {
+  return sharedBoardVersion(scope.data);
+}
+
+// The agent codes this project knows about, derived from config.roster (used for validation
+// and for the UI's agent_plan picker). Null when there's no config → skip the agent-code check.
+/**
+ * @param {Scope} scope
+ * @returns {MaestroConfig | null}
+ */
+function loadConfig(scope) {
+  return existsSync(scope.config) ? readJSON(scope.config, /** @type {MaestroConfig | null} */ (null)) : null;
+}
+/**
+ * @param {MaestroConfig | null} config
+ * @returns {string[] | null} agent codes the project's plans may use, or null if unknown
+ */
+function planStepsFromConfig(config) {
+  if (!config?.roster) return null;
+  const codes = config.roster.map(agentFileToCode).filter((c) => c !== "orchestrator");
+  if (!codes.includes("merge")) codes.push("merge"); // the terminal land step
+  return [...new Set(codes)];
+}
+
+/** Resolve the selected project's real agent roster while the board lock is held. */
+function agentCodesFor(/** @type {Scope} */ scope, /** @type {MaestroConfig | null} */ config) {
+  const configured = planStepsFromConfig(config);
+  if (configured) return new Set(configured);
+  const agentsDir = existsSync(join(scope.projectDir, ".claude", "agents"))
+    ? join(scope.projectDir, ".claude", "agents") : join(scope.root, "agents");
+  if (!existsSync(agentsDir)) return null;
+  const codes = readdirSync(agentsDir)
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => agentFileToCode(f.replace(/\.md$/, "")));
+  return codes.length ? new Set(codes) : null;
+}
+
+class BoardValidationError extends Error {
+  /** @param {string[]} details */
+  constructor(details) {
+    super(`Board would be invalid:\n- ${details.join("\n- ")}`);
+    this.name = "BoardValidationError";
+    this.details = details;
+  }
+}
+
+/**
+ * The one Cockpit board writer for both default and registry-selected scopes. Everything
+ * that can change validation (archive, config, roster, plan) is read by the mutation while
+ * mutateBoard holds the selected board directory's lock.
+ * @param {Scope} scope
+ * @param {{epics: object[], tickets: object[], version?: string | null}} board
+ */
+function writeBoard(scope, { epics, tickets, version }) {
+  return mutateBoard({
+    dataPath: scope.data,
+    archivePath: scope.archive,
+    expectVersion: version ?? undefined,
+    op: `cockpit-put${scope.name ? `:${scope.name}` : ""}`,
+    mutate: ({ archive }) => {
+      const config = loadConfig(scope);
+      const plan = (() => { try { return readPlan(scope.plan); } catch { return null; } })();
+      const { errors } = validateBoard({ epics, tickets }, {
+        archived: archive.tickets ?? [],
+        archivedEpics: archive.epics ?? [],
+        agentCodes: agentCodesFor(scope, config),
+        config,
+        plan,
+      });
+      if (errors.length) throw new BoardValidationError(errors);
+      return { data: { epics, tickets } };
+    },
+  });
+}
+
+/**
+ * Deterministic process-level barrier for the lost-update regression. It is unreachable
+ * unless the server process was explicitly started with the test-only environment variable.
+ * The request has already supplied the version it read; pausing here lets a real CLI writer
+ * land before Cockpit enters the shared writer and performs its CAS.
+ * @param {Scope} scope
+ */
+function waitAtTestWriteBarrier(scope) {
+  const barrier = process.env.MAESTRO_COCKPIT_TEST_WRITE_BARRIER;
+  if (!barrier) return;
+  // cockpit-nonboard-write: deterministic test synchronization file, never board state.
+  writeFileSync(`${barrier}.ready`, scope.data);
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(`${barrier}.resume`)) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting at Cockpit test write barrier.");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+
+/**
+ * Parse `name` and `description` out of a Markdown file's YAML frontmatter.
+ * @param {string} text
+ * @returns {Frontmatter} empty when the file has no frontmatter block
+ */
+function frontmatter(text) {
+  const m = /^---\s*\n([\s\S]*?)\n---/.exec(text);
+  const block = m?.[1];
+  if (!block) return {};
+  /** @type {Frontmatter} */
+  const out = {};
+  for (const line of block.split("\n")) {
+    const kv = /^(\w+):\s*(.*)$/.exec(line.trim());
+    // Both groups are non-optional in the pattern, so a match always has them; the guard
+    // is what tells the checker that, and costs nothing at runtime.
+    if (kv?.[1] !== undefined && kv[2] !== undefined) {
+      out[kv[1]] = kv[2].replace(/^["']|["']$/g, "").trim();
+    }
+  }
+  return out;
+}
+
+const app = express();
+
+// ── Localhost-only guard ────────────────────────────────────────────────────────
+// This service has no authentication: anything that can reach it can read the board,
+// rewrite it, and read any doc in the kit. That is acceptable for a tool bound to the
+// developer's own machine and not otherwise, so two things keep it there:
+//
+//   1. we listen on loopback (see app.listen at the bottom), so it is not exposed to
+//      the local network; and
+//   2. we check the Host header here, because binding loopback alone does NOT stop DNS
+//      rebinding — a hostile page can point a name it controls at 127.0.0.1 and then
+//      talk to us as same-origin, which sails past the browser's CORS check.
+//
+// Vite's dev proxy forwards the browser's Host (localhost:5273, or a *.localhost name the
+// developer chose to visit instead) unchanged, so matching on hostname and ignoring the port
+// covers both the proxied and direct cases.
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * Hostname from a Host header, port and IPv6 brackets stripped.
+ * @param {string} hostHeader
+ * @returns {string | null} null when the header is absent or unparseable
+ */
+function hostnameOf(hostHeader) {
+  try {
+    return new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return null;
+  }
+}
+
+// Any `<name>.localhost` hostname is accepted too — the "localhost" TLD is reserved by RFC
+// 6761 to always resolve to loopback, so this doesn't widen who can actually reach the
+// service, only which loopback-guaranteed spelling of it a developer is allowed to type
+// (e.g. visiting the cockpit as "cockpit.localhost:5273" instead of "localhost:5273").
+const isLocalHostname = (/** @type {string} */ host) => LOCAL_HOSTS.has(host) || host.endsWith(".localhost");
+
+app.use((req, res, next) => {
+  const host = hostnameOf(req.headers.host ?? "");
+  // No Host header, or one naming anything but loopback: refuse. Deliberately terse —
+  // there is no legitimate caller here to help debug.
+  if (!host || !isLocalHostname(host)) {
+    return res.status(403).json({ error: "This service only accepts requests addressed to localhost." });
+  }
+  next();
+});
+
+app.use(express.json({ limit: "8mb" }));
+
+// ── Board ──────────────────────────────────────────────────────────────────────
+// All board/spec/config endpoints accept ?project=<registry name>. Absent, they address the
+// single board this service was started for, exactly as before.
+app.get("/api/board", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const snapshot = readBoardSnapshot(scope.boardDir, scope.name);
+  if (!snapshot) {
+    return res.status(404).json({ error: `No board/data.json at ${scope.boardDir}` });
+  }
+  const { data: _data, archive: _archive, ...publicSnapshot } = snapshot;
+  res.json(publicSnapshot);
+});
+
+app.get("/api/board/version", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  res.json({ version: boardVersion(scope) });
+});
+
+app.put("/api/board", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const { epics, tickets, version } = req.body ?? {};
+  if (!Array.isArray(epics) || !Array.isArray(tickets)) {
+    return res.status(400).json({ error: "Body must be { epics: [], tickets: [] }." });
+  }
+
+  try {
+    waitAtTestWriteBarrier(scope);
+    const result = writeBoard(scope, { epics, tickets, version });
+    res.json({ ok: true, version: result.version });
+  } catch (e) {
+    if (e instanceof BoardConflictError) {
+      const snapshot = readBoardSnapshot(scope.boardDir, scope.name);
+      const current = snapshot
+        ? (({ data: _data, archive: _archive, ...rest }) => rest)(snapshot)
+        : null;
+      return res.status(409).json({
+        error: "The board changed on disk since you loaded it (an agent or another tab wrote it). Reloaded the latest — reapply your edit.",
+        current,
+      });
+    }
+    if (e instanceof BoardValidationError) {
+      return res.status(400).json({ error: e.message, details: e.details });
+    }
+    if (e instanceof BoardLockError) {
+      const detail = /** @type {BoardLockError & {holder?: unknown, path?: string}} */ (e);
+      return res.status(423).json({ error: e.message, holder: detail.holder ?? null, lockPath: detail.path ?? null });
+    }
+    res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+// ── Portfolio mode (T-003, read-only) — every board named in --registry/MAESTRO_REGISTRY ──
+// Absent registry -> 404 with a clear reason, not an empty list: a portfolio tab that reads
+// as "no projects" when the registry was simply never configured is worse than an explicit
+// "portfolio mode isn't set up" (T-003 §1's "loud, not silent" rule, applied to the endpoint
+// as well as to a malformed registry file).
+app.get("/api/portfolio/boards", (_req, res) => {
+  if (!REGISTRY_PATH) return res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+  try {
+    const portfolio = loadPortfolio(REGISTRY_PATH);
+    if (!portfolio) return res.status(404).json({ error: `No registry at ${REGISTRY_PATH}.` });
+    res.json({ registry: REGISTRY_PATH, boards: readPortfolioBoards(portfolio) });
+  } catch (e) {
+    res.status(500).json({ error: `cannot read registry: ${errMessage(e)}` });
+  }
+});
+app.get("/api/portfolio/today", (_req, res) => {
+  if (!REGISTRY_PATH) return res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+  try {
+    const portfolio = loadPortfolio(REGISTRY_PATH);
+    if (!portfolio) return res.status(404).json({ error: `No registry at ${REGISTRY_PATH}.` });
+    res.json(portfolioSurvey(portfolio));
+  } catch (e) {
+    res.status(500).json({ error: `cannot build survey: ${errMessage(e)}` });
+  }
+});
+
+// ── Config (drives the UI's area / agent_plan / model pickers) ───────────────────
+app.get("/api/config", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const config = loadConfig(scope);
+  if (!config) return res.json(null);
+  res.json({
+    name: config.project?.name ?? null,
+    areas: config.project?.areas ?? [],
+    planSteps: planStepsFromConfig(config) ?? [],
+    models: MODELS,
+    humanGates: config.humanGates ?? [],
+    // Installed runtime adapters, not arbitrary renderer targets. Both default on, matching
+    // render/sync.mjs; an explicit false is the only opt-out.
+    targets: ["claude", "codex"].filter((runtime) => config.targets?.[runtime] !== false),
+    crossReview: config.crossReview ?? null,
+  });
+});
+
+// ── Roster (read-only view of the project's agents + skills) ─────────────────────
+app.get("/api/roster", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  // Prefer the rendered project roster; fall back to the scope's kit-source roster.
+  const agentsDir = existsSync(join(scope.projectDir, ".claude", "agents"))
+    ? join(scope.projectDir, ".claude", "agents") : join(scope.root, "agents");
+  const skillsRoot = existsSync(join(scope.projectDir, ".claude", "skills"))
+    ? join(scope.projectDir, ".claude", "skills") : join(scope.root, "skills");
+
+  const agents = existsSync(agentsDir)
+    ? readdirSync(agentsDir).filter((f) => f.endsWith(".md")).map((f) => {
+        const fm = frontmatter(readFileSync(join(agentsDir, f), "utf8"));
+        return { code: agentFileToCode(f.replace(/\.md$/, "")), name: fm.name || f.replace(/\.md$/, ""), description: fm.description || "" };
+      })
+    : [];
+  const skills = existsSync(skillsRoot)
+    ? readdirSync(skillsRoot).filter((d) => existsSync(join(skillsRoot, d, "SKILL.md"))).map((d) => {
+        const fm = frontmatter(readFileSync(join(skillsRoot, d, "SKILL.md"), "utf8"));
+        return { name: fm.name || d, description: fm.description || "" };
+      })
+    : [];
+  res.json({ agents, skills });
+});
+
+// ── Specs (long-form ticket detail: board/specs/<id>.md) ─────────────────────────
+const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+app.get("/api/spec/:id", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const { id } = req.params;
+  try { res.json(readSpec({ boardPath: scope.boardDir, id })); }
+  catch (error) {
+    if (error instanceof SpecNotFoundError) return res.json({ id, content: "", version: ABSENT_SPEC_VERSION });
+    res.status(error instanceof SpecInputError ? 400 : error instanceof SpecLockError ? 503 : 500).json({ error: errMessage(error), code: error instanceof Error && "code" in error ? error.code : undefined });
+  }
+});
+app.put("/api/spec/:id", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const { id } = req.params;
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).some((key) => !["content", "version"].includes(key))) {
+      return res.status(400).json({ error: "Expected content and version only." });
+    }
+    const result = writeSpec({ boardPath: scope.boardDir, id, content: req.body.content, expectVersion: req.body.version });
+    res.json({ ok: true, version: result.version });
+  } catch (error) {
+    const status = error instanceof SpecConflictError ? 409 : error instanceof SpecInputError ? 400 : error instanceof SpecLockError ? 503 : 500;
+    res.status(status).json({ error: errMessage(error), code: error instanceof Error && "code" in error ? error.code : undefined });
+  }
+});
+
+// ── Project plan (board/plan.json) ──────────────────────────────────────────────
+// Writes go through mutatePlan — the same lock, CAS, validation and plan.md re-render the CLI
+// uses — so the pretty UI cannot produce a plan `maestro plan` would have refused, and a tab
+// left open overnight cannot clobber what an agent wrote in the meantime.
+//
+// Edits are SECTION-SCOPED rather than whole-plan. Two people (or a person and an agent)
+// working on different sections both succeed, where a whole-plan PUT would make the second one
+// a conflict for no reason.
+
+/** The section registry, as the Plan tab's field metadata. Derived, never duplicated in the UI. */
+const PLAN_SECTION_META = PLAN_SECTIONS.map((s) => ({
+  key: s.key, label: s.label, kind: s.kind, prefix: s.prefix, weight: s.weight,
+  heading: s.heading, blurb: s.blurb, ask: s.ask ?? null, followUp: s.followUp ?? null,
+  fields: s.fields ?? [], itemLabel: s.itemLabel ?? null,
+}));
+
+app.get("/api/plan", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  try {
+    const plan = readPlan(scope.plan);
+    const data = readJSON(scope.data, { tickets: [] });
+    const arch = readJSON(scope.archive, { tickets: [] });
+    res.json({
+      project: scope.name,
+      planPath: scope.plan,
+      exists: existsSync(scope.plan),
+      version: planVersion(scope.plan),
+      plan,
+      sections: PLAN_SECTION_META,
+      completeness: planCompleteness(plan),
+      coverage: planCoverage(plan, data.tickets ?? [], arch.tickets ?? []),
+      initiatives: initiativeProgress(plan, data.tickets ?? [], arch.tickets ?? []),
+      projectWide: projectWideProgress(plan, data.tickets ?? [], arch.tickets ?? []),
+      warnings: validatePlan(plan).warnings,
+    });
+  } catch (e) {
+    // An unparsable plan.json is reported, never silently replaced with an empty one — the
+    // next save would write that blank over a real plan.
+    res.status(400).json({ error: errMessage(e) });
+  }
+});
+
+/**
+ * Replace one section. The body carries the whole section value, which covers add, edit,
+ * reorder and delete in a single call — and any item arriving WITHOUT an id gets one assigned
+ * here, inside the lock, from the plan on disk. Client-side id generation is what produces two
+ * different "FR-7"s when a tab and an agent add a requirement in the same second.
+ */
+app.put("/api/plan/section/:key", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const key = req.params.key;
+  const meta = SECTION_BY_KEY.get(key);
+  if (!meta) return res.status(400).json({ error: `Unknown plan section "${key}".` });
+
+  const { value, version } = req.body ?? {};
+  if (value == null) return res.status(400).json({ error: "Body must be { value, version }." });
+
+  // Ownership on a project-level section is REFUSED, not quietly dropped. Silently returning
+  // 200 while discarding the field tells the caller their edit landed when it did not — and
+  // the CLI refuses the same request outright, so accepting it here would make the two writers
+  // disagree about what is legal.
+  if (Array.isArray(value) && !OWNED_SECTIONS.has(key) && value.some((/** @type {any} */ r) => r?.initiativeId)) {
+    return res.status(400).json({
+      error: `Initiative ownership does not apply to "${key}". Only ${[...OWNED_SECTIONS].join(", ")} ` +
+        `can belong to an initiative — gaps and open questions stay project-level.`,
+    });
+  }
+
+  try {
+    const r = mutatePlan({
+      planPath: scope.plan,
+      expectVersion: version ?? undefined,
+      projectName: loadConfig(scope)?.project?.name ?? "Project",
+      op: `cockpit-plan-${key}`,
+      mutate: (plan) => {
+        if (meta.kind === "prose") {
+          plan.sections[key] = {
+            text: String(value.text ?? ""),
+            metrics: (Array.isArray(value.metrics) ? value.metrics : []).map(String).filter(Boolean),
+          };
+        } else if (meta.kind === "scope") {
+          const outs = Array.isArray(value.out) ? value.out : [];
+          plan.sections.scope = {
+            in: (Array.isArray(value.in) ? value.in : []).map(String).filter(Boolean),
+            out: outs.map((/** @type {any} */ o) => ({ id: o?.id || nextOutId(plan), text: String(o?.text ?? "") }))
+              .filter((/** @type {{text: string}} */ o) => o.text),
+          };
+          // Ids assigned above are computed against the plan as it was READ, so a batch of new
+          // OUT- rows would all get the same one. Renumber any that collide.
+          const seen = new Set();
+          for (const o of plan.sections.scope.out) {
+            while (seen.has(o.id)) o.id = bumpId(o.id);
+            seen.add(o.id);
+          }
+        } else if (meta.kind === "initiatives") {
+          // Ids are assigned HERE, inside the lock, from the plan on disk — never by the tab.
+          // Client-side allocation is what produces two different "I-2"s when a tab and an
+          // agent add an initiative in the same second.
+          const rows = Array.isArray(value) ? value : [];
+          const seen = new Set(rows.map((/** @type {any} */ r2) => r2?.id).filter(Boolean));
+          plan.sections.initiatives = rows
+            .filter((/** @type {any} */ row) => String(row?.name ?? "").trim())
+            .map((/** @type {any} */ row) => {
+              let id = row.id;
+              if (!id) {
+                id = nextId(plan, "initiatives");
+                while (seen.has(id)) id = bumpId(id);
+                seen.add(id);
+              }
+              const strings = (/** @type {any} */ v) => (Array.isArray(v) ? v.map(String).filter((x) => x.trim()) : []);
+              /** @type {Record<string, any>} */
+              const item = {
+                id,
+                name: String(row.name ?? ""),
+                outcome: String(row.outcome ?? ""),
+                scope: { in: strings(row.scope?.in), out: strings(row.scope?.out) },
+                metrics: strings(row.metrics),
+                depends_on: strings(row.depends_on),
+              };
+              if (row.notes) item.notes = String(row.notes);
+              return item;
+            });
+        } else {
+          const rows = Array.isArray(value) ? value : [];
+          const allowed = ["text", "notes", ...(meta.fields ?? [])];
+          if (meta.kind === "gaps") allowed.push("need", "status", "from", "resolvedAs");
+          // Ownership is legal on exactly the six OWNED_SECTIONS. Elsewhere the field is not
+          // ignored — validatePlan reports it as unknown and the write is refused.
+          if (OWNED_SECTIONS.has(key)) allowed.push("initiativeId");
+          const seen = new Set(rows.map((/** @type {any} */ r2) => r2?.id).filter(Boolean));
+          plan.sections[key] = rows
+            .filter((/** @type {any} */ row) => String(row?.text ?? "").trim())
+            .map((/** @type {any} */ row) => {
+              let id = row.id;
+              if (!id) {
+                id = nextId(plan, key);
+                while (seen.has(id)) id = bumpId(id);
+                seen.add(id);
+              }
+              /** @type {Record<string, any>} */
+              const item = { id };
+              for (const f of allowed) if (row[f] !== undefined) item[f] = row[f];
+              if (meta.kind === "gaps" && !GAP_NEEDS.includes(item.need)) item.need = "optional";
+              if (meta.kind === "gaps" && item.status && !GAP_STATUSES.includes(item.status)) item.status = "open";
+              return item;
+            });
+        }
+
+        // REVERSE PREFLIGHT, the same one `maestro plan` runs (crossInitiativeConflicts in
+        // board-core), so the cockpit cannot be the looser of the two writers. Throwing —
+        // never exiting — unwinds the board lock properly and leaves the plan untouched.
+        const arch0 = readJSON(scope.archive, { epics: [], tickets: [] });
+        const conflicts = crossInitiativeConflicts(plan, {
+          data: readJSON(scope.data, { epics: [], tickets: [] }),
+          archivedEpics: arch0.epics ?? [],
+          archivedTickets: arch0.tickets ?? [],
+        });
+        if (conflicts.length) {
+          throw new Error(
+            `${conflicts.length} board reference(s) would break, so nothing was written:\n` +
+            conflicts.map((/** @type {string} */ c) => `• ${c}`).join("\n"));
+        }
+        return plan;
+      },
+    });
+    const data = readJSON(scope.data, { tickets: [] });
+    const arch = readJSON(scope.archive, { tickets: [] });
+    res.json({
+      ok: true,
+      version: r.version,
+      plan: r.plan,
+      completeness: planCompleteness(r.plan),
+      coverage: planCoverage(r.plan, data.tickets ?? [], arch.tickets ?? []),
+      initiatives: initiativeProgress(r.plan, data.tickets ?? [], arch.tickets ?? []),
+      projectWide: projectWideProgress(r.plan, data.tickets ?? [], arch.tickets ?? []),
+      warnings: r.warnings,
+    });
+  } catch (e) {
+    if (e instanceof PlanConflictError) {
+      const plan = readPlan(scope.plan);
+      return res.status(409).json({
+        error: "The plan changed on disk since you loaded it (an agent or another tab wrote it). Reloaded the latest — reapply your edit.",
+        current: { plan, version: planVersion(scope.plan), completeness: planCompleteness(plan) },
+      });
+    }
+    res.status(400).json({ error: errMessage(e) });
+  }
+});
+
+/**
+ * "FR-7" -> "FR-8". Used only to break an id collision within one batched write.
+ * @param {string} id
+ */
+function bumpId(id) {
+  const m = String(id).match(/^([A-Z]+)-(\d+)$/);
+  return m ? `${m[1]}-${Number(m[2]) + 1}` : id;
+}
+
+// Gap triage is its own route because it is a decision, not an edit: accepting a gap should
+// not require the tab to hold (and therefore be able to overwrite) the whole gaps array.
+app.put("/api/plan/gap/:id", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const { id } = req.params;
+  if (!SAFE_ID.test(id) || sectionForId(id) !== "gaps") {
+    return res.status(400).json({ error: `"${id}" is not a gap id.` });
+  }
+  const { status, need, resolvedAs, version } = req.body ?? {};
+  if (status && !GAP_STATUSES.includes(status)) return res.status(400).json({ error: `Unknown status "${status}".` });
+  if (need && !GAP_NEEDS.includes(need)) return res.status(400).json({ error: `Unknown need "${need}".` });
+
+  try {
+    const r = mutatePlan({
+      planPath: scope.plan,
+      expectVersion: version ?? undefined,
+      projectName: loadConfig(scope)?.project?.name ?? "Project",
+      op: "cockpit-plan-gap",
+      mutate: (plan) => {
+        const g = plan.sections.gaps.find((/** @type {any} */ x) => x.id === id);
+        if (!g) throw new Error(`${id} is not a gap in this plan.`);
+        if (status) g.status = status;
+        if (need) g.need = need;
+        if (resolvedAs !== undefined) g.resolvedAs = resolvedAs;
+        return plan;
+      },
+    });
+    res.json({ ok: true, version: r.version, plan: r.plan, completeness: planCompleteness(r.plan) });
+  } catch (e) {
+    if (e instanceof PlanConflictError) {
+      const plan = readPlan(scope.plan);
+      return res.status(409).json({ error: "The plan changed on disk since you loaded it.", current: { plan, version: planVersion(scope.plan), completeness: planCompleteness(plan) } });
+    }
+    res.status(400).json({ error: errMessage(e) });
+  }
+});
+
+// ── Docs browser — read the kit's guides + roster from the cockpit ───────────────
+// Curated so the tab shows the docs worth reading, not every file. Rendered server-side
+// with marked; read-only and path-allowlisted to the kit root (.md files only).
+const DOC_SECTIONS = [
+  { key: "guides", label: "Guides", files: ["README.md", "docs/GETTING-STARTED.md", "docs/METHOD.md", "docs/MODEL-ROUTING.md", "docs/CROSS-REVIEW.md", "docs/USAGE.md", "docs/AGENTS.md", "CONTRIBUTING.md"] },
+  { key: "reference", label: "Reference", files: ["board/README.md", "render/README.md", "cockpit/README.md", "starters/README.md"] },
+  { key: "agents", label: "Agents", dir: "agents" },
+  { key: "skills", label: "Skills", dir: "skills" },
+];
+
+/**
+ * Title = first Markdown heading, else the frontmatter name, else the filename.
+ * @param {string} abs absolute path to read
+ * @param {string} rel kit-relative path, used for the filename fallback
+ * @returns {string}
+ */
+function docTitle(abs, rel) {
+  try {
+    const text = readFileSync(abs, "utf8");
+    const h = /^#\s+(.+)$/m.exec(text)?.[1];
+    if (h) return h.trim();
+    const html = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(text)?.[1];
+    if (html) return html.replace(/<[^>]+>/g, "").trim();
+    const fm = /^---\s*\n[\s\S]*?\bname:\s*["']?([^"'\n]+)["']?/m.exec(text)?.[1];
+    if (fm) return fm.trim();
+  } catch { /* fall through */ }
+  // split() on a non-empty string always yields at least one element, but pop() is typed
+  // as possibly-undefined; `rel` is the sensible fallback and matches the intent.
+  return rel.split("/").pop() ?? rel;
+}
+
+/**
+ * @param {string} root the scope's doc root (kit root, or a project's vendored kit dir)
+ * @param {DocSectionDef} section
+ * @returns {DocFile[]} only files that exist, titled
+ */
+function sectionFiles(root, section) {
+  let rels = [...(section.files ?? [])];
+  if (section.dir) {
+    const base = join(root, section.dir);
+    if (existsSync(base)) {
+      for (const e of readdirSync(base, { withFileTypes: true })) {
+        if (e.isDirectory() && existsSync(join(base, e.name, "SKILL.md"))) rels.push(`${section.dir}/${e.name}/SKILL.md`);
+        else if (e.isFile() && e.name.endsWith(".md")) rels.push(`${section.dir}/${e.name}`);
+      }
+    }
+    rels.sort();
+  }
+  return rels
+    .filter((rel) => existsSync(join(root, rel)))
+    .map((rel) => ({ path: rel, title: docTitle(join(root, rel), rel) }));
+}
+
+/**
+ * The curated listing for one scope's root, empty sections dropped. A registry project's
+ * vendored kit (maestro/) mirrors the kit layout — README, docs/, agents/, skills/ — so the
+ * same curated set applies to every root (T-003 §4: the rendering was already solved; the
+ * gap was N roots vs one).
+ * @param {string} root
+ * @returns {DocSection[]}
+ */
+function docSections(root) {
+  return DOC_SECTIONS
+    .map((s) => ({ key: s.key, label: s.label, files: sectionFiles(root, s) }))
+    .filter((s) => s.files.length);
+}
+
+// The exact set /api/docs advertises — and therefore the only set /api/docs/render will
+// render. Recomputed per request because the agents/ and skills/ sections are read from
+// disk and change as the project is re-rendered.
+const listedDocPaths = (/** @type {string} */ root) =>
+  new Set(docSections(root).flatMap((s) => s.files.map((f) => f.path)));
+
+app.get("/api/docs", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  res.json({ sections: docSections(scope.root) });
+});
+
+// Rewrite relative <img src> in rendered docs to the image endpoint below. A doc's image
+// links are relative to the doc's own folder (e.g. README's "./cockpit/asset/logo.png"),
+// which the browser can't resolve from the SPA — so map each to /api/docs/asset?path=<rel>.
+// External (http/https/protocol-relative), data:, and already-absolute-api srcs are left alone.
+/**
+ * @param {string} html rendered doc HTML
+ * @param {string} docRel root-relative path of the doc, so relative srcs resolve correctly
+ * @param {string | null} project registry name, carried into asset URLs so the image is
+ *   fetched from the same scope the doc was rendered from
+ * @returns {string}
+ */
+function rewriteDocImages(html, docRel, project) {
+  const docDir = dirname(docRel);
+  const scopeQS = project ? `&project=${encodeURIComponent(project)}` : "";
+  return html.replace(/(<img\b[^>]*?\bsrc=")([^"]+)(")/gi, (m, pre, src, post) => {
+    if (/^(https?:)?\/\//i.test(src) || src.startsWith("data:") || src.startsWith("/api/")) return m;
+    const rel = join(docDir, src).replace(/^(\.\/)+/, ""); // resolve ../ and ./ against the doc
+    return `${pre}/api/docs/asset?path=${encodeURIComponent(rel)}${scopeQS}${post}`;
+  });
+}
+
+// Renders to HTML that the UI injects with dangerouslySetInnerHTML, and `marked` does no
+// sanitising (it dropped its sanitizer years ago), so whatever markdown this reads becomes
+// script in the cockpit's origin. Which files it will read therefore matters a lot.
+//
+// It used to accept ANY .md under the kit root. That included board/specs/*.md — files
+// this same service writes on request via PUT /api/spec/:id, and that agents author. So
+// "write a spec, then ask for it to be rendered" was a way to run script here, and from
+// there rewrite the board that agents act on.
+//
+// Now it serves only the curated set /api/docs already lists (the UI never asks for
+// anything else — it renders paths straight out of that response). Specs are not in it.
+// And since the curated set still includes agent-authored files (agents/, skills/), raw
+// HTML in any rendered doc is neutered before it reaches the response: kept verbatim only
+// when it matches sanitize.mjs's allowlist exactly, escaped wholesale otherwise (wired
+// into marked at the top of this file).
+app.get("/api/docs/render", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const rel = String(req.query.path || "");
+  if (!listedDocPaths(scope.root).has(rel)) return res.status(404).json({ error: "not found" });
+  const abs = resolve(join(scope.root, rel));
+  // Belt and braces: the listing is built from the scope root, so this should never fail —
+  // but the check is cheap and keeps the guarantee local to the handler that reads the file.
+  if (!isInside(scope.root, abs) || !abs.endsWith(".md") || !existsSync(abs)) {
+    return res.status(404).json({ error: "not found" });
+  }
+  try {
+    // `async: false` pins the synchronous overload — marked's return type is
+    // string | Promise<string>, and the response builds the HTML inline.
+    const html = marked.parse(readFileSync(abs, "utf8"), { async: false });
+    res.json({ path: rel, html: rewriteDocImages(html, rel, scope.name) });
+  } catch (e) {
+    res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+// Serve images referenced by the docs — path-allowlisted to the scope root, image extensions only.
+app.get("/api/docs/asset", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const rel = String(req.query.path || "");
+  const abs = resolve(join(scope.root, rel));
+  if (!isInside(scope.root, abs) || !/\.(png|jpe?g|gif|svg|webp|ico|avif)$/i.test(abs) || !existsSync(abs)) {
+    return res.status(404).end();
+  }
+  // SVG is XML that may carry <script>, and it executes if the file is opened directly
+  // rather than via <img>. This endpoint stays open to SVG because docs legitimately use
+  // it, so deny the asset any privileges of its own instead.
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  res.sendFile(abs);
+});
+
+// ── Reports (T-003 §5) — generated files under board/reports/, served in place ─────────
+// Read-only. Names are validated against a strict basename pattern (no separators, so no
+// traversal) AND must exist inside the scope's reports dir. Generated HTML is agent-authored
+// content, so it never runs in the cockpit's origin: it ships with the same neutering CSP
+// sandbox the asset endpoint uses. Markdown reports render through the same neutered marked
+// pipeline as docs.
+const SAFE_REPORT = /^[A-Za-z0-9._-]+\.(html|md)$/;
+
+/** @param {Scope} scope */
+function listReports(scope) {
+  if (!existsSync(scope.reports)) return [];
+  return readdirSync(scope.reports)
+    .filter((f) => SAFE_REPORT.test(f))
+    .sort()
+    .map((f) => {
+      const s = statSync(join(scope.reports, f));
+      return { name: f, mtime: s.mtimeMs, size: s.size };
+    });
+}
+
+// ── Ticket usage: time and tokens per ticket ────────────────────────────────
+// Every figure on the Value page comes from buildUsageReport(), the same function the
+// `maestro usage` CLI and the shareable snapshot render from — one aggregation, so a
+// dashboard, an export and a terminal can never quote different numbers for one ticket.
+//
+// Reading session transcripts is opt-in and can take a second on a first, cold run over
+// months of them; after that the mtime cache makes it cheap. This memo exists for the
+// pathological case instead — a UI that polls, or several tabs open on one board — and is
+// short enough that a run finishing is visible on the next manual refresh.
+const USAGE_TTL_MS = 20_000;
+
+app.get("/api/usage", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  try {
+    res.json(usageFor(scope, req.query.refresh === "1"));
+  } catch (e) {
+    res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+// The same report, merged across every project in the registry. Registry-only on purpose:
+// the cockpit already defines "the set of projects" that way, and a second definition here
+// would be a second answer to "which projects am I looking at".
+/** @type {{ at: number, report: any } | null} */
+let portfolioUsageMemo = null;
+
+app.get("/api/portfolio/usage", (req, res) => {
+  if (!REGISTRY_PATH) {
+    return res.status(404).json({ error: "Portfolio mode is not configured — start with --registry <file> or MAESTRO_REGISTRY." });
+  }
+  const fresh = req.query.refresh === "1";
+  if (!fresh && portfolioUsageMemo && Date.now() - portfolioUsageMemo.at < USAGE_TTL_MS) {
+    return res.json(portfolioUsageMemo.report);
+  }
+  try {
+    const report = buildPortfolioUsage({ projects: projectsFromRegistry(REGISTRY_PATH) });
+    portfolioUsageMemo = { at: Date.now(), report };
+    res.json(report);
+  } catch (e) {
+    res.status(500).json({ error: errMessage(e) });
+  }
+});
+
+app.get("/api/portfolio/usage/export", (req, res) => {
+  if (!REGISTRY_PATH) return res.status(404).json({ error: "Portfolio mode is not configured." });
+  const format = String(req.query.format || "json");
+  const view = String(req.query.view || "tickets");
+  let report;
+  try {
+    report = portfolioUsageMemo?.report || buildPortfolioUsage({ projects: projectsFromRegistry(REGISTRY_PATH) });
+  } catch (e) { return res.status(500).json({ error: errMessage(e) }); }
+  if (format === "csv" && !usageCsvViews(report).includes(view)) return res.status(400).json({ error: `Unknown view "${view}".` });
+  const base = `portfolio-usage-${report.generatedAt.slice(0, 10)}`;
+  if (format === "csv") {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}-${view}.csv"`);
+    return res.send(usageToCsv(report, { view: /** @type {any} */ (view) }));
+  }
+  if (format === "html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.html"`);
+    return res.send(renderUsageSnapshot(report));
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${base}.json"`);
+  res.send(JSON.stringify(report, null, 2));
+});
+
+app.get("/api/usage/export", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const format = String(req.query.format || "json");
+  const view = String(req.query.view || "tickets");
+  let report;
+  try { report = usageFor(scope, false); }
+  catch (e) { return res.status(500).json({ error: errMessage(e) }); }
+  if (format === "csv" && !usageCsvViews(report).includes(view)) return res.status(400).json({ error: `Unknown view "${view}".` });
+  // A dated filename so several exports can sit in one download folder without overwriting.
+  const stamp = report.generatedAt.slice(0, 10);
+  const base = `${(scope.name || report.project || "board").replace(/[^\w.-]+/g, "-")}-usage-${stamp}`;
+  if (format === "csv") {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}-${view}.csv"`);
+    return res.send(usageToCsv(report, { view: /** @type {any} */ (view) }));
+  }
+  if (format === "html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${base}.html"`);
+    return res.send(renderUsageSnapshot(report));
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${base}.json"`);
+  res.send(JSON.stringify(report, null, 2));
+});
+
+app.get("/api/reports", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  res.json({ reports: listReports(scope) });
+});
+
+app.get("/api/reports/render", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const name = String(req.query.name || "");
+  if (!SAFE_REPORT.test(name)) return res.status(400).json({ error: "Invalid report name." });
+  const abs = join(scope.reports, name);
+  if (!isInside(scope.reports, abs) || !existsSync(abs)) return res.status(404).json({ error: "not found" });
+  if (name.endsWith(".md")) {
+    try {
+      const html = marked.parse(readFileSync(abs, "utf8"), { async: false });
+      return res.json({ name, kind: "md", html });
+    } catch (e) {
+      return res.status(500).json({ error: errMessage(e) });
+    }
+  }
+  // .html: serve the file itself, sandboxed. The UI shows it in an <iframe> pointed here.
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+  res.sendFile(abs);
+});
+
+// ── The long-form help page ──────────────────────────────────────────────────
+// docs/help.html is the "how this all works" guide. It is HTML, and the docs browser above
+// renders Markdown only (path-allowlisted, .md), so it had nowhere to be reached from and
+// shipped unreferenced. Served here on its own route, under the same sandbox the .html
+// reports use — it is a document, not an app, and nothing in it should run in our origin.
+//
+// Scope-aware like every other read: a portfolio project's vendored maestro/ has its own copy
+// at the same relative path, so the help you read matches the kit version you are running.
+const HELP_DOC = join("docs", "help.html");
+// The guide is a fully sandboxed iframe with `default-src 'none'` and no `script-src`, so it
+// cannot read the parent and cannot run a line of JS to ask. Left alone it therefore follows
+// `prefers-color-scheme` — the OS — and ignores the console's own theme toggle, so the two
+// disagree for anyone whose toggle differs from their system setting, which is the entire
+// reason to have a toggle.
+//
+// The document already carries `:root[data-theme="dark"|"light"]` blocks that outrank its media
+// query, so the fix is to stamp that attribute onto the served copy. Doing it here rather than
+// in the client keeps the sandbox exactly as strict as it was.
+const THEMES = new Set(["dark", "light"]);
+
+/**
+ * Set data-theme on the document's <html>, replacing any the file already had.
+ * @param {string} html the document as served
+ * @param {string} theme one of THEMES — never raw request input
+ * @returns {string}
+ */
+function stampTheme(html, theme) {
+  return html.replace(/<html\b([^>]*)>/i, (/** @type {string} */ _m, /** @type {string} */ attrs) => {
+    const cleaned = attrs.replace(/\s*data-theme\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+    return `<html${cleaned} data-theme="${theme}">`;
+  });
+}
+
+app.get("/api/help/guide", (req, res) => {
+  const scope = scopeOf(req, res);
+  if (!scope) return;
+  const abs = join(scope.root, HELP_DOC);
+  if (!isInside(scope.root, abs) || !existsSync(abs)) {
+    return res.status(404).json({ error: `No ${HELP_DOC} in this kit.` });
+  }
+  res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+  // Whitelisted, never interpolated from the request: `theme` reaches an HTML attribute, and
+  // req.query values can be arrays or arbitrary strings. Anything else renders untouched.
+  const asked = req.query.theme;
+  const theme = typeof asked === "string" && THEMES.has(asked) ? asked : null;
+  if (!theme) return res.sendFile(abs);
+  // The response now varies by query, so it must not be cached as if it didn't.
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(stampTheme(readFileSync(abs, "utf8"), theme));
+});
+
+// Serve the built UI in production (dist/), if present.
+const DIST = join(COCKPIT, "dist");
+if (existsSync(DIST)) {
+  app.use(express.static(DIST));
+  app.get(/.*/, (_req, res) => res.sendFile(join(DIST, "index.html")));
+}
+
+// Loopback only. `app.listen(PORT)` binds 0.0.0.0, which put an unauthenticated read/write
+// API on every interface — reachable by anyone sharing the network. Override only if you
+// know why you need it (container port-forwarding is the usual reason).
+const HOST = process.env.MAESTRO_HOST || "127.0.0.1";
+
+// A port someone asked for by name is a promise we have to keep: `server/dev.mjs` probes a
+// free port, points Vite's proxy at exactly that number, and then pins it here. Drifting to
+// the next one would leave the UI proxying to nothing — worse than not starting. So an
+// explicit PORT / --port binds or fails, and only the bare default is free to move.
+// Two knobs, deliberately different:
+//   PORT     — where to START looking. Still moves if that one is taken.
+//   --port   — bind exactly this or fail.
+// `--port` exists for the one caller that genuinely can't tolerate drift: server/dev.mjs
+// probes a free port, tells Vite to proxy to that exact number, and only then starts the
+// service. A service that quietly moved would leave the UI proxying into nothing. Everyone
+// else wants PORT, which is a preference rather than a demand.
+const PINNED_PORT = argValue("--port");
+// Number(), not the raw string: listen() accepts both, and a non-numeric value silently
+// became a named pipe instead of a port. Reject it here where we can say why.
+for (const [label, value] of [["--port", PINNED_PORT], ["PORT", process.env.PORT]]) {
+  if (value && !/^\d+$/.test(value.trim())) {
+    console.error(`✗ ${label}="${value}" is not a port number. Use e.g. PORT=4700 npm run board`);
+    process.exit(1);
+  }
+}
+const PORT_BASE = Number(process.env.PORT) || DEFAULT_PORT;
+const PORT = PINNED_PORT
+  ? Number(PINNED_PORT)
+  : await findFreePort(PORT_BASE, [HOST], PORT_SCAN_LIMIT);
+
+const server = app.listen(PORT, HOST, () => {
+  console.log(`AI Maestro cockpit data service on http://localhost:${PORT}`);
+  if (!PINNED_PORT && PORT !== PORT_BASE) {
+    console.log(`  (${PORT_BASE} was busy — another project's board, most likely.)`);
+  }
+  if (!LOCAL_HOSTS.has(HOST)) {
+    console.log(`  ⚠ MAESTRO_HOST=${HOST} — this API has no authentication and is now`);
+    console.log(`    reachable beyond this machine. Requests must still be addressed to localhost.`);
+  }
+  console.log(`Board: ${BOARD_DIR}`);
+  if (!existsSync(DEFAULT_SCOPE.data)) console.log(`  ⚠ no data.json found there yet.`);
+  if (REGISTRY_PATH) console.log(`Portfolio registry: ${REGISTRY_PATH}`);
+});
+
+// Express calls the listen callback before the bind result is known, so a port clash still
+// prints the banner above — then the socket dies, the event loop drains, and the process
+// exits 0. `concurrently -k` reads that as a clean exit and takes vite down with it, so the
+// board vanishes with no error at all. Turn the bind failure back into a real error.
+//
+// Reaching here with an unpinned port means we lost a race: findFreePort saw the port free,
+// then something else grabbed it in the moment before we bound. Rare, and not worth a retry
+// loop — saying so plainly beats a silent exit.
+server.on("error", (/** @type {NodeJS.ErrnoException} */ err) => {
+  if (err.code === "EADDRINUSE" && PINNED_PORT) {
+    console.error(`✗ Port ${PORT} is already in use, so the board can't start.`);
+    console.error(`  --port pins a port exactly, so it won't fall back to a free one.`);
+    console.error(`  Find what's holding it with:  lsof -nP -iTCP:${PORT} -sTCP:LISTEN`);
+    console.error(`  Or drop --port and let the board pick its own port.`);
+  } else if (err.code === "EADDRINUSE") {
+    console.error(`✗ Port ${PORT} was taken by another process a moment after we checked it.`);
+    console.error(`  Just start the board again.`);
+  } else {
+    console.error(`✗ The cockpit data service could not start: ${errMessage(err)}`);
+  }
+  process.exit(1);
+});

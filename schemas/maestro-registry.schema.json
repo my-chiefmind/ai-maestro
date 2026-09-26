@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "maestro-registry.schema.json",
+  "title": "AI Maestro project registry",
+  "description": "The list of projects that cross-project tools operate on — `maestro drift`, `maestro update --all`, `sync.mjs --all`, and the cockpit's portfolio mode. It replaces 'the projects that happen to sit in the same parent folder' with an explicit, ordered list, and it is the allowlist: a tool may only read or write boards belonging to a project named here.",
+  "type": "object",
+  "required": ["projects"],
+  "properties": {
+    "projects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "description": "Either a project (has `path`) or an include of another registry (has `registry`) — never both.",
+      "type": "object",
+      "oneOf": [{ "required": ["path"] }, { "required": ["registry"] }],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How every tool refers to this project. Must be unique across the whole registry tree, since consumers key on it. Defaults to `path` when omitted."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The project's repo root. `~` is expanded. A relative path resolves against the process's working directory, so prefer absolute or ~-anchored paths."
+        },
+        "registry": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Include another registry file — how a group of groups is expressed. Resolved relative to the registry that names it. Cycles are an error."
+        },
+        "status": {
+          "enum": ["active", "parked"],
+          "default": "active",
+          "description": "`parked` keeps the project on record but excludes it from every sweep, so 'deliberately not being worked' is recorded rather than lost by deleting the entry."
+        },
+        "kind": {
+          "enum": ["product", "ops"],
+          "default": "product",
+          "description": "`ops` is portfolio-level tooling with no delivery pipeline of its own; `product` ships."
+        },
+        "note": {
+          "type": "string",
+          "description": "Free text for humans — why a project is parked, where it moved from, what owns it."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

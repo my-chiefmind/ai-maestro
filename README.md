@@ -1,0 +1,405 @@
+<p align="center">
+  <img src="./docs/assets/maestro-logo.png" alt="AI Maestro logo" width="160" />
+</p>
+
+<h1 align="center">AI Maestro</h1>
+
+<p align="center"><b>From idea to product, you're the Maestro.</b></p>
+
+<p align="center">Conduct a roster of AI coding agents against a work board.</p>
+
+<p align="center">Building an integration? Use the supported <a href="./docs/BOARD-API.md">board API</a> and <a href="./docs/PUBLIC-DATA-API.md">plan, spec, and registry APIs</a>; private <code>scripts/*</code> imports are not a compatibility surface.</p>
+
+<p align="center">
+  <code>npm&nbsp;@mychiefmind/ai-maestro</code> ·
+  <code>Node&nbsp;18+</code> ·
+  <code>0&nbsp;runtime&nbsp;deps</code> ·
+  <a href="./LICENSE"><code>MIT</code></a> ·
+  <a href="./SECURITY.md"><code>Security</code></a>
+</p>
+
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="#capabilities">Capabilities</a> ·
+  <a href="#delivery-control-when-the-board-needs-a-decision">Delivery control</a> ·
+  <a href="#whats-in-the-box">What's in the box</a> ·
+  <a href="#the-cockpit">Visual board</a> ·
+  <a href="#web-dashboard">Web dashboard</a> ·
+  <a href="#how-it-sits-in-your-project">Project layout</a> ·
+  <a href="./docs/GETTING-STARTED.md">Docs</a>
+</p>
+
+---
+
+> **AI Maestro turns AI-assisted coding from improvised chat sessions into a managed
+> delivery process.** Instead of one developer prompting one AI, a portfolio of specialized
+> AI agents works a visible board of tasks — each task routed to the right agent and the
+> right (cost-appropriate) model, executed in isolation, and quality-gated before it lands.
+> The result: AI development that is trackable, parallelizable, and safe to hand off — the
+> difference between hiring a freelancer and running a team.
+
+[![The AI Maestro new-project demo: an arcade-style walkthrough titled "You're the Maestro" — install, answer a few questions, review the plan, then build one ticket at a time](./cockpit/asset/ai-maestro-hero-poster.jpg)](https://mychiefmind.com/ai-maestro/demo)
+
+👉 **[Try the step-by-step demo](https://mychiefmind.com/ai-maestro/demo)** — a click-through walkthrough of setting up a new project, no install required.
+
+AI Maestro runs software delivery as an *orchestra* of AI agents instead of a single chat
+session. The idea in three sentences:
+
+| # | The idea |
+| :--: | --- |
+| **1** | You keep a **board** of epics and tickets, bounded by a **project plan**. |
+| **2** | Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on. |
+| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it. The default is one ticket per run; optional [swarm mode](./docs/SWARM.md) continuously replenishes a bounded lane pool. |
+
+It's the distilled, product-neutral version of a system I've been running across a
+multi-repo portfolio for months. This repo shares the structure so you can adopt the
+same way of working.
+
+### How it flows
+
+![AI Maestro flow: the orchestrator reads board/data.json, picks the next unblocked ticket, and runs it through a plan → build → qa → delivery gate → merge pipeline inside an isolated git worktree, with every stage on the ticket's effective model; it then lands and archives the ticket — one ticket per run, you review before starting the next](./cockpit/asset/flow-diagram.png)
+
+## Capabilities
+
+AI Maestro is more than a ticket runner. The board is the control plane for planning, safe
+parallel delivery, evidence, and integrations — while the project remains a normal Git
+repository that you own.
+
+| Capability | Use it for | Start here |
+| --- | --- | --- |
+| **Plan and board** | Turn a product goal into scoped requirements, epics, dependencies, and testable tickets. | [Project plan](./docs/GETTING-STARTED.md#the-plan--maestroboardplanjson) → `/plan-update` |
+| **Specialist delivery pipeline** | Route each ticket through planning, implementation, independent QA, delivery approval, and merge. | [`/orchestrator`](./skills/orchestrator/SKILL.md) |
+| **Delivery TPM** | Get an evidence-backed readiness call, recover from delivery drift, and judge project health. | [`$delivery-tpm`](./skills/delivery-tpm/SKILL.md) |
+| **Lanes and Swarm** | Run safe independent work in parallel, then continuously replenish a bounded delivery pool. | [Lanes + Swarm](./docs/GETTING-STARTED.md#running-work-in-parallel--lanes) |
+| **Cockpit** | Manage the board visually, inspect the roster, plan, reports, and delivery state. | [The cockpit](#the-cockpit) |
+| **Web dashboard** *(preview)* | View and edit one or many projects from a local browser dashboard. | [Web dashboard](#web-dashboard) |
+| **Specs and public APIs** | Safely read or update ticket specs and integrate with stable board, plan, spec, and registry APIs. | [Public APIs](./docs/PUBLIC-DATA-API.md) |
+| **Usage and value reporting** | Attribute agent and application usage to tickets, models, providers, and projects. | [Usage reporting](./docs/USAGE.md) |
+
+## Delivery control: when the board needs a decision
+
+Most tickets can flow directly through planning, implementation, QA, and delivery. When the
+board and repository state disagree — or a release needs an explicit readiness call — run
+**`$delivery-tpm`** in Codex or **`/delivery-tpm`** in Claude. It is the evidence-driven
+delivery-control skill, paired with the `tpm` agent stage. It does not write product code,
+review its own implementation, merge, deploy, or silently clean up work.
+
+| Use it when | TPM checks | TPM returns |
+| --- | --- | --- |
+| A high-risk or cross-team ticket must be ready before build work starts | Acceptance criteria, dependencies, expected PR, verification command, and repository reality | `Proceed` with the next stage, or one concrete blocker |
+| A swarm starts, recovers, or has merge/lane contention | Board health, active worktrees, agent state, `maestro swarm status`, and safe lanes | A pool-wide proceed/hold decision — not a TPM agent per healthy lane |
+| A worktree, branch, PR, or board status is messy or stale | Ownership, commits, merge state, QA/delivery evidence, and drift | `Resume`, `Finish landing`, `Blocked`, or `Owner decision required` |
+| You need an honest delivery snapshot | Current board, worktrees, branches, PRs, and gate evidence | A qualitative project judgment plus the next highest-leverage action |
+
+For an explicit per-ticket checkpoint, put `tpm` first in that ticket's plan:
+
+```jsonc
+"agent_plan": ["tpm", "pe", "backend", "qa", "merge"]
+```
+
+TPM produces a short, evidence-backed report rather than a status narrative:
+
+| Scope | Done / evidence | Missing | Blocker / owner | Next |
+| --- | --- | --- | --- | --- |
+| Project judgment — Healthy / At risk / Blocked | Facts that support the judgment | Unmet gates or unknowns | Concrete issue and owner, or — | One highest-leverage action |
+| Active ticket — ID, title, stage | Completed criteria, revision, checks | Specific remaining criterion or gate | Exact blocker and owner, or — | One next stage/action |
+| Other affected ticket or lane | Evidence, or — | What it needs | Blocker and owner, or — | Next action |
+
+The judgment is qualitative on purpose: no invented percentages, no “almost done,” and no
+claim that a ticket is complete merely because a branch or PR exists. A ticket is done only
+after its applicable acceptance, verification, QA, delivery, merge, and board-reconciliation
+gates complete.
+
+## Why work this way
+
+| Principle | What it buys you |
+| --- | --- |
+| **The board is the source of truth, not the chat.** | Work survives context resets, handoffs, and parallel sessions because it lives in `board/data.json`, not in a conversation you'll lose. |
+| **The right agent and model per task.** | A one-line CSS fix and a database migration should not run on the same model or the same prompt. Tickets route themselves. |
+| **Pipelines, not heroics.** | Every ticket flows through its configured agent pipeline, followed by the required review and delivery gates. Those gates are structural, not something you remember to do. |
+| **Isolated by construction.** | Each ticket runs in its own git worktree, so parallel work never collides and a bad branch never dirties `main`. |
+| **Reusable skills.** | Git branch conventions, worktree cleanup, landing a change, catching up a stale checkout, validating the board — packaged once, used everywhere. |
+
+### The Agile advantage
+
+AI Maestro is an **Agile delivery process adapted for a solo operator** — one human
+conducting AI agents across one or many projects. The delivery principles map directly:
+
+| Agile principle | How AI Maestro delivers it |
+| --- | --- |
+| **Deliver working software frequently** | A ticket is one independently shippable outcome, and the orchestrator lands exactly one per run — continuous small increments, not big-bang merges. |
+| **Working software is the measure of progress** | A ticket isn't done until it passes an independent QA gate and is archived *with verification evidence*. The board never claims progress the code can't back up. |
+| **Continuous attention to technical excellence** | Review and delivery gates are structural pipeline stages, not rituals you have to remember. |
+| **Simplicity — maximize the work not done** | Delivery-hygiene rules keep the board to shippable outcomes; specs exist only when a ticket needs more than its description. |
+| **Welcome changing priorities** | Kanban-style pull, no sprint to protect: reorder or re-scope the backlog any time, and the next run simply picks the new top eligible ticket. |
+| **Transparency and sustainable pace** | A glance at the board always shows the true state, and the one-ticket-per-run loop puts a human checkpoint between every increment. |
+
+The team ceremonies that assume a room full of people — stand-ups, sprint planning,
+sprint reviews — are deliberately replaced by that **between-ticket checkpoint**: you
+review each landed increment before conducting the next. See
+[docs/METHOD.md](./docs/METHOD.md#8-the-agile-lineage--adapted-for-a-solo-operator) for
+the full mapping.
+
+## What's in the box
+
+| Piece | What it is |
+| --- | --- |
+| [`board/`](./board/) | The board + project-plan formats (`board.schema.json`, `plan.schema.json`) and this repo's own workboard. A runnable example board ships in [`starters/orchestrated-project/board/`](./starters/orchestrated-project/board/) instead — that's what `setup` seeds a new project from, never this one's. |
+| [`agents/`](./agents/) | A generic agent roster: orchestrator, delivery-tpm, principal-engineer, backend, frontend, devops, technical-writer, qa, principal-delivery |
+| [`skills/`](./skills/) | Reusable skills — the `/project-plan`, `/plan-update`, `/orchestrator`, `/delivery-tpm`, and optional `/swarm` entry points, plus board hygiene, release gate, security review, and the git/worktree basics |
+| [`render/`](./render/) | `sync.mjs` — generates native Claude Code and Codex files from one config + context; `--all --registry <file>` does it across every project in a [registry](./docs/GETTING-STARTED.md#managing-several-projects) |
+| [`starters/`](./starters/) | Two starter capsules: full orchestrated project, or a lightweight single-area one |
+| [`cockpit/`](./cockpit/) | A React/MUI board console — list and Kanban views, config-driven pickers, epic + ticket editing, a roster view, validated + conflict-safe writes |
+| [`bin/cli.mjs`](./bin/cli.mjs) | The `maestro` CLI — setup, sync, validation, board/plan writes, and the triggered [dev → PR → reviewer pipeline](./docs/CROSS-REVIEW.md) |
+| [`scripts/registry.mjs`](./scripts/registry.mjs) | The shared registry format behind `maestro drift` and `sync --all` — see [Managing several projects](./docs/GETTING-STARTED.md#managing-several-projects) |
+| [`docs/`](./docs/) | The method, model-routing policy, and a getting-started guide |
+
+## Quickstart
+
+Two ways in — pick one:
+
+| Path | What it is | Command |
+| --- | --- | --- |
+| **[1 — Instant Setup with npx](#path-1--instant-setup-with-npx)** | Run the questionnaire yourself, then do the [first steps](#first-steps-after-setup). | `npx @mychiefmind/ai-maestro setup` |
+| **[2 — Hands-Free Onboarding with an AI coding agent](#path-2--hands-free-onboarding-with-an-ai-coding-agent)** | Paste one prompt in Claude Code or Codex; the agent runs setup and fills things in for you. | *(the prompt is below)* |
+
+Starting from an empty folder, or showing someone else how this works? The
+**[new-project demo](https://mychiefmind.com/ai-maestro/demo)** walks the whole path in plain
+language, written for a complete beginner — install, answer a few questions about your project,
+review the generated epics and dependency-ordered tickets, then run the orchestrator.
+
+### Path 1 — Instant Setup with npx
+
+One command in your project — no clone, no install:
+
+```bash
+cd ~/code/my-app     # your project
+npx @mychiefmind/ai-maestro setup # asks about your project; Enter accepts every default
+```
+
+`setup` asks for your project brief — outcome, users, stack, constraints, and how to run and
+test it — then copies the kit into `./maestro/`, writes your `config.json` + `context.md` from
+those answers, runs `git init` if the folder isn't a repo yet, renders native Claude Code and
+Codex agents & skills at your repo root, checks the board, and **asks if you'd like to open the visual
+board** (say no and nothing is left running). The six project-brief questions default to
+`propose one`, which hands those decisions to the agents and has them show you what they chose;
+the project name and work areas have concrete defaults.
+
+Now open the repo in Claude Code or Codex and run **`/project-plan`** — it writes the **project plan**
+first (goal, scope, deliverables, use cases, functional and non-functional requirements), stops
+for your review, then turns it into epics and dependency-ordered tickets that each trace back to
+a plan item. Approve them, then run **`/orchestrator`**; it picks up the first unblocked ticket
+and runs it — and refuses anything the plan doesn't cover. (Plain language works too: "plan the
+project", "run the board".)
+
+### Path 2 — Hands-Free Onboarding with an AI coding agent
+
+Prefer not to answer the questionnaire yourself? Open your project in
+[Claude Code](https://claude.com/claude-code), Codex, or another compatible agentic tool and paste this
+prompt — it runs `setup` with answers drawn from your real codebase, then plans a board for you
+to review:
+
+```text
+Add AI Maestro — the AI-agent orchestration kit — to this project.
+
+1. From the repo root, run setup non-interactively, filling each answer
+   from the ACTUAL codebase (README, package manifests, configs) — not
+   guesses. Show me the answers before you run it:
+
+   npx @mychiefmind/ai-maestro setup --yes --no-board \
+     --name "<project name>" --areas "<areas, e.g. frontend,backend,infra>" \
+     --outcome "<what this project does>" --users "<who it's for>" \
+     --stack "<languages, frameworks, database, hosting>" \
+     --constraints "<real conventions and guardrails>" \
+     --run "<real dev command>" --test "<real test command>"
+
+   This vendors the kit into ./maestro/ and renders Claude files into ./.claude/
+   plus Codex skills/subagents into ./.agents/ and ./.codex/ at the repo root.
+   It must NOT touch my application code.
+
+2. Then plan the work: propose a few real starter tickets based on
+   near-term work you can see (TODOs, missing tests, rough edges), keep
+   every ticket status "todo", and validate the board.
+
+3. Report back: the answers you used, the agent roster, the proposed
+   tickets, and whether I should commit maestro/ or gitignore it.
+
+Do NOT start executing tickets. Stop after planning so I can review —
+then I'll run /orchestrator myself.
+```
+
+### First steps after setup
+
+Open your project in Claude Code or Codex and run these once, in order:
+
+| Step | Do this | Why |
+| :--: | --- | --- |
+| **1** | Run:<br/>**`/project-plan`** | Writes the **project plan** from your brief — goal, scope, deliverables, use cases, functional and non-functional requirements — and proposes an answer for anything you left as `propose one`. It stops for your review; nothing is implemented. |
+| **2** | Review the plan; fill in what's thin with **`/plan-update`** or the board's **Plan** tab | The plan reports a completeness percentage and says which sections are missing. It's the contract every later agent works from — and the scope boundary the orchestrator enforces. |
+| **3** | Approve it; `/project-plan` then writes 3-6 epics and 5-15 dependency-ordered tickets, each tracing to a plan item | A ticket that traces to nothing is out of scope by definition, and won't run. |
+| **3b** | *Large project only:* group the epics under 2-6 **initiatives** | Optional, and most projects skip it. Use it when the project holds several outcomes that are each independently worth shipping and each need multiple epics. |
+| **4** | Commit the approved starting point, then run:<br/>**`/orchestrator`** | The first commit gives worktrees a stable base; the orchestrator then builds one ticket per run. |
+
+### Going further
+
+> Adopting this into an existing codebase, tuning models and areas, alternative layouts, and
+> troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
+>
+> Already set up and a new version is out? `npx @mychiefmind/ai-maestro@latest update`
+> refreshes the kit in `maestro/` and re-renders — your config, brief, and board are kept
+> ([details](./docs/GETTING-STARTED.md#updating-the-kit)).
+>
+> Running several projects? The [web dashboard](#web-dashboard) (preview) shows them all in
+> one local browser tab.
+
+### How the levels nest
+
+```
+Project plan   the boundary — nothing outside it may run
+└── Initiative an independently valuable outcome, delivered by several epics   ← optional
+    └── Epic   a demonstrable delivery outcome, made of tickets
+        └── Ticket  the executable, independently verifiable unit
+```
+
+**Initiatives are optional and most projects do not need them.** Reach for them only when a
+project holds several independently valuable outcomes that each need multiple epics — then each
+one gets its own outcome, boundary, metrics, and its own slice of the plan's requirements. A
+ticket never stores an initiative; it derives one through its epic, and a trace that crosses
+initiatives is refused. A project that defines none behaves exactly as it did before the layer
+existed.
+
+## The core idea in one ticket
+
+```jsonc
+{
+  "id": "T-014",
+  "epicId": "e2",
+  "name": "Add rate limiting to the public API",
+  "area": "backend",
+  "priority": "P1",
+  "swag": "M",
+  "status": "todo",
+  "depends_on": ["T-011"],
+  "agent_plan": ["pe", "backend", "qa", "merge"],  // the pipeline
+  "model": "sonnet"                                  // the model to run it on
+}
+```
+
+The orchestrator reads that and does the rest: it won't touch `T-014` until `T-011`
+is `done`; when it does, it runs a principal-engineer plan, hands the plan to the
+backend agent in a fresh worktree, gates through QA, then merges and archives.
+
+## How it sits in your project
+
+After `setup`, AI Maestro is a **sidecar** — the tooling lives in `maestro/` and never touches your
+application code, and the generated agents land at your **repo root** so the coding tool
+discovers them.
+
+```
+my-app/
+├── src/  …                    ← your real code (untouched)
+├── maestro/                   ← the kit + your settings
+│   ├── config.json            ← project name, areas, models   (setup writes this)
+│   ├── context.md             ← the brief every agent reads    (setup writes it from your answers)
+│   ├── board/data.json        ← epics + tickets (edit here or in the cockpit)
+│   └── custom/                ← optional: YOUR agents & skills (never touched by an update)
+│       ├── agents/*.md
+│       └── skills/*/SKILL.md
+├── .claude/                   ← GENERATED — Claude agents & skills
+├── CLAUDE.md                  ← GENERATED — Claude project guidance
+├── .agents/skills/            ← GENERATED — Codex skills
+├── .codex/agents/             ← GENERATED — Codex custom subagents
+└── AGENTS.md                  ← GENERATED — Codex project guidance
+```
+
+**You'll need** git, Node.js 18+, and an agentic coding tool that can run subagents
+([Claude Code](https://claude.com/claude-code), Codex, or compatible). Setup is the single command from
+the [Quickstart](#quickstart) — then, from your coding tool at the repo root, run
+**`/project-plan`**, approve the plan, and run **`/orchestrator`**.
+
+> **Keep your own agents/skills in one place.** Drop custom agents in `maestro/custom/agents/`
+> and skills in `maestro/custom/skills/<name>/SKILL.md`. `sync` merges them into every enabled
+> runtime target (overriding a kit file of the same name), and `maestro/custom/` is the one folder
+> an update never touches — so unlike hand-editing generated runtime files, they survive
+> both re-renders and kit upgrades. They don't need listing in `config.json`: `roster`/`skills`
+> selects which *kit* agents you take; your own are always included.
+
+> **Keep the kit out of your project's git?** `npx setup` vendors a plain folder — commit it or
+> ignore it. A cloned kit brings its own `.git`, so either `rm -rf maestro/.git` or gitignore
+> `maestro/`. Both variants, plus the shared-kit and vendored layouts, are in
+> 👉 [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md#alternative-layouts).
+
+## The cockpit
+
+Optional, and the only part that runs a server. It ships with both install paths — `npx setup`
+vendors it into your `maestro/` folder, and a clone has it too — and `setup` offers to open it for
+you at the end.
+
+A no-terminal way to run the board: stat cards, an epic sidebar, and filterable list or Kanban
+views. Add and edit epics and tickets in place — areas, models, cross-review roles, and the agent pipeline are **pickers
+driven by your `config.json`**, ticket IDs are generated for you, and every write is validated
+before it's saved (the UI can't create a broken board). A **Roster** tab lists the agents and
+skills your tickets route to. Edits land back in `board/data.json`; if an agent changes the
+board while you're looking at it, the console reloads instead of overwriting their work.
+
+![The AI Maestro cockpit — board view](./cockpit/asset/board-dark.png)
+
+<details>
+<summary><b>More views</b> — light theme &amp; the roster</summary>
+
+<br/>
+
+| Board (light) | Roster (agents &amp; skills) |
+| --- | --- |
+| ![Board, light theme](./cockpit/asset/board-light.png) | ![Roster view](./cockpit/asset/roster-dark.png) |
+
+</details>
+
+```bash
+cd maestro && npm run board   # installs the cockpit's deps if needed, then → http://localhost:5273
+```
+
+Boards for several projects can run side by side — if 5273 is taken, the next free port is
+used and printed on startup, so open the URL the board actually prints.
+
+Usage reports separate runtime from inference provider and combine exact Codex counters with a
+privacy-safe application ledger for provider calls such as DeepSeek.
+Package consumers can build the same single-project or portfolio report through the supported
+`@mychiefmind/ai-maestro/usage` export; see [`docs/USAGE.md`](./docs/USAGE.md).
+
+The cockpit covers one project at a time. For several projects in one place, see the
+[web dashboard](#web-dashboard), which is planned to replace the vendored cockpit later.
+
+## Web dashboard
+
+> **Preview: publishing soon.** The repository is private and the package is not on npm yet.
+> The commands below work once `@mychiefmind/ai-maestro-web-ui` is published.
+
+`@mychiefmind/ai-maestro-web-ui` is a companion package: a local web dashboard for one or many
+AI Maestro projects. It listens on `127.0.0.1` only, and you register projects by path, so each
+one keeps its own `maestro/` folder.
+
+```bash
+npm install --save-dev @mychiefmind/ai-maestro @mychiefmind/ai-maestro-web-ui
+npx ai-maestro-web-ui              # opens the browser; if 3021 is busy, the next free port is used
+npx ai-maestro-web-ui add <path>   # register a project
+```
+
+- Board per project, plus an all-projects operations view
+- Token usage, reports and docs, project plan, and roster
+- Light and dark themes; works on phones
+
+It reads and writes project data only through AI Maestro's public APIs (board, plan, spec,
+registry, and usage exports), with locking — see [`docs/PUBLIC-DATA-API.md`](./docs/PUBLIC-DATA-API.md).
+
+[GitHub](https://github.com/my-chiefmind/ai-maestro-web-ui) ·
+[npm](https://www.npmjs.com/package/@mychiefmind/ai-maestro-web-ui) — preview, publishing soon.
+
+## Status
+
+> Early and evolving — the structure is battle-tested; the packaging is new. Issues and
+> ideas welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE).

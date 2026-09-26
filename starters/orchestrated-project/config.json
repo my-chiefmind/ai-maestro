@@ -1,0 +1,89 @@
+{
+  "project": {
+    "name": "my-app",
+    "areas": [
+      "backend",
+      "frontend",
+      "infra",
+      "docs"
+    ]
+  },
+  "usage": {
+    "scanTranscripts": false,
+    "_comment": "Set scanTranscripts to true to reconstruct per-ticket time and tokens from LOCAL Claude Code and Codex sessions. Reading is read-only and the cache keeps only aggregates and hashed path markers - never prompts, responses, commands, source, credentials, or raw paths. Off by default because it reads files outside the repo."
+  },
+  "roster": [
+    "orchestrator",
+    "principal-engineer",
+    "backend-developer",
+    "frontend-developer",
+    "devops",
+    "technical-writer",
+    "qa",
+    "principal-delivery",
+    "delivery-tpm",
+    "pipeline-developer",
+    "repo-audit"
+  ],
+  "skills": [
+    "orchestrator",
+    "delivery-tpm",
+    "swarm",
+    "project-plan",
+    "plan-update",
+    "board-validate",
+    "delivery-hygiene",
+    "release-gate",
+    "security-review",
+    "test-coverage",
+    "dev-setup",
+    "git-branch",
+    "worktree-cleanup",
+    "land-and-archive",
+    "gc",
+    "dev-report",
+    "atomic-report",
+    "frontend-quality",
+    "pipeline-quality",
+    "orchestration-health",
+    "repo-audit",
+    "scale",
+    "data-model"
+  ],
+  "model": {
+    "default": "sonnet",
+    "floors": {
+      "infra": "opus",
+      "docs": "haiku"
+    }
+  },
+  "humanGates": [
+    "prod release approved",
+    "owner sign-off",
+    "irreversible change approved"
+  ],
+  "orchestration": {
+    "maxWorktrees": 3,
+    "swarm": {
+      "enabled": false,
+      "targetAgents": 10,
+      "waveMinutes": 30,
+      "autoMerge": false,
+      "timeoutsMinutes": {
+        "xs": 60,
+        "s": 120,
+        "m": 240,
+        "l": 480
+      }
+    }
+  },
+  "targets": {
+    "claude": true,
+    "codex": true
+  },
+  "githubActions": true,
+  "kitSource": {
+    "mode": "sibling",
+    "path": "../../maestro"
+  }
+}

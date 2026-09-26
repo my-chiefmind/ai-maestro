@@ -1,0 +1,80 @@
+{
+  "name": "@mychiefmind/ai-maestro",
+  "version": "0.6.7",
+  "description": "Conduct a roster of AI coding agents against a work board.",
+  "type": "module",
+  "license": "MIT",
+  "author": "MyChiefMind <info@mychiefmind.com> (https://mychiefmind.com)",
+  "homepage": "https://mychiefmind.com/ai-maestro",
+  "bin": {
+    "ai-maestro": "bin/cli.mjs",
+    "maestro": "bin/cli.mjs"
+  },
+  "exports": {
+    "./board": "./scripts/board-api.mjs",
+    "./plan": "./scripts/plan-api.mjs",
+    "./spec": "./scripts/spec-api.mjs",
+    "./registry": "./scripts/registry-api.mjs",
+    "./usage": "./scripts/usage-api.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "render",
+    "scripts",
+    "agents",
+    "skills",
+    "workflows",
+    "schemas",
+    "starters",
+    "board",
+    "!board/.backups",
+    "!board/data.json",
+    "!board/archive.json",
+    "!board/plan.json",
+    "!board/plan.md",
+    "!board/telemetry.jsonl",
+    "!board/application-usage.jsonl",
+    "!board/specs",
+    "!board/reports",
+    "cockpit",
+    "!cockpit/node_modules",
+    "!cockpit/dist",
+    "!cockpit/.backups",
+    "docs",
+    "SECURITY.md",
+    "VERSION"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepublishOnly": "node scripts/validate-board.mjs starters/orchestrated-project/board/data.json && node scripts/sync-version.mjs --check",
+    "version": "node scripts/sync-version.mjs && git add VERSION",
+    "setup": "node bin/cli.mjs setup",
+    "init": "node bin/cli.mjs init",
+    "validate": "node scripts/validate-board.mjs starters/orchestrated-project/board/data.json",
+    "validate:mine": "node scripts/validate-board.mjs board/data.json",
+    "sync": "node render/sync.mjs --project .",
+    "swarm": "node scripts/swarm-config.mjs",
+    "dev": "npm run board",
+    "preboard": "node scripts/cockpit-install.mjs",
+    "board": "npm --prefix cockpit run dev",
+    "cockpit:install": "node scripts/cockpit-install.mjs --force"
+  },
+  "keywords": [
+    "ai-agents",
+    "orchestration",
+    "board",
+    "kanban",
+    "claude",
+    "codex",
+    "gpt",
+    "agentic",
+    "workflow"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/my-chiefmind/ai-maestro.git"
+  }
+}

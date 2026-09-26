@@ -1,0 +1,815 @@
+/**
+ * board-core.mjs — the one true board validator.
+ *
+ * Pure functions, no I/O, no process.exit — so both the CLI (validate-board.mjs) and the
+ * cockpit server can share the exact same integrity rules. A board is never "valid in the
+ * UI but invalid on the command line".
+ *
+ * The validator is archive-aware: a landed ticket moves from data.json to archive.json, so
+ * dependency checks and eligibility must count archived tickets as existing + done.
+ *
+ * It is also plan-aware, but only when handed a plan. The scope gate WARNS here and BLOCKS at
+ * pick time (see eligibleTickets): you must be able to jot a ticket before the plan covers it,
+ * but nothing may run until someone decides it is in scope.
+ */
+
+import { scopeVerdict, planIsGating, planItems, initiativeMap } from "./plan-core.mjs";
+
+export const STATUSES = ["backlog", "todo", "in-progress", "review", "blocked", "done"];
+
+/**
+ * Terminal states a ticket may carry ONLY in archive.json — for tickets that left the
+ * board without being completed: shelved pending an owner decision (`archived`), filed
+ * twice (`duplicate`), or deliberately declined (`wont-do`). Folding these into `done`
+ * would record work as finished that never was, so a LIVE ticket carrying one of them
+ * is a hard error.
+ */
+export const ARCHIVE_ONLY_STATUSES = ["archived", "duplicate", "wont-do"];
+export const ARCHIVE_STATUSES = [...STATUSES, ...ARCHIVE_ONLY_STATUSES];
+
+/**
+ * Known values for `failureKind` on blocker tickets created after a failed merge —
+ * an enum so merge failures are classifiable rather than free text. Unknown values
+ * are a warning, not an error, so a newer board doesn't hard-fail an older validator.
+ */
+export const FAILURE_KINDS = ["merge-conflict", "merge-schema-invalid", "merge-unknown-status", "merge-missing-sha"];
+
+export const PRIORITY = ["P0", "P1", "P2", "P3"];
+export const SWAG = ["XS", "S", "M", "L", "XL"];
+export const MODELS = ["haiku", "sonnet", "opus"];
+export const MODES = ["single-agent", "multi-agent"];
+
+/** Stable machine codes returned by the public eligibility API. */
+export const ELIGIBILITY_REASON_CODES = Object.freeze({
+  STATUS: "status",
+  HUMAN_GATE: "human-gate",
+  DEPENDENCY_MISSING: "dependency-missing",
+  DEPENDENCY_UNSATISFIED: "dependency-unsatisfied",
+  MALFORMED_REFERENCE: "malformed-reference",
+  PLAN_SCOPE: "plan-scope",
+  INITIATIVE_UNASSIGNED: "initiative-unassigned",
+  INITIATIVE_UNKNOWN: "initiative-unknown",
+  INITIATIVE_CROSS: "initiative-cross",
+});
+
+// Terminal gates — appended to a ticket's plan by resolvePlan(). Always valid in an agent_plan.
+export const TERMINAL = new Set(["qa", "pd", "merge"]);
+
+// Model tiers, weakest → strongest. Used to apply per-area floors.
+export const MODEL_RANK = { haiku: 0, sonnet: 1, opus: 2 };
+
+// Agent files are named by role (backend-developer.md); agent_plan uses short codes (backend).
+export const CODE_ALIASES = {
+  "backend-developer": "backend",
+  "frontend-developer": "frontend",
+  "pipeline-developer": "pipeline",
+  "principal-engineer": "pe",
+  "principal-delivery": "pd",
+  "delivery-tpm": "tpm",
+  // `docs` matches the area name, like backend/frontend do. Without it the starter shipped a
+  // `docs` area (and a model floor for it) that no agent could implement.
+  "technical-writer": "docs",
+};
+
+/** Map an agent file basename (no extension) to the code used in agent_plan. */
+export function agentFileToCode(basename) {
+  return CODE_ALIASES[basename] ?? basename;
+}
+
+// kit-075 §2b: the alias map means the short code isn't always the obvious guess (`frontend`,
+// not `fe`) — an unknown-agent error is more useful with a nearest-match hint attached.
+function levenshtein(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/** The closest known code to an unrecognised one, or null if nothing is close enough to be
+ * worth suggesting (distance > half the input's length, floor 2 — short codes need an exact
+ * near-miss, not a same-length coincidence). */
+export function suggestCode(unknown, knownCodes) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const code of knownCodes) {
+    const d = levenshtein(unknown, code);
+    if (d < bestDist) { bestDist = d; best = code; }
+  }
+  const threshold = Math.max(2, Math.floor(unknown.length / 2));
+  return best && bestDist <= threshold ? best : null;
+}
+
+// ── Initiative ownership ────────────────────────────────────────────────────────
+//
+// Initiative mode is on when, and only when, the plan defines at least one initiative. There is
+// no implicit or default initiative anywhere in persisted JSON: a board that has never heard of
+// initiatives must keep behaving exactly as it did, and inventing a hidden "I-0" for it would
+// make every later question ("which initiative owns this?") have a fake answer.
+
+/** True when the plan defines at least one initiative. */
+export function initiativeModeActive(plan) {
+  return !!plan && initiativeMap(plan).size > 0;
+}
+
+/** Epics addressable by a ticket: live and archived, since a ticket's epic may have landed. */
+function epicIndex(data, archivedEpics) {
+  // ARCHIVED FIRST, so a live epic of the same id OVERWRITES it. `maestro ticket archive` copies
+  // a ticket's epic into archive.epics to keep the reference alive if the live epic is ever
+  // removed, which means an epic routinely exists in both files. When it does, the live record
+  // is the current one by definition — the archived entry is a shadow of it, not a second
+  // record. Built the other way round the shadow won, and an archived ticket derived a stale
+  // initiative from an epic that had since been reassigned (T-031).
+  return new Map([...archivedEpics, ...(data?.epics ?? [])].map((e) => [e.id, e]));
+}
+
+/** Ids of archived epics that are shadows of a live epic — the live record is authoritative. */
+function shadowedEpicIds(data, archivedEpics) {
+  const live = new Set((data?.epics ?? []).map((e) => e.id));
+  return new Set(archivedEpics.filter((e) => live.has(e.id)).map((e) => e.id));
+}
+
+/**
+ * Does this ticket respect initiative ownership?
+ *
+ * A ticket has NO initiative of its own — it derives one through its epic, which is why
+ * `initiativeId` is never stored on a ticket. Duplicating it there would create two sources of
+ * truth that drift the first time an epic moves.
+ *
+ * States:
+ *   off               — no plan, or the plan defines no initiative; never blocks
+ *   unresolved        — epics were not supplied, so ownership cannot be derived; never blocks
+ *   unassigned-epic   — initiative mode, but the ticket's epic belongs to no initiative
+ *   unknown-initiative— the epic names an initiative the plan does not define
+ *   cross-initiative  — traces to an item another initiative owns
+ *   ok                — project-wide traces only, or traces its own initiative's items
+ *
+ * A `scope_exception` is deliberately NOT consulted. It is a human's decision to run work the
+ * plan does not cover — a statement about project scope, not a licence to wire a ticket to
+ * another initiative's requirement. Letting it clear this check would make the exception the
+ * easiest way to produce exactly the inconsistency the check exists to prevent.
+ *
+ * @returns {{state:string, blocks:boolean, reason:string, initiativeId:string|null, foreign:string[]}}
+ */
+export function ownershipVerdict(ticket, opts = {}) {
+  const { plan = null, data = null, archivedEpics = [] } = opts;
+  const none = { initiativeId: null, foreign: [] };
+  if (!initiativeModeActive(plan)) return { state: "off", blocks: false, reason: "", ...none };
+  // Callers that hand over tickets without their epics (the portfolio survey once did) cannot
+  // have ownership decided for them. Silence beats guessing: blocking on an epic we were never
+  // given would report a healthy board as jammed.
+  if (!Array.isArray(data?.epics)) return { state: "unresolved", blocks: false, reason: "", ...none };
+
+  const epics = epicIndex(data, archivedEpics);
+  // AC: resolve the epic FIRST. A ticket pointing at an epic that does not exist has a broken
+  // epicId, and saying "cross-initiative" about it would send the reader hunting the wrong bug;
+  // validateBoard reports the dangling epicId on its own line.
+  const epic = ticket.epicId ? epics.get(ticket.epicId) : null;
+  if (ticket.epicId && !epic) return { state: "unresolved", blocks: false, reason: "", ...none };
+
+  const initiatives = initiativeMap(plan);
+  const own = epic?.initiativeId ?? null;
+
+  if (epic && !own) {
+    return {
+      state: "unassigned-epic",
+      blocks: true,
+      reason: `Epic ${epic.id} belongs to no initiative, so ${ticket.id} has none either. Assign it with 'maestro ticket edit-epic ${epic.id} --initiative <I-n>'.`,
+      initiativeId: null, foreign: [],
+    };
+  }
+  if (own && !initiatives.has(own)) {
+    return {
+      state: "unknown-initiative",
+      blocks: true,
+      reason: `Epic ${epic.id} names initiative ${own}, which the plan does not define. Create it with 'maestro plan initiative-add' or reassign the epic.`,
+      initiativeId: own, foreign: [],
+    };
+  }
+
+  const items = planItems(plan);
+  const ids = Array.isArray(ticket.traces_to) ? ticket.traces_to : [];
+  // A project-wide item (owner null) is available to everyone; an unknown id is the scope
+  // gate's business, not this check's.
+  const foreign = ids.filter((id) => {
+    const owner = items.get(id)?.initiativeId ?? null;
+    return owner !== null && owner !== own;
+  });
+  if (foreign.length) {
+    const owners = foreign.map((id) => `${id} owned by ${items.get(id).initiativeId}`).join(", ");
+    const reason = own
+      ? `${ticket.id} belongs to initiative ${own} through epic ${epic.id}, but traces to ${owners}. ` +
+        `Move the ticket/epic, reassign ${foreign.join("/")}, or trace to an ${own}/project-wide item.`
+      : `${ticket.id} has no epic, so it derives no initiative and may trace only to project-wide items, ` +
+        `but it traces to ${owners}. Give it an epic in the owning initiative, or trace to a project-wide item.`;
+    return { state: "cross-initiative", blocks: true, reason, initiativeId: own, foreign };
+  }
+  return { state: "ok", blocks: false, reason: "", initiativeId: own, foreign: [] };
+}
+
+/**
+ * Every cross-initiative or dangling-initiative conflict a board holds against a given plan.
+ *
+ * ONE implementation, shared by the plan CLI's reverse preflight and the cockpit's plan-write
+ * route. These are the same question asked from two directions — "would this plan write break
+ * the board?" — and the whole reason the preflight exists is that a second copy of a rule
+ * drifts from the first. That is the defect class this module has already produced twice.
+ *
+ * Archived epics AND archived tickets are included. A landed ticket's traces are load-bearing:
+ * planCoverage reads them and initiativeProgress groups those rows by the ITEM's owner, so a
+ * plan move can silently re-attribute finished work to an initiative that never did it — and
+ * archived work has no editing op, so it cannot be corrected afterwards.
+ *
+ * @param {any} plan
+ * @param {{data?: any, archivedEpics?: any[], archivedTickets?: any[]}} [board]
+ * @returns {string[]} one human-readable reason per conflict, `archive:`-prefixed where the
+ *          subject is archived. Empty when the board is consistent with the plan.
+ */
+export function crossInitiativeConflicts(plan, { data = null, archivedEpics = [], archivedTickets = [] } = {}) {
+  const board = data ?? { epics: [], tickets: [] };
+  const broken = (v) => v.state === "cross-initiative" || v.state === "unknown-initiative";
+  const out = [];
+
+  // DANGLING REFERENCES ARE CHECKED REGARDLESS OF MODE, and this is the whole reason the check
+  // is not simply gated on initiativeModeActive. Deleting the LAST initiative turns the mode
+  // off, so a mode-gated check would wave through every epic still pointing at it — the one
+  // removal the CLI refuses outright would become the one the cockpit performs silently.
+  if (!initiativeModeActive(plan)) {
+    const shadowed = shadowedEpicIds(board, archivedEpics);
+    for (const e of board.epics ?? []) {
+      if (e.initiativeId) out.push(danglingEpicReason(e));
+    }
+    for (const e of archivedEpics) {
+      if (e.initiativeId && !shadowed.has(e.id)) out.push(`archive: ${danglingEpicReason(e)}`);
+    }
+    return out;
+  }
+  for (const e of board.epics ?? []) {
+    const v = epicOwnershipVerdict(e, plan);
+    if (broken(v)) out.push(v.reason);
+  }
+  // A shadowed archived epic is skipped: it is the same epic as the live one, and judging the
+  // stale copy independently is what refused a legitimate migration in T-030 — the live epic
+  // had been assigned, the shadow had not, and the shadow's verdict won.
+  const shadows = shadowedEpicIds(board, archivedEpics);
+  for (const e of archivedEpics) {
+    if (shadows.has(e.id)) continue;
+    const v = epicOwnershipVerdict(e, plan);
+    if (broken(v)) out.push(`archive: ${v.reason}`);
+  }
+  for (const t of board.tickets ?? []) {
+    const v = ownershipVerdict(t, { plan, data: board, archivedEpics });
+    if (broken(v)) out.push(v.reason);
+  }
+  for (const t of archivedTickets) {
+    const v = ownershipVerdict(t, { plan, data: board, archivedEpics });
+    if (broken(v)) out.push(`archive: ${v.reason}`);
+  }
+  return out;
+}
+
+/** @param {any} e */
+function danglingEpicReason(e) {
+  return `Epic ${e.id} names initiative ${e.initiativeId}, which the plan does not define. ` +
+    `Recreate it, or clear the epic first ('maestro ticket edit-epic ${e.id} --clear-initiative').`;
+}
+
+/**
+ * The same question for an EPIC, which has an initiative of its own rather than a derived one.
+ * Epics are never picked, so this only ever feeds the validator.
+ */
+export function epicOwnershipVerdict(epic, plan) {
+  if (!initiativeModeActive(plan)) return { state: "off", blocks: false, reason: "", foreign: [] };
+  const initiatives = initiativeMap(plan);
+  const own = epic.initiativeId ?? null;
+  if (own && !initiatives.has(own)) {
+    return { state: "unknown-initiative", blocks: true, reason: `Epic ${epic.id}: initiativeId "${own}" is not an initiative in the plan.`, foreign: [] };
+  }
+  const items = planItems(plan);
+  const foreign = (Array.isArray(epic.traces_to) ? epic.traces_to : []).filter((id) => {
+    const owner = items.get(id)?.initiativeId ?? null;
+    return owner !== null && owner !== own;
+  });
+  if (foreign.length) {
+    const owners = foreign.map((id) => `${id} owned by ${items.get(id).initiativeId}`).join(", ");
+    const reason = own
+      ? `Epic ${epic.id} belongs to initiative ${own}, but traces to ${owners}. Move the epic, reassign ${foreign.join("/")}, or trace to an ${own}/project-wide item.`
+      : `Epic ${epic.id} belongs to no initiative and may trace only to project-wide items, but traces to ${owners}.`;
+    return { state: "cross-initiative", blocks: true, reason, foreign };
+  }
+  return { state: "ok", blocks: false, reason: "", foreign: [] };
+}
+
+/**
+ * The verdict the orchestrator acts on: scope AND ownership, composed.
+ *
+ * THE SINGLE DEFINITION OF "may this ticket run". eligibleTickets filters on it, and the
+ * cockpit's drawer previews with it, so the UI cannot say yes where the orchestrator says no.
+ * It was briefly written out twice — once here, once by hand in the cockpit — and the copy
+ * diverged in two ways within a single change, so the composition itself is now a function
+ * rather than a pattern each caller repeats.
+ *
+ * The two gates are independent and neither clears the other:
+ *   - scope answers "is this in the plan at all?" — a scope_exception can clear it
+ *   - ownership answers "is it wired to the right slice of the plan?" — an exception cannot,
+ *     because that is a decision about project scope, not about who owns a requirement
+ *
+ * Scope is reported first when both block: "not in the plan" is the more fundamental answer,
+ * and fixing it usually makes the ownership question moot.
+ *
+ * @param {any} ticket
+ * @param {{plan?: any, data?: any, archivedEpics?: any[]}} [ctx]
+ * @returns {{state:string, blocks:boolean, reason:string}}
+ */
+export function pickVerdict(ticket, { plan, data = null, archivedEpics = [] } = {}) {
+  const scope = scopeVerdict(ticket, plan);
+  if (scope.blocks) return scope;
+  const own = ownershipVerdict(ticket, { plan, data, archivedEpics });
+  return own.blocks ? own : scope;
+}
+
+const eligibilityReason = (code, message, details = {}) => ({ code, details, message });
+
+// Public verdicts may be logged or forwarded by consumers. Only compact identifiers are safe
+// to repeat; paths, control characters, prose/content sentinels and other malformed values are
+// represented solely by field/index metadata.
+const SAFE_REFERENCE = /^[A-Za-z][A-Za-z0-9_-]*$/;
+export const isSafeEligibilityReference = (value) =>
+  typeof value === "string" && SAFE_REFERENCE.test(value);
+const safeReference = isSafeEligibilityReference;
+
+/**
+ * Complete, fail-closed answer to "may this live ticket be dispatched now?".
+ * `code` and `details` are stable; `message` is display-only. Details contain only
+ * board-defined identifiers and enum states, never paths or malformed input values.
+ */
+export function ticketEligibilityVerdict(ticket, context = {}) {
+  const data = context.data ?? { epics: [], tickets: [] };
+  const archivedTickets = Array.isArray(context.archivedTickets) ? context.archivedTickets : [];
+  const archivedEpics = Array.isArray(context.archivedEpics) ? context.archivedEpics : [];
+  const ticketId = safeReference(ticket?.id) ? ticket.id : "";
+  const reasons = [];
+
+  if (!ticket || typeof ticket !== "object" || !ticketId) {
+    reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.MALFORMED_REFERENCE,
+      "Ticket identity is malformed.", { field: "id" }));
+  }
+  if (ticket?.status !== "todo") {
+    reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.STATUS,
+      "Ticket is not in todo status.", { expected: "todo" }));
+  }
+  // Boolean true appears on older boards, so every truthy value remains an active gate.
+  if (ticket?.human_gate) {
+    reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.HUMAN_GATE,
+      "Ticket requires explicit human approval."));
+  }
+
+  const active = new Map((data?.tickets ?? [])
+    .filter((row) => safeReference(row?.id))
+    .map((row) => [row.id, row]));
+  const archivedIds = new Set(archivedTickets
+    .filter((row) => safeReference(row?.id))
+    .map((row) => row.id));
+  const deps = ticket?.depends_on;
+  if (deps != null && !Array.isArray(deps)) {
+    reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.MALFORMED_REFERENCE,
+      "Ticket has a malformed dependency list.", { field: "depends_on" }));
+  } else {
+    for (const [index, dependencyId] of (deps ?? []).entries()) {
+      if (!safeReference(dependencyId)) {
+        reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.MALFORMED_REFERENCE,
+          "Ticket has a malformed dependency reference.", { field: "depends_on", index }));
+        continue;
+      }
+      const dependency = active.get(dependencyId);
+      if (!dependency && !archivedIds.has(dependencyId)) {
+        reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.DEPENDENCY_MISSING,
+          "A dependency is missing.", { dependencyId }));
+      } else if (dependency && dependency.status !== "done") {
+        reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.DEPENDENCY_UNSATISFIED,
+          "A dependency is not complete.", { dependencyId }));
+      }
+    }
+  }
+
+  let malformedTraces = false;
+  if (ticket?.traces_to != null && !Array.isArray(ticket.traces_to)) {
+    malformedTraces = true;
+    reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.MALFORMED_REFERENCE,
+      "Ticket has malformed plan references.", { field: "traces_to" }));
+  } else {
+    for (const [index, traceId] of (ticket?.traces_to ?? []).entries()) {
+      if (!safeReference(traceId)) {
+        malformedTraces = true;
+        reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.MALFORMED_REFERENCE,
+          "Ticket has a malformed plan reference.", { field: "traces_to", index }));
+      }
+    }
+  }
+
+  const epics = epicIndex(data, archivedEpics);
+  const malformedEpic = ticket?.epicId != null && !safeReference(ticket.epicId);
+  if (malformedEpic || (ticket?.epicId != null && !epics.has(ticket.epicId))) {
+    reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.MALFORMED_REFERENCE,
+      "Ticket has a malformed or missing epic reference.",
+      { field: "epicId", ...(safeReference(ticket.epicId) ? { epicId: ticket.epicId } : {}) }));
+  }
+
+  // pickVerdict is the sole implementation of plan scope + initiative ownership. This layer
+  // only translates its result to the stable public reason-code contract.
+  if (context.plan && !malformedTraces && !malformedEpic) {
+    const planVerdict = pickVerdict(ticket, { plan: context.plan, data, archivedEpics });
+    if (planVerdict.blocks) {
+      let code = ELIGIBILITY_REASON_CODES.PLAN_SCOPE;
+      if (planVerdict.state === "unassigned-epic") code = ELIGIBILITY_REASON_CODES.INITIATIVE_UNASSIGNED;
+      else if (planVerdict.state === "unknown-initiative") code = ELIGIBILITY_REASON_CODES.INITIATIVE_UNKNOWN;
+      else if (planVerdict.state === "cross-initiative") code = ELIGIBILITY_REASON_CODES.INITIATIVE_CROSS;
+      const details = { state: planVerdict.state };
+      if (safeReference(planVerdict.initiativeId)) details.initiativeId = planVerdict.initiativeId;
+      const itemIds = Array.isArray(planVerdict.foreign) ? planVerdict.foreign.filter(safeReference) : [];
+      if (itemIds.length) details.itemIds = itemIds;
+      const messages = {
+        [ELIGIBILITY_REASON_CODES.PLAN_SCOPE]: "Ticket is outside the current plan scope.",
+        [ELIGIBILITY_REASON_CODES.INITIATIVE_UNASSIGNED]: "Ticket's epic has no initiative.",
+        [ELIGIBILITY_REASON_CODES.INITIATIVE_UNKNOWN]: "Ticket's epic names an unknown initiative.",
+        [ELIGIBILITY_REASON_CODES.INITIATIVE_CROSS]: "Ticket crosses initiative ownership boundaries.",
+      };
+      reasons.push(eligibilityReason(code, messages[code], details));
+    }
+  }
+
+  return { ticketId, state: reasons.length ? "blocked" : "eligible", eligible: reasons.length === 0, reasons };
+}
+
+/**
+ * Live `todo` tickets ready to run right now: every dependency satisfied (archived, or a live
+ * ticket already `done`) and not blocked by a human gate. `archived` only needs `id`s here —
+ * an archived ticket is done by definition (it left the board because it landed, or because it
+ * carries one of the archive-only terminal states that also make it a satisfied dependency).
+ * The single source of truth for "ready" — validateBoard's eligibleCount and the portfolio
+ * survey (T-003) both call this rather than keeping their own copy of the rule.
+ */
+export function eligibleTickets(data, archived = [], opts = {}) {
+  const context = { data, archivedTickets: archived, plan: opts.plan, archivedEpics: opts.archivedEpics ?? [] };
+  const ready = (data.tickets ?? []).filter((ticket) => ticketEligibilityVerdict(ticket, context).eligible);
+
+  // The scope gate, applied at PICK time only. `plan` is opt-in because "is this ticket ready?"
+  // and "is this ticket in the plan?" are different questions with different consequences: the
+  // validator must keep answering the first about a board you are still drafting, while the
+  // orchestrator must never start work the plan doesn't cover. Passing no plan leaves this a
+  // no-op, so every existing caller behaves exactly as before.
+  if (!opts.plan) return ready;
+  // CALLER CONTRACT: pass `archivedEpics` with a plan. A
+  // ticket's initiative is derived through its epic, and an epic that has already landed lives
+  // in archive.json — so with the archived epics missing, such a ticket resolves to
+  // "unresolved" ownership result. The canonical verdict now fails closed on that missing epic
+  // reference, and every plan-aware call site still passes both so valid archived ownership can
+  // be distinguished from a genuinely dangling reference.
+  //
+  // Two independent gates, both at pick time. Scope asks "is this in the plan at all?";
+  // ownership asks "is it wired to the right slice of it?". A ticket must clear both.
+  // Keep the explicit authoritative gate at the final boundary as a fail-closed invariant.
+  // It is redundant with ticketEligibilityVerdict by design, and guards future refactors from
+  // accidentally turning a reporting change into permission to dispatch out-of-plan work.
+  return ready.filter((t) =>
+    !pickVerdict(t, { plan: opts.plan, data, archivedEpics: opts.archivedEpics ?? [] }).blocks);
+}
+
+/**
+ * Ready-but-out-of-scope tickets: the ones eligibleTickets(…, {plan}) just refused, with the
+ * reason. The orchestrator reports these rather than going idle in silence — "nothing to do" and
+ * "three things to do, none of them in the plan" demand opposite responses from a human.
+ */
+export function scopeBlockedTickets(data, archived = [], plan = null, archivedEpics = []) {
+  if (!plan) return [];
+  const ready = eligibleTickets(data, archived, { archivedEpics });
+  return ready
+    .map((t) => {
+      // Scope first: "not in the plan" is the more fundamental answer, and reporting an
+      // ownership problem for a ticket that is out of scope entirely would send the reader to
+      // fix the wrong thing.
+      const scope = scopeVerdict(t, plan);
+      if (scope.blocks) return { ticket: t, verdict: scope };
+      return { ticket: t, verdict: ownershipVerdict(t, { plan, data, archivedEpics }) };
+    })
+    .filter((r) => r.verdict.blocks);
+}
+
+/**
+ * The pipeline a ticket actually runs: its `agent_plan` with terminal gates guaranteed at the
+ * end, in canonical order. `qa` and `merge` are always appended if absent; `pd` (delivery
+ * gate) is added for multi-agent or human-gated tickets. This is the single source of truth
+ * for "gates are appended automatically".
+ */
+export function resolvePlan(ticket) {
+  const base = (Array.isArray(ticket.agent_plan) ? ticket.agent_plan : []).filter((c) => !TERMINAL.has(c));
+  const gates = ["qa"];
+  if (ticket.execution_mode === "multi-agent" || ticket.human_gate) gates.push("pd");
+  gates.push("merge");
+  return [...base, ...gates];
+}
+
+/**
+ * The model tier a ticket actually runs on: the stronger of its own `model` and its area's
+ * floor (`config.model.floors[area]`), falling back to `config.model.default`. This is how
+ * per-area model floors are enforced.
+ */
+export function effectiveModel(ticket, config) {
+  const base = ticket.model || config?.model?.default || "sonnet";
+  const floor = config?.model?.floors?.[ticket.area];
+  if (floor && (MODEL_RANK[floor] ?? -1) > (MODEL_RANK[base] ?? -1)) return floor;
+  return base;
+}
+
+/**
+ * Validate a board.
+ *
+ * @param {{epics?: any[], tickets?: any[]}} data        live board (data.json)
+ * @param {object} [opts]
+ * @param {any[]}  [opts.archived]       archived tickets (archive.json tickets)
+ * @param {any[]}  [opts.archivedEpics]  archived epics (archive.json epics)
+ * @param {Set<string>|null} [opts.agentCodes]  known agent codes, or null to skip the check
+ * @param {object|null} [opts.config]  project config (for model-floor checks), or null to skip
+ * @param {object|null} [opts.plan]    board/plan.json, or null to skip the scope gate entirely
+ * @returns {{errors: string[], warnings: string[], eligibleCount: number, scopeBlocked: string[]}}
+ */
+export function validateBoard(data, opts = {}) {
+  const { archived = [], archivedEpics = [], agentCodes = null, config = null, plan = null } = opts;
+  const errors = [];
+  const warnings = [];
+  const err = (m) => errors.push(m);
+  const warn = (m) => warnings.push(m);
+
+  if (!Array.isArray(data?.epics)) err("Missing or non-array `epics`.");
+  if (!Array.isArray(data?.tickets)) err("Missing or non-array `tickets`.");
+  if (errors.length) return { errors, warnings, eligibleCount: 0, scopeBlocked: [] };
+
+  // ── Epics (live + archived ids are both valid targets for a ticket's epicId) ──
+  const epicIds = new Set();
+  for (const e of data.epics) {
+    if (!e.id) err(`Epic missing id: ${JSON.stringify(e).slice(0, 60)}`);
+    if (!e.name) warn(`Epic ${e.id} missing name.`);
+    if (epicIds.has(e.id)) err(`Duplicate epic id: ${e.id}`);
+    epicIds.add(e.id);
+  }
+  const allEpicIds = new Set([...epicIds, ...archivedEpics.map((e) => e.id)]);
+
+  // ── Archived tickets are validated too: they stay dependency targets forever, so a
+  //    malformed or duplicated archive entry corrupts eligibility just as surely as a
+  //    live one. Ids must be unique ACROSS active + archive — a collision here is how
+  //    archive-on-done tooling has historically deleted the wrong ticket.
+  const archivedIds = new Set();
+  for (const t of archived) {
+    const id = t.id ?? "(no id)";
+    if (!t.id) err(`archive: ticket missing id: ${JSON.stringify(t).slice(0, 60)}`);
+    if (archivedIds.has(t.id)) err(`archive: duplicate ticket id "${t.id}" — ids must be unique across data.json + archive.json.`);
+    archivedIds.add(t.id);
+
+    // Archived tickets may additionally carry the archive-only terminal states.
+    if (!t.status || !ARCHIVE_STATUSES.includes(t.status)) err(`archive ${id}: invalid status "${t.status}".`);
+    if (t.priority && !PRIORITY.includes(t.priority)) err(`archive ${id}: invalid priority "${t.priority}".`);
+    if (t.swag && !SWAG.includes(t.swag)) err(`archive ${id}: invalid swag "${t.swag}".`);
+    if (t.model && !MODELS.includes(t.model)) err(`archive ${id}: invalid model "${t.model}".`);
+    for (const field of ["dev_runtime", "reviewer_runtime", "dev_model", "reviewer_model"]) {
+      if (t[field] !== undefined && (typeof t[field] !== "string" || !t[field].trim())) {
+        err(`archive ${id}: ${field} must be a non-empty string.`);
+      }
+    }
+    if (t.execution_mode && !MODES.includes(t.execution_mode)) err(`archive ${id}: invalid execution_mode "${t.execution_mode}".`);
+    if (t.failureKind && !FAILURE_KINDS.includes(t.failureKind)) {
+      warn(`archive ${id}: unknown failureKind "${t.failureKind}" — known: ${FAILURE_KINDS.join(", ")}.`);
+    }
+  }
+
+  // ── Ids that exist somewhere, and ids that count as "done" for dependency purposes ──
+  const ticketIds = new Set(); // live only
+  const deps = new Map();
+  const statusById = new Map();
+
+  for (const t of data.tickets) {
+    const id = t.id ?? "(no id)";
+    if (!t.id) err(`Ticket missing id: ${JSON.stringify(t).slice(0, 60)}`);
+    if (ticketIds.has(t.id)) err(`Duplicate ticket id: ${t.id}`);
+    if (archivedIds.has(t.id)) err(`${id}: also present in archive.json — ids must be unique across data.json + archive.json.`);
+    ticketIds.add(t.id);
+    statusById.set(t.id, t.status);
+
+    if (ARCHIVE_ONLY_STATUSES.includes(t.status)) {
+      // A declined or duplicate ticket belongs in the archive; leaving it live either
+      // clutters the board or, worse, gets "resolved" by flipping it to done — recording
+      // work as finished that never was.
+      err(`${id}: status "${t.status}" is archive-only — move the ticket to archive.json (live statuses: ${STATUSES.join(", ")}).`);
+    } else if (!t.status || !STATUSES.includes(t.status)) {
+      err(`${id}: invalid status "${t.status}".`);
+    }
+    if (t.priority && !PRIORITY.includes(t.priority)) err(`${id}: invalid priority "${t.priority}".`);
+    if (t.swag && !SWAG.includes(t.swag)) err(`${id}: invalid swag "${t.swag}".`);
+    if (t.model && !MODELS.includes(t.model)) err(`${id}: invalid model "${t.model}".`);
+    else if (!t.model) warn(`${id}: no model set (will fall back to the area default).`);
+    for (const field of ["dev_runtime", "reviewer_runtime", "dev_model", "reviewer_model"]) {
+      if (t[field] !== undefined && (typeof t[field] !== "string" || !t[field].trim())) {
+        err(`${id}: ${field} must be a non-empty string.`);
+      }
+    }
+    const effectiveDevRuntime = t.dev_runtime || config?.crossReview?.dev?.runtime;
+    const effectiveReviewerRuntime = t.reviewer_runtime || config?.crossReview?.reviewer?.runtime;
+    const hasCrossReview = [t.dev_runtime, t.dev_model, t.reviewer_runtime, t.reviewer_model,
+      config?.crossReview?.dev?.runtime, config?.crossReview?.dev?.model,
+      config?.crossReview?.reviewer?.runtime, config?.crossReview?.reviewer?.model].some(Boolean);
+    if (hasCrossReview && (!effectiveDevRuntime || !effectiveReviewerRuntime)) {
+      warn(`${id}: cross-review needs both a developer runtime and a reviewer runtime (on the ticket or in config.crossReview).`);
+    }
+    // Runtimes are project-defined in the canonical board. An adapter that is explicitly
+    // disabled is suspicious; an absent target key means the renderer's default applies.
+    for (const [field, runtime] of [["dev_runtime", effectiveDevRuntime], ["reviewer_runtime", effectiveReviewerRuntime]]) {
+      if (runtime && config?.targets?.[runtime] === false) {
+        warn(`${id}: effective ${field} "${runtime}" is not enabled in config.targets — that runtime won't have rendered agent files.`);
+      }
+    }
+    if (t.execution_mode && !MODES.includes(t.execution_mode)) err(`${id}: invalid execution_mode "${t.execution_mode}".`);
+    if (t.failureKind && !FAILURE_KINDS.includes(t.failureKind)) {
+      warn(`${id}: unknown failureKind "${t.failureKind}" — known: ${FAILURE_KINDS.join(", ")}.`);
+    }
+
+    // A human gate makes the ticket ineligible for auto-pick, so `todo`/`in-progress`
+    // is misleading — it looks runnable on the board but never runs. Flag it so a
+    // human notices and either clears the gate or moves it back to backlog.
+    if (t.human_gate && (t.status === "todo" || t.status === "in-progress")) {
+      warn(`${id}: human-gated ticket is "${t.status}" — the gate makes it ineligible; clear the gate or move it to backlog.`);
+    }
+
+    // Model floor: surface when a ticket will be raised to its area's floor at run time.
+    if (config && t.model && MODELS.includes(t.model)) {
+      const eff = effectiveModel(t, config);
+      if (eff !== t.model) warn(`${id}: model "${t.model}" is below the "${t.area}" floor — it will run on "${eff}".`);
+    }
+
+    // Human gate must come from the project's configured vocabulary, or the orchestrator can't
+    // match it reliably (this is what the board-validate skill promises).
+    if (config?.humanGates?.length && t.human_gate && !config.humanGates.includes(t.human_gate)) {
+      warn(`${id}: human_gate "${t.human_gate}" isn't in config.humanGates — use one of: ${config.humanGates.join(", ")}.`);
+    }
+
+    // Routing contract: a runnable ticket needs the fields the orchestrator dispatches on.
+    if (!t.name) warn(`${id}: no name.`);
+    if (t.status === "todo" || t.status === "in-progress") {
+      if (!(Array.isArray(t.agent_plan) && t.agent_plan.length)) warn(`${id}: ${t.status} ticket has no agent_plan to route.`);
+      if (!t.area) warn(`${id}: ${t.status} ticket has no area (no model floor or area test command applies).`);
+    }
+
+    if (t.epicId && !allEpicIds.has(t.epicId)) err(`${id}: epicId "${t.epicId}" does not exist.`);
+
+    if (t.traces_to !== undefined && !Array.isArray(t.traces_to)) err(`${id}: traces_to must be an array of plan item ids.`);
+    if (t.scope_exception !== undefined && (typeof t.scope_exception !== "string" || !t.scope_exception.trim())) {
+      err(`${id}: scope_exception must be a non-empty reason string — an empty one silently disables the scope gate for this ticket.`);
+    }
+
+    if (t.agent_plan) {
+      if (!Array.isArray(t.agent_plan)) err(`${id}: agent_plan must be an array.`);
+      else if (agentCodes) {
+        for (const code of t.agent_plan) {
+          if (!agentCodes.has(code) && !TERMINAL.has(code)) {
+            const hint = suggestCode(code, agentCodes);
+            err(`${id}: agent_plan references unknown agent "${code}".${hint ? ` Did you mean "${hint}"?` : ""}`);
+          }
+        }
+      }
+    }
+
+    deps.set(t.id, Array.isArray(t.depends_on) ? t.depends_on : []);
+  }
+
+  // A dependency exists if it's a live ticket OR an archived ticket — landed tickets move
+  // to archive.json by design, so deps legitimately point into the archive.
+  const existingIds = new Set([...ticketIds, ...archivedIds]);
+
+  // ── Dependency integrity ──
+  // An id found in NEITHER data.json nor archive.json is a hard error, not a warning:
+  // the runtime treats an absent dependency as satisfied, so a typo'd dep silently
+  // UNBLOCKS the ticket instead of holding it — the opposite of what the author meant.
+  for (const [id, ds] of deps) {
+    for (const d of ds) {
+      if (!existingIds.has(d)) err(`${id}: depends_on "${d}" which does not exist in data.json or archive.json.`);
+    }
+  }
+
+  // ── Cycle detection (over live tickets; archived deps are terminal) ──
+  const WHITE = 0, GREY = 1, BLACK = 2;
+  const color = new Map([...ticketIds].map((id) => [id, WHITE]));
+  const stack = [];
+  const visit = (id) => {
+    color.set(id, GREY);
+    stack.push(id);
+    for (const d of deps.get(id) ?? []) {
+      if (!ticketIds.has(d)) continue; // archived / missing deps aren't part of a live cycle
+      if (color.get(d) === GREY) {
+        const cyc = stack.slice(stack.indexOf(d)).concat(d).join(" → ");
+        err(`Dependency cycle: ${cyc}`);
+      } else if (color.get(d) === WHITE) {
+        visit(d);
+      }
+    }
+    stack.pop();
+    color.set(id, BLACK);
+  };
+  for (const id of ticketIds) if (color.get(id) === WHITE) visit(id);
+
+  // ── The scope gate (warn here, block at pick time) ──
+  // Only once the plan says something. A blank plan gating every ticket would make the fastest
+  // fix "delete the plan", which is the opposite of the point.
+  const scopeIssues = [];
+  if (plan && planIsGating(plan)) {
+    for (const t of data.tickets) {
+      const v = scopeVerdict(t, plan);
+      if (v.state === "exception") {
+        warn(`${t.id}: running outside the plan on a scope exception — "${t.scope_exception.trim()}".`);
+      } else if (v.blocks) {
+        scopeIssues.push(t.id);
+        warn(`${t.id}: ${v.reason} The orchestrator will not pick it — add it to the plan (/plan-update) or set scope_exception.`);
+      } else if (v.unknown.length) {
+        warn(`${t.id}: traces to ${v.unknown.join(", ")}, which the plan no longer defines — re-trace it.`);
+      }
+    }
+    for (const e of data.epics) {
+      const ids = Array.isArray(e.traces_to) ? e.traces_to : [];
+      if (!ids.length) warn(`Epic ${e.id}: traces to nothing in the plan.`);
+    }
+  }
+
+  // ── Initiative ownership (warn on an unassigned epic, ERROR on a wrong wire) ──
+  //
+  // The split mirrors the scope gate above, and for the same reason (board-core.mjs header): a
+  // board that gains its first initiative must not become invalid on the spot. Every existing
+  // epic is unassigned at that moment, and the plan CLI cannot fix a board — different file,
+  // different lock. So an unassigned epic WARNS here and BLOCKS at pick time, which stops the
+  // work without bricking the board.
+  //
+  // A trace wired to another initiative's requirement is different in kind: nothing about it is
+  // a transitional state, and it is always someone's mistake. That errors.
+  // A dangling initiativeId is a board integrity error whether or not the plan still defines
+  // initiatives — an epic pointing at something that does not exist has no reading under which
+  // it is correct, and every ticket beneath it inherits it. Checked outside the mode gate so
+  // that removing the last initiative cannot make the problem invisible by turning the gate off.
+  // A legacy board carries no initiativeId at all and is untouched by this.
+  if (plan && !initiativeModeActive(plan)) {
+    for (const e of data.epics) {
+      if (!e.sample && e.initiativeId) err(danglingEpicReason(e));
+    }
+    const shadowed = shadowedEpicIds(data, archivedEpics);
+    for (const e of archivedEpics) {
+      if (!e.sample && e.initiativeId && !shadowed.has(e.id)) err(`archive: ${danglingEpicReason(e)}`);
+    }
+  }
+
+  if (initiativeModeActive(plan)) {
+    for (const e of data.epics) {
+      if (e.sample) continue; // starter placeholder, not real work
+      if (!e.initiativeId) {
+        warn(`Epic ${e.id}: belongs to no initiative, and the plan defines initiatives. Its tickets will not be picked — assign it with 'maestro ticket edit-epic ${e.id} --initiative <I-n>'.`);
+      }
+      const v = epicOwnershipVerdict(e, plan);
+      if (v.state === "unknown-initiative") err(v.reason);
+      else if (v.state === "cross-initiative") err(v.reason);
+    }
+    // Archived epics are not exempt: an archived ticket still resolves its initiative through
+    // one, so a dangling reference there corrupts the same reporting a live one would.
+    // A shadowed archived epic is not reported at all: it is the live epic, whose own row above
+    // already says everything true about it. Warning twice for one epic — once correctly, once
+    // from a stale copy nothing can edit — is noise the reader cannot act on.
+    const shadowedLive = shadowedEpicIds(data, archivedEpics);
+    for (const e of archivedEpics) {
+      if (e.sample || shadowedLive.has(e.id)) continue;
+      if (!e.initiativeId) warn(`archive: epic ${e.id} belongs to no initiative — archived tickets under it resolve to none.`);
+      const v = epicOwnershipVerdict(e, plan);
+      if (v.state === "unknown-initiative" || v.state === "cross-initiative") err(`archive: ${v.reason}`);
+    }
+    for (const t of data.tickets) {
+      const v = ownershipVerdict(t, { plan, data, archivedEpics });
+      if (v.state === "cross-initiative") err(v.reason);
+      else if (v.state === "unknown-initiative") err(v.reason);
+      // "unassigned-epic" is already reported once against the epic itself; repeating it per
+      // ticket would bury the one line that names the fix under ten that don't.
+    }
+  }
+
+  // ── Eligibility sanity ──
+  // Counted WITHOUT the scope gate: this number answers "is the dependency graph unstuck?",
+  // and folding scope into it would report a perfectly good board as jammed for a reason the
+  // dependency-shaped message doesn't explain. Scope gets its own line below.
+  const eligible = eligibleTickets(data, archived);
+  if (eligible.length === 0) {
+    warn("No eligible `todo` ticket right now — the orchestrator will report idle.");
+  } else if (scopeIssues.length) {
+    const runnable = eligibleTickets(data, archived, { plan, archivedEpics }).length;
+    if (runnable === 0) {
+      warn(`Every eligible ticket is out of the plan's scope (${scopeIssues.join(", ")}) — the orchestrator will refuse them all. Run /plan-update.`);
+    }
+  }
+
+  return { errors, warnings, eligibleCount: eligible.length, scopeBlocked: scopeIssues };
+}

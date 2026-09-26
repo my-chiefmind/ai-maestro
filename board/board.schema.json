@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "board.schema.json",
+  "title": "AI Maestro Board",
+  "description": "Canonical schema for board/data.json. Epics group work; tickets are the unit of delivery and route themselves to an agent pipeline and a model tier.",
+  "type": "object",
+  "required": ["epics", "tickets"],
+  "properties": {
+    "epics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id":        { "type": "string" },
+          "initiativeId": { "type": "string", "pattern": "^I-[0-9]+$", "description": "The plan initiative this epic delivers. Schema-OPTIONAL for backward compatibility — a board written before initiatives existed must stay valid. Semantic validation supplies the conditional requirement: once board/plan.json defines an initiative, an unassigned live epic warns and its tickets are refused at pick time, and a trace crossing initiative ownership is an error. Cross-file conditions belong in validateBoard, not in JSON Schema." },
+          "name":      { "type": "string" },
+          "desc":      { "type": "string" },
+          "collapsed": { "type": "boolean" },
+          "traces_to": { "type": "array", "items": { "type": "string" }, "description": "Plan item ids this epic delivers (D-/UC-/FR-/NFR-/M- from board/plan.json). An epic that traces to nothing is out of the plan's scope." },
+          "sample":    { "type": "boolean", "description": "Placeholder content seeded by a starter, not real work. `maestro ticket import --replace-sample` removes items carrying this flag, and only those — which is what makes replacing the starter board safe on a project that already has real tickets." }
+        }
+      }
+    },
+    "tickets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ticket" }
+    }
+  },
+  "$defs": {
+    "ticket": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id":             { "type": "string", "description": "Unique ticket identifier, e.g. T-014." },
+        "epicId":         { "type": "string", "description": "The epic this ticket belongs to." },
+        "name":           { "type": "string" },
+        "desc":           { "type": "string", "description": "Short source of truth. Longer specs live in board/specs/<id>.md." },
+        "area":           { "type": "string", "description": "Part of the system (backend/frontend/infra/docs...). Sets area defaults like model floor and test command." },
+        "priority":       { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+        "swag":           { "type": "string", "enum": ["XS", "S", "M", "L", "XL"], "description": "Rough size estimate." },
+        "status":         { "type": "string", "enum": ["backlog", "todo", "in-progress", "review", "blocked", "done", "archived", "duplicate", "wont-do"], "description": "The last three are ARCHIVE-ONLY terminal states, for tickets that left the board without being completed — shelved pending an owner decision (archived), filed twice (duplicate), or deliberately declined (wont-do). Folding them into 'done' would record work as finished that never was. Live tickets in data.json may only use the first six; the validator errors otherwise." },
+        "depends_on":     { "type": "array", "items": { "type": "string" }, "description": "This ticket is eligible only when all referenced tickets are done." },
+        "agent_plan":     { "type": "array", "items": { "type": "string" }, "description": "Ordered pipeline of agent codes, e.g. [\"pe\",\"backend\",\"qa\",\"merge\"]. Terminal gates (qa, pd, merge) are appended automatically if absent." },
+        "model":          { "type": "string", "enum": ["haiku", "sonnet", "opus"], "description": "Baseline model tier. The ticket runs on the stronger of this and its area's model.floor. See docs/MODEL-ROUTING.md." },
+        "dev_runtime":    { "type": "string", "minLength": 1, "description": "Cross-review runtime adapter that implements this ticket. Falls back to config.crossReview.dev.runtime when unset." },
+        "dev_model":      { "type": "string", "minLength": 1, "description": "Runtime-specific developer model id, or a portable tier supported by that adapter." },
+        "reviewer_runtime": { "type": "string", "minLength": 1, "description": "Cross-review runtime adapter that reviews the developer's PR. Falls back to config.crossReview.reviewer.runtime when unset." },
+        "reviewer_model": { "type": "string", "minLength": 1, "description": "Runtime-specific reviewer model id, or a portable tier supported by that adapter." },
+        "execution_mode": { "type": "string", "enum": ["single-agent", "multi-agent"], "description": "Shapes the pipeline: multi-agent runs the full gated pipeline (plan → implement → qa → pd → merge); single-agent runs a lighter path (one implementer → qa → merge)." },
+        "wave":           { "type": "integer", "description": "Optional ordering hint for batched runs." },
+        "agent":          { "type": "string", "description": "Human-readable display label (e.g. 'PE+QA'). Not used for execution — agent_plan is." },
+        "human_gate":     { "type": "string", "minLength": 1, "description": "When set, the orchestrator never auto-picks this ticket; a human must clear it. Value should come from the project's configured humanGates vocabulary." },
+        "failureKind":    { "type": "string", "enum": ["merge-conflict", "merge-schema-invalid", "merge-unknown-status", "merge-missing-sha"], "description": "Optional, for blocker tickets created after a failed merge: classifies the structural failure mode so merge failures are queryable rather than free text. The validator warns on unknown values." },
+        "testCmd":        { "type": "string", "minLength": 1, "description": "Optional ticket-specific test command that overrides the area default in the release gate." },
+        "evidence":       { "type": "string", "description": "Verification evidence recorded when the ticket is completed (commit SHA, test output, etc.)." },
+        "traces_to":      { "type": "array", "items": { "type": "string" }, "description": "Plan item ids this ticket serves (D-/UC-/FR-/NFR-/M- from board/plan.json). This is what the scope gate reads: a ticket tracing to nothing, to an id the plan doesn't define, or to an OUT- id is out of scope and the orchestrator refuses to pick it. See board/plan.schema.json." },
+        "touches":        { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for the files this ticket is expected to change, e.g. [\"src/api/**\"]. Used only for PARALLEL scheduling: two tickets may share a lane or run in different ones, and declaring disjoint scopes is what lets them run at once. Undeclared is safe but pessimistic — the scheduler then falls back to epic, then area, and puts anything it cannot prove independent in the same lane. A ticket whose globs reach a serial-only file (migrations, lockfiles) runs alone." },
+        "sample":         { "type": "boolean", "description": "Placeholder content seeded by a starter, not real work. Removed by `maestro ticket import --replace-sample`." },
+        "scope_exception": { "type": "string", "minLength": 1, "description": "A human's written reason for running this ticket despite being outside the plan. Clears the scope gate; still reported everywhere so the exception stays visible rather than becoming the norm." }
+      },
+      "additionalProperties": true
+    }
+  }
+}

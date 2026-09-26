@@ -1,0 +1,35 @@
+# Node
+node_modules/
+npm-debug.log*
+.npm/
+
+# Maestro runtime (generated per-project; never committed from the kit)
+.maestro/run/
+.maestro/worktrees/
+*.lock.local
+
+# Board write backups (the cockpit keeps timestamped copies; they're local-only)
+.backups/
+
+# This repo's own live workboard — local-only, never pushed to the public repo.
+# The structure (board.schema.json, README.md) stays tracked; new projects are
+# seeded from starters/orchestrated-project/board/, and npm pack excludes these
+# too (package.json "files"). Only the DATA is private.
+/board/data.json
+/board/archive.json
+/board/plan.json
+/board/plan.md
+/board/parked.json
+/board/telemetry.jsonl
+/board/application-usage.jsonl
+/board/specs/
+/board/reports/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local runtime state (session locks, agent memory) — never committed from the kit
+.claude/

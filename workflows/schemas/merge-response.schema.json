@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "merge-response.schema.json",
+  "title": "Merge-agent response",
+  "description": "What the terminal merge agent of the orchestrate workflow returns: a merged SHA, or a conflict with the files that need human attention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "sha", "branch", "repoPath"],
+  "properties": {
+    "status":           { "type": "string" },
+    "sha":              { "type": ["string", "null"] },
+    "conflictingFiles": { "type": "array", "items": { "type": "string" } },
+    "branch":           { "type": "string" },
+    "repoPath":         { "type": "string" },
+    "notes":            { "type": "string" }
+  },
+  "if":   { "properties": { "status": { "const": "merged" } } },
+  "then": { "properties": { "sha": { "type": "string", "minLength": 1 } }, "required": ["sha"] },
+  "else": { "properties": { "conflictingFiles": { "minItems": 1 } } }
+}

@@ -1,0 +1,21 @@
+{
+  "planVersion": 1,
+  "sections": {
+    "goal": {
+      "text": "",
+      "metrics": []
+    },
+    "scope": {
+      "in": [],
+      "out": []
+    },
+    "deliverables": [],
+    "useCases": [],
+    "functional": [],
+    "nonFunctional": [],
+    "milestones": [],
+    "risks": [],
+    "gaps": [],
+    "openQuestions": []
+  }
+}

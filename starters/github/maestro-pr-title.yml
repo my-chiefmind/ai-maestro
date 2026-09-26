@@ -1,0 +1,23 @@
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  ticket-id:
+    name: Ticket id in title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require an AI Maestro ticket id
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ ! "$PR_TITLE" =~ (^|[^[:alnum:]])(T-[0-9]+)([^[:alnum:]]|$) ]]; then
+            echo "::error title=Missing ticket id::PR title must include an AI Maestro ticket id, for example: Fix login timeout (T-014)"
+            exit 1
+          fi
+          echo "PR title references ${BASH_REMATCH[2]}"
