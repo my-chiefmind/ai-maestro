@@ -11,8 +11,10 @@ a pass.
 
 ## The gate
 
-1. **Tests green.** Run the ticket's `testCmd` if set, otherwise the ticket's `area` test
-   command. Green means more than exit 0: **no skipped tests masking the change**, and
+1. **Tests green.** Run the ticket's `testCmd` if set, otherwise the area default at
+   `config.orchestrator.testCmd.<area>` in the project's `config.json` (the same lookup
+   `scripts/run-ticket.mjs` uses). If neither is set there is no test command — that is a
+   **failure**. Green means more than exit 0: **no skipped tests masking the change**, and
    coverage at or above the declared threshold if the project declares one. A placeholder
    like "no test command configured" is a **failure**, not a pass — configure a real
    command.
@@ -36,8 +38,22 @@ a pass.
    - A ticket whose `traces_to` is empty or points at ids the plan doesn't define should never
      have run — the orchestrator's scope gate should have refused it. Finding one here is a
      **no-go**, and worth reporting as a process failure rather than quietly fixing.
-5. **Upstream verdicts verified.** The qa stage returned a pass; on security-sensitive
-   surfaces, security-review returned ship; no stage in the plan is incomplete or errored.
+5. **Upstream verdicts verified.** Use the words each stage actually returns:
+   - **qa** returned **Pass** (not **Defects**, and not a block for missing ACs).
+   - **security-review** returned **Ship** (not **Block**) — *required* when an acceptance
+     criterion on the ticket requires a security review; otherwise **N/A** (nothing runs it by
+     default, so the gate does not demand a verdict nobody was asked to produce).
+     `security-review` is a skill, not an agent — `agent_plan` can only hold agent codes — so
+     the stage that owns that AC (build, or `qa`) runs the skill and states the verdict in
+     its stage report, as that AC's evidence. The board has no field for verdicts in flight;
+     the verdict is read from that report, then copied into the ticket's archive `evidence`
+     at step 8. No verdict in the report fails this line. A security-sensitive ticket with no
+     such AC is a **no-go on the plan** — send it back to add one. Do not use `human_gate` to
+     request a review: it means human approval, so the orchestrator will not auto-run the
+     ticket and it forces `pd` onto the plan.
+   - **principal-delivery**, when in the plan, decides **Land** / **Block** *after* this gate
+     is GO; its verdict is not an input here.
+   - No stage in the plan is incomplete or errored.
    A **missing verdict is a failure, not a pass** — the gate never infers a stage went fine
    because nothing says otherwise.
 6. **Mergeable.** The branch merges cleanly onto the default branch; every `depends_on`
@@ -51,7 +67,8 @@ a pass.
 ## Local gate over CI
 
 AI Maestro assumes the gate runs **locally, deterministically** — a single command you can
-trust — rather than depending on remote CI. Wire your `area` test commands so that one
+trust — rather than depending on remote CI. Wire your per-area test commands under
+`config.orchestrator.testCmd` (e.g. `{ "backend": "npm test" }`) so that one
 command per area gives a trustworthy pass/fail. Keep a known-good baseline; a jump above it
 is a regression to fix, not noise to ignore.
 
@@ -69,7 +86,7 @@ Scope:                PASS / FAIL
 Acceptance criteria:  PASS / FAIL   (<n met> / <total>; 0 total = automatic NO-GO)
 Plan (traces_to):     PASS / FAIL   (<ids>; FR verify run: <result>; NFR budget: <measured vs bar>)
 Plan invariants:      PASS / FAIL   (maestro plan check --traces <ids>: <n> ran, <n> failed)
-Upstream verdicts:    PASS / FAIL   (qa: <verdict>; security-review: <verdict or N/A>)
+Upstream verdicts:    PASS / FAIL   (qa: Pass/Defects; security-review: Ship/Block/N/A)
 Mergeable:            PASS / FAIL   (conflicts / open deps / debug leftovers)
 Warnings/errors:      PASS / FAIL
 Evidence:             PASS / FAIL

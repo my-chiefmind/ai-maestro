@@ -1,24 +1,31 @@
 ---
 name: "land-and-archive"
-description: "The land step for a finished ticket: merge the branch, record evidence, move the ticket from data.json to archive.json, and clean up the worktree. Use when a ticket has passed its gates and is ready to become real."
+description: "The land step for a finished ticket: merge the branch, record evidence, archive the ticket with maestro ticket archive, delete the merged branch, and remove the worktree unless it is a lane. Use when a ticket has passed its gates and is ready to become real."
 ---
 
 # Land and Archive
 
 The closing ritual for a ticket. Run it only after the release gate is green and any human
-gate is cleared.
+gate is cleared. On tickets routed through `principal-delivery` (`pd`), **pd decides** whether
+to land; this skill **executes** that decision — it never makes it.
 
 ## Steps
 
 1. **Confirm the gate.** Tests green, QA passed, evidence in hand. Don't land on a red or
    unverified gate (see the `release-gate` skill).
-2. **Land the branch.**
-   - Fast path (your own repo, non-protected `main`): merge (squash for a clean history if
-     that's the project convention), then push.
-   - Protected `main`: push the branch, open a PR, merge once checks are green. Merge with
-     admin override **only** where the project explicitly allows it and local gates are green.
-   - Rebase onto the latest `main` first if it moved; resolve conflicts and re-run the gate
-     **before** the final push — never force-push over an unresolved conflict.
+2. **Land the branch** on the default branch. Resolve it — don't assume `main`:
+   ```bash
+   git fetch origin
+   git remote set-head origin -a   # in case the clone skipped setting origin/HEAD
+   default_branch=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's@^origin/@@')
+   ```
+   - Fast path (your own repo, non-protected default branch): merge (squash for a clean
+     history if that's the project convention), then push.
+   - Protected default branch: push the branch, open a PR, merge once checks are green. Merge
+     with admin override **only** where the project explicitly allows it and local gates are
+     green.
+   - Rebase onto `origin/$default_branch` first if it moved; resolve conflicts and re-run the
+     gate **before** the final push — never force-push over an unresolved conflict.
 3. **Capture evidence** on the ticket: the merge commit SHA and the test result. This is what
    `archive.json` preserves.
 4. **Archive the ticket** with the guarded writer — never by editing the files yourself:
@@ -35,12 +42,15 @@ gate is cleared.
 
    Exit 2 means another writer got there first — run the same command again. Exit 1 means the
    request was wrong; fix it rather than retrying.
-5. **Clean up** the worktree and branch (see the `worktree-cleanup` skill).
+5. **Clean up** (see the `worktree-cleanup` skill):
+   - **Always delete the merged branch**, locally and on the remote.
+   - **Remove the worktree only when it is not a lane.** A lane worktree hosts the next ticket
+     in its queue; keep it and re-base it for that ticket instead.
 6. **Unblock dependents.** Any ticket whose `depends_on` is now fully `done` becomes eligible
    — the next orchestrator run will see it.
 
 ## Do it promptly
 
 Land finished work when it's finished — don't let merged-in-spirit branches linger unmerged
-or done tickets sit unarchived. A stale branch diverges from `main`; an unarchived done
+or done tickets sit unarchived. A stale branch diverges from the default branch; an unarchived done
 ticket lies about the board's state.

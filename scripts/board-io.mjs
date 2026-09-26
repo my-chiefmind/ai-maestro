@@ -2,7 +2,7 @@
  * board-io.mjs — the one true way to WRITE a board file.
  *
  * board-core.mjs owns what a valid board IS; this module owns how one is safely replaced.
- * Every writer — the CLI (`maestro board …`), the cockpit server, the orchestrate engine
+ * Every writer — the CLI (`maestro board …`), the web dashboard server, the orchestrate engine
  * via the CLI — goes through here, so there is one concurrency rule for the board rather
  * than one per caller.
  *
@@ -30,6 +30,7 @@ import {
   fsyncSync,
 } from "fs";
 import { dirname, join, basename } from "path";
+import { tryBackup } from "./board-backup.mjs";
 import { BoardConflictError, BoardInputError, BoardLockError, BoardValidationError } from "./board-errors.mjs";
 
 export { BoardConflictError, BoardLockError, BoardValidationError } from "./board-errors.mjs";
@@ -185,15 +186,24 @@ export function withBoardLock(boardDir, fn, opts = {}) {
  * @param {string} [params.expectVersion]    caller's version; refuse if disk has moved on
  * @param {(board: {data: any, archive: any}) => string[]} [params.validate] returns errors
  * @param {string} [params.op]               short label recorded in the lock file
+ *
+ * `mutate` may return `writeFirst: "data" | "archive"` to name the file a moving ticket is
+ * moving INTO (default "archive"). That file is written first, so a crash between the two
+ * renames leaves the ticket in both files (a loud validator error) rather than in neither
+ * (silent loss): archive/drop move data -> archive; unarchive moves archive -> data.
+ *
+ * `_afterFirstWrite` is an internal test seam, not public API: called with the path just
+ * written when both files change, before the second write. Tests throw from it to simulate
+ * a crash between the renames.
  * @returns {{result: any, version: string, archiveVersion: string, changed: boolean}}
  */
-export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, validate, op = "write", dryRun = false, lockOptions = {} }) {
+export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, validate, op = "write", dryRun = false, lockOptions = {}, _afterFirstWrite }) {
   const boardDir = dirname(dataPath);
   const archPath = archivePath ?? join(boardDir, "archive.json");
 
   return withBoardLock(boardDir, () => {
     const onDisk = boardVersion(dataPath);
-    // CAS against writers that never took the lock (hand edits, the cockpit, a stray agent).
+    // CAS against writers that never took the lock (hand edits, the web dashboard, a stray agent).
     if (expectVersion != null && expectVersion !== onDisk) {
       throw new BoardConflictError(
         `The board at ${dataPath} changed on disk since you read it ` +
@@ -241,10 +251,20 @@ export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, vali
     const archChanged = out.archive !== undefined &&
       (!existsSync(archPath) || readFileSync(archPath, "utf8") !== archText);
 
-    // archive.json first: if the process dies between the two writes, a ticket present in
+    // Recovery copies of whatever is about to be replaced (T-034). Best effort: a failed
+    // backup is reported, never allowed to block a write that already passed validation.
+    const backupError = dryRun ? undefined : tryBackup(
+      [archChanged && archPath, dataChanged && dataPath].filter(Boolean), { boardDir });
+    // Destination first: if the process dies between the two writes, a ticket present in
     // both files is a loud validator error, while a ticket in neither is silent data loss.
-    if (!dryRun && archChanged) writeAtomic(archPath, archText);
-    if (!dryRun && dataChanged) writeAtomic(dataPath, dataText);
+    if (!dryRun) {
+      const writes = [archChanged && [archPath, archText], dataChanged && [dataPath, dataText]].filter(Boolean);
+      if (out.writeFirst === "data") writes.reverse();
+      writes.forEach(([path, text], i) => {
+        writeAtomic(path, text);
+        if (i === 0 && writes.length === 2) _afterFirstWrite?.(path);
+      });
+    }
 
     return {
       result: out.result,
@@ -252,6 +272,7 @@ export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, vali
       archiveVersion: boardVersion(archPath),
       changed: dataChanged || archChanged,
       warnings,
+      ...(backupError ? { backupError } : {}),
     };
   }, { op, ...lockOptions });
 }

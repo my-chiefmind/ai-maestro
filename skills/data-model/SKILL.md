@@ -63,7 +63,7 @@ one flat entity list.
 ## Output
 
 Write **one self-contained HTML file** — no external requests and no `<script>` of any kind. The
-cockpit renders reports in a fully sandboxed iframe (`sandbox=""`, scripts blocked), so any JS
+web dashboard renders reports in a fully sandboxed iframe (`sandbox=""`, scripts blocked), so any JS
 silently does nothing and any external font/CDN/image link silently fails to load. All CSS
 inline in a `<style>` tag. Draw the diagram with plain HTML/CSS boxes and inline `<svg>` lines
 computed at write time — no diagram library, since none can load.

@@ -5,7 +5,7 @@
  *
  * This is the SHAREABLE half of the feature, and it is deliberately a renderer, not a second
  * implementation: it takes the object `buildUsageReport()` already produced and formats it.
- * The cockpit's live Value page and this snapshot therefore cannot drift into disagreeing
+ * The web dashboard's live Value page and this snapshot therefore cannot drift into disagreeing
  * about a number, because there is only one place a number is computed.
  *
  * What it may contain is constrained by the same rule as the cache: AGGREGATES ONLY. The

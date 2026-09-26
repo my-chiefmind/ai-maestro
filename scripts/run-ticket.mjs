@@ -184,7 +184,7 @@ const reviewerModel = ticket.reviewer_model || crossReview?.reviewer?.model || "
 
 if (!devRuntime || !reviewerRuntime) {
   die(`${ticketId} has no cross-review role set. 'maestro run' is only for cross-review-enabled ` +
-    `tickets — set dev_runtime/reviewer_runtime on the ticket (the cockpit's Dev/Reviewer ` +
+    `tickets — set dev_runtime/reviewer_runtime on the ticket (the web dashboard's Dev/Reviewer ` +
     `pickers) or add config.json's crossReview defaults. A ticket with neither still runs the ` +
     `classic way, inside an interactive claude/codex session working its agent_plan.`);
 }

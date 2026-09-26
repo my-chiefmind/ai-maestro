@@ -67,7 +67,7 @@ All of this is read-only — no board writes, no git writes, no commits.
 ## Output
 
 Write **one self-contained HTML file**, no external requests and no `<script>` of any kind —
-the cockpit renders reports in a fully sandboxed iframe (`sandbox=""`, scripts blocked), so any
+the web dashboard renders reports in a fully sandboxed iframe (`sandbox=""`, scripts blocked), so any
 JS silently does nothing and any external font/CDN/image link silently fails to load. All CSS
 must be inline in a `<style>` tag; no external stylesheets, fonts, or images.
 

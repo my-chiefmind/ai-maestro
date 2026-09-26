@@ -16,6 +16,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join, dirname, basename } from "path";
 import { withBoardLock, boardVersion, writeAtomic, BoardConflictError } from "./board-io.mjs";
+import { tryBackup } from "./board-backup.mjs";
 import { normalisePlan, validatePlan, renderPlanMd, emptyPlan } from "./plan-core.mjs";
 import { PlanInputError } from "./plan-operations.mjs";
 
@@ -70,7 +71,7 @@ export function readPlanForBoard(anyBoardPath) {
  *
  * `mutate` receives the plan as it is ON DISK RIGHT NOW, inside the lock. Callers express a
  * change ("add this requirement"), never a whole plan they read earlier — which is what makes
- * a cockpit tab and an agent writing at the same moment safe rather than last-write-wins.
+ * a web dashboard tab and an agent writing at the same moment safe rather than last-write-wins.
  *
  * @param {object} p
  * @param {string} p.planPath
@@ -117,9 +118,11 @@ export function mutatePlan({ planPath, mutate, expectVersion, projectName = "Pro
     // plan.json first: it is the source of truth. If the process dies between the two writes,
     // a stale mirror is a cosmetic problem that the next write fixes, whereas a mirror
     // promising content that plan.json doesn't hold would be read as real.
+    const backupError = dryRun ? undefined : tryBackup(
+      [planChanged && planPath, mdChanged && mdPath].filter(Boolean), { boardDir: dir });
     if (!dryRun && planChanged) writeAtomic(planPath, planText);
     if (!dryRun && mdChanged) writeAtomic(mdPath, mdText);
 
-    return { plan: next, result, version: planVersion(planPath), changed: planChanged || mdChanged, warnings };
+    return { plan: next, result, version: planVersion(planPath), changed: planChanged || mdChanged, warnings, ...(backupError ? { backupError } : {}) };
   }, { op, ...lockOptions });
 }

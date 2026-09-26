@@ -47,6 +47,8 @@ maestro ticket retrace T-010 --traces-to FR-3 | --scope-exception "…"
 maestro ticket block T-010 --name "BLOCKER: …" --desc "…"
 maestro ticket archive T-010 --evidence "merged abc123: …" --done-at 2026-08-09
 maestro ticket drop T-010 --reason "superseded"    # leaves unfinished, via the archive
+maestro ticket unarchive T-010 [--status todo] [--with-epic]  # undo a mistaken archive/drop
+maestro ticket archive-epic e3                # retire an epic with no live tickets
 maestro ticket version                        # the board's content version
 ```
 
@@ -59,6 +61,23 @@ marked `"sample": true`, which is why it is safe to pass even on a project full 
 `wont-do` / `duplicate` / `archived`. It refuses when other live tickets depend on it — because
 eligibility treats every archived id as a **satisfied** dependency, so dropping a prerequisite
 silently makes its dependents runnable.
+
+`unarchive` is the way back from a mistaken `archive` or `drop` — never a hand edit of both files.
+It moves exactly one ticket from `archive.json` to `data.json` in one locked, validated write,
+strips the archive-only fields (`evidence` — which also holds a drop's reason — and `done_at`),
+and restores it as `review` unless `--status` names another live status (`done` and the terminal
+states are refused). An id that is not archived, or is already live, fails with both files
+untouched. If the ticket's epic survives only in `archive.epics`, it refuses unless `--with-epic`,
+which copies that epic back to the live board in the same write. `--dry-run`, `--json`,
+`--expect-version` and `--expect-archive-version` behave as for `archive`.
+
+`archive-epic` retires an obsolete epic — one with **zero live tickets** — by moving it from
+`data.json` to `archive.json` in one locked, validated write (archive.json is written first). It
+refuses, with both files untouched, while any live ticket still belongs to the epic, or when the
+id is not a live epic. Archiving a ticket already leaves a shadow copy of its epic in
+`archive.epics`; `archive-epic` replaces that copy with the live one, so the archive holds a single
+entry with the epic's latest fields (its `initiativeId` included). `--dry-run`, `--json`,
+`--expect-version` and `--expect-archive-version` behave as for `archive`.
 
 And `maestro plan` — never an editor — for the plan:
 
@@ -86,7 +105,7 @@ ticket, which is why the tooling no longer offers that shape.
 Exit codes are the contract: **0** written, **1** the request was wrong (do not retry),
 **2** contended — the board moved or the lock was busy, so re-run the same command.
 
-The cockpit's save button and `maestro ticket` share one version token, so a UI tab and an
+The web dashboard's save button and `maestro ticket` share one version token, so a UI tab and an
 agent cannot disagree about whether the board changed underneath them.
 
 ## Fields that drive execution
@@ -116,7 +135,7 @@ The gate is deliberately split:
 
 | Where | Behaviour |
 | --- | --- |
-| `maestro validate` / the cockpit's save | **Warns.** The board stays valid — you must be able to jot a ticket before the plan covers it. |
+| `maestro validate` / the web dashboard's save | **Warns.** The board stays valid — you must be able to jot a ticket before the plan covers it. |
 | The orchestrator picking a ticket | **Blocks.** Nothing runs that the plan doesn't cover. |
 
 A ticket is out of scope when it traces to nothing, to an id the plan doesn't define, or to an

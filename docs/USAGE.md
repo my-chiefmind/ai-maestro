@@ -201,7 +201,7 @@ maestro usage --json
 maestro usage --html value.html   # a self-contained, shareable snapshot
 ```
 
-In the cockpit, the **Value** tab shows the same figures live, with a row per ticket you can expand
+In the web dashboard, the **Value** tab shows the same figures live, with a row per ticket you can expand
 for its per-agent and per-model split, and CSV/JSON/snapshot export. `maestro usage`, the exports,
 the snapshot and the page all render from one function — `buildUsageReport()` in
 `scripts/usage-core.mjs` — so they cannot quote different numbers for the same ticket.
@@ -289,7 +289,7 @@ maestro usage --discover ~/source        # ad-hoc, no registry file needed
 maestro usage --all --html portfolio.html
 ```
 
-In the cockpit, start with `--registry <file>` (or `MAESTRO_REGISTRY`) and the Value page gains
+In the web dashboard, start with `--registry <file>` (or `MAESTRO_REGISTRY`) and the Value page gains
 an **All projects** toggle: a project table, a `project` breakdown alongside the others, and the
 per-ticket table spanning every board.
 

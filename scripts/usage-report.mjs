@@ -3,7 +3,7 @@
 /**
  * usage-report.mjs — `maestro usage`: what each ticket cost in time and tokens.
  *
- * Prints the same figures the cockpit's Value page shows, from the same aggregation
+ * Prints the same figures the web dashboard's Value page shows, from the same aggregation
  * (scripts/usage-core.mjs), so a terminal answer and a dashboard answer can never disagree.
  * `--json` and `--csv` are the export half of that promise, and `--html` writes the
  * self-contained snapshot described in docs/USAGE.md.

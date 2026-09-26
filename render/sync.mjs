@@ -233,7 +233,14 @@ const projAgentNames = [...new Set(agentOverlayDirs.flatMap(mdNames))];
 const projSkillNames = [...new Set(skillOverlayDirs.flatMap(skillNames))];
 
 const allAgentFiles = readdirSync(join(KIT, "agents")).filter((f) => f.endsWith(".md"));
-const roster = config.roster; // array of file basenames without .md, or undefined = all
+// Renamed kit agents/skills: an older config still naming the old id renders the new one.
+const RENAMED = { "delivery-tpm": "tpm" };
+const renamed = (list, kind) => list?.map((n) => {
+  if (!RENAMED[n]) return n;
+  console.warn(`  ⚠ config.${kind}: "${n}" was renamed to "${RENAMED[n]}" — update config.json.`);
+  return RENAMED[n];
+});
+const roster = renamed(config.roster, "roster"); // array of file basenames without .md, or undefined = all
 const agentFiles = roster
   ? allAgentFiles.filter((f) => roster.includes(f.replace(/\.md$/, "")))
   : allAgentFiles;
@@ -252,10 +259,11 @@ const allSkills = readdirSync(join(KIT, "skills")).filter((d) =>
 // Filter to real kit skills, exactly like agentFiles above — otherwise a typo'd config.skills
 // entry gets passed straight into the readFileSync below and crashes with a raw ENOENT
 // instead of being caught by the warning right next to it.
-const skills = config.skills ? allSkills.filter((s) => config.skills.includes(s)) : allSkills;
-if (config.skills) {
+const configSkills = renamed(config.skills, "skills");
+const skills = configSkills ? allSkills.filter((s) => configSkills.includes(s)) : allSkills;
+if (configSkills) {
   const known = new Set([...allSkills, ...projSkillNames]);
-  for (const s of config.skills) {
+  for (const s of configSkills) {
     if (!known.has(s)) console.warn(`  ⚠ config.skills: "${s}" matches no skill — typo?`);
   }
 }
@@ -277,7 +285,7 @@ if (config.skills) {
 const unlistedAgents = roster
   ? allAgentFiles.map((f) => f.replace(/\.md$/, "")).filter((a) => !roster.includes(a))
   : [];
-const unlistedSkills = config.skills ? allSkills.filter((s) => !config.skills.includes(s)) : [];
+const unlistedSkills = configSkills ? allSkills.filter((s) => !configSkills.includes(s)) : [];
 if (unlistedAgents.length || unlistedSkills.length) {
   const parts = [];
   if (unlistedAgents.length) parts.push(`${unlistedAgents.length} agent(s): ${unlistedAgents.join(", ")}`);

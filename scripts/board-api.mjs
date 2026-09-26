@@ -8,10 +8,11 @@ import { loadBoardContext, resolveBoardPaths, validateBoardContext } from "./boa
 import {
   validateBoard, ticketEligibilityVerdict, ELIGIBILITY_REASON_CODES, isSafeEligibilityReference,
 } from "./board-core.mjs";
-import { BoardInputError, BoardLockError, BoardNotFoundError } from "./board-errors.mjs";
+import { BoardConflictError, BoardInputError, BoardLockError, BoardNotFoundError } from "./board-errors.mjs";
 import {
   createTicketOperation, editTicketOperation, setTicketStatusOperation, setTicketEpicOperation,
   createEpicOperation, editEpicOperation, archiveTicketOperation, dropTicketOperation,
+  unarchiveTicketOperation, archiveEpicOperation,
 } from "./board-operations.mjs";
 
 export { validateBoard };
@@ -191,6 +192,17 @@ function runOperation(options, operation, operationName) {
     op: operationName,
     lockOptions: options.lockOptions,
     mutate: ({ data, archive }) => {
+      // archive.json CAS, checked under the same lock mutateBoard holds for data.json.
+      if (options.expectArchiveVersion != null) {
+        const actual = boardVersion(paths.archivePath);
+        if (actual !== options.expectArchiveVersion) {
+          throw new BoardConflictError(
+            `The archive at ${paths.archivePath} changed on disk since you read it ` +
+            `(expected ${options.expectArchiveVersion}, found ${actual}). Re-read it and retry.`,
+            { expected: options.expectArchiveVersion, actual, path: paths.archivePath },
+          );
+        }
+      }
       const context = { ...loadBoardContext(options), data, archive };
       return operation(context, options);
     },
@@ -209,3 +221,5 @@ export const createEpic = (options = {}) => runOperation(options, createEpicOper
 export const editEpic = (options = {}) => runOperation(options, editEpicOperation, "edit-epic");
 export const archiveTicket = (options = {}) => runOperation(options, archiveTicketOperation, "archive-ticket");
 export const dropTicket = (options = {}) => runOperation(options, dropTicketOperation, "drop-ticket");
+export const unarchiveTicket = (options = {}) => runOperation(options, unarchiveTicketOperation, "unarchive-ticket");
+export const archiveEpic = (options = {}) => runOperation(options, archiveEpicOperation, "archive-epic");

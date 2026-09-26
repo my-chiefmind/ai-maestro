@@ -19,12 +19,13 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, cpSync, mkdirSync, rmSync, readdirSync, statSync, realpathSync } from "fs";
-import { resolve, dirname, join, relative, basename, extname, sep, isAbsolute } from "path";
+import { resolve, dirname, join, relative, basename, sep, isAbsolute } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { createInterface } from "readline";
 import { createHash } from "crypto";
 import { readRegistry, findKitDir } from "../scripts/registry.mjs";
+import { tryBackup } from "../scripts/board-backup.mjs";
 import { emptyPlan, renderPlanMd, planCompleteness } from "../scripts/plan-core.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -47,11 +48,12 @@ const C = {
 const IS_PACKAGED = KIT_ROOT.split(sep).includes("node_modules") || KIT_ROOT.includes("_npx");
 
 // What `setup` copies into <repo>/maestro/ when installed from npm. Everything the clone
-// flow relies on, including the optional cockpit UI so `npm run board` works out of the box.
-const VENDORED = ["agents", "skills", "render", "scripts", "board", "cockpit", "starters", "docs", "bin", "VERSION", "README.md", "LICENSE"];
+// flow relies on. The visual board is the separate @mychiefmind/ai-maestro-web-ui package
+// (fetched by `npm run board`), so nothing UI-related is vendored. A cockpit/ folder left by
+// an older release is simply ignored by `update` — it is not in this list, so never touched.
+const VENDORED = ["agents", "skills", "render", "scripts", "board", "starters", "docs", "bin", "VERSION", "README.md", "LICENSE"];
 
-// Never carry these into the user's repo — they're rebuildable and heavy. The cockpit's deps
-// install on first `npm run board` (see the `preboard` script below).
+// Never carry these into the user's repo — they're rebuildable and heavy.
 const VENDOR_SKIP = new Set(["node_modules", "dist", ".backups", ".git"]);
 
 // The vendored board folder mixes kit files (schema, README) with the project's live tickets —
@@ -133,8 +135,8 @@ function writeVendorLock(dest, lock) {
 }
 
 // Minimal package.json so `npm run sync` / `npm run validate` / `npm run board` work from
-// the folder, matching what the docs tell clone users to run. `preboard` installs the
-// cockpit's deps on demand so the first `npm run board` just works. `update` goes through
+// the folder, matching what the docs tell clone users to run. `board` runs the web dashboard
+// from the project root (the parent of this folder), where it finds ./maestro. `update` goes through
 // npx: the vendored copy is dependency-free and can't fetch a newer version itself.
 function writeVendorPackageJson(dest) {
   const pkg = {
@@ -151,8 +153,7 @@ function writeVendorPackageJson(dest) {
       lanes: "node scripts/lane-plan.mjs",
       swarm: "node scripts/swarm-config.mjs",
       update: "npx @mychiefmind/ai-maestro@latest update --kit .",
-      preboard: "node scripts/cockpit-install.mjs",
-      board: "npm --prefix cockpit run dev",
+      board: "cd .. && npx --yes @mychiefmind/ai-maestro-web-ui",
     },
   };
   writeFileSync(join(dest, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
@@ -617,13 +618,13 @@ function ensureGitRepo(repoRoot) {
   return r.status === 0 ? "created" : "failed";
 }
 
-// Start the visual board (installs the cockpit's deps on first run via the `preboard` hook).
+// Start the visual board — the @mychiefmind/ai-maestro-web-ui package, fetched via npx.
 // Blocks until the dev server is stopped — this is intentionally the last thing setup does.
 function launchBoard(kitDir, kitName) {
-  console.log("\n→ Starting the visual board (installs the UI's deps on first run)…");
-  // Not a fixed URL: the board takes the next free port when 5273 is busy — which it is
+  console.log("\n→ Starting the visual board (downloads the web dashboard on first run)…");
+  // Not a fixed URL: the dashboard takes the next free port when 3021 is busy — which it is
   // whenever another project's board is open — and prints the one it settled on below.
-  console.log("   → it will print its URL in a moment    (press Ctrl+C to stop)\n");
+  console.log("   → serves http://127.0.0.1:3021 (or the next free port it prints)    (press Ctrl+C to stop)\n");
   const r = spawnSync("npm", ["run", "board"], {
     cwd: kitDir,
     stdio: "inherit",
@@ -712,7 +713,7 @@ async function init(args) {
     : IS_PACKAGED
       ? `   2. Review the work on the board (${rel}/board/data.json).`
       : `   2. Review the work on the board (${rel}/board/data.json), or open the visual board:
-        cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (prints its URL; usually http://localhost:5273)`;
+        cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (→ http://127.0.0.1:3021, or the next free port it prints)`;
   const syncCmd = IS_PACKAGED
     ? `npx @mychiefmind/ai-maestro sync --project ${rel}`
     : `node ${rel}/render/sync.mjs --project ${rel}`;
@@ -751,7 +752,7 @@ ${existsSync(boardData)
  *
  * The cloned kit holds your config.json / context.md / board; the generated agents land in
  * native Claude Code and Codex files at your REPO ROOT (where coding tools discover them). No npm
- * install, no server — the core kit is dependency-free. The cockpit UI is optional.
+ * install, no server — the core kit is dependency-free. The visual board is the separate @mychiefmind/ai-maestro-web-ui package.
  * Idempotent: re-running detects an existing config and does nothing.
  */
 /**
@@ -788,17 +789,6 @@ function liveBoardContent(boardDir) {
     found.push(`plan.json — a project plan${planItems ? ` with ${planItems} item(s)` : ""}`);
   }
   return found;
-}
-
-/** Copy a board file aside before it is replaced. Best-effort: never blocks the caller. */
-function backupBoardFile(target) {
-  try {
-    if (!existsSync(target)) return;
-    const dir = join(dirname(target), ".backups");
-    mkdirSync(dir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    cpSync(target, join(dir, `${basename(target, extname(target))}.${stamp}${extname(target)}`));
-  } catch { /* a backup that cannot be written must not stop the caller reporting the real problem */ }
 }
 
 async function setup(args) {
@@ -924,7 +914,7 @@ ${occupied.map((l) => `    • ${l}`).join("\n")}
       // should already have refused, so reaching this with a non-empty file means the emptiness
       // test has a hole — and a backup is the difference between finding that out and losing
       // the data to it.
-      backupBoardFile(target);
+      tryBackup([target], { boardDir: dirname(target) });
       cpSync(starterFile, target);
     }
   }
@@ -966,7 +956,6 @@ ${occupied.map((l) => `    • ${l}`).join("\n")}
     run("scripts/validate-board.mjs", [boardData, "--agents", join(kit, "agents")], kit);
   }
 
-  const hasCockpit = existsSync(join(kit, "cockpit"));
   const openCount = keptContext ? 0 : BRIEF_FIELDS.filter((f) => isOpen(brief[f.key])).length;
   const openNote = openCount
     ? `\n${C.dim(`  ${openCount} question${openCount > 1 ? "s" : ""} left to the agents — planning proposes an answer for each and shows you.`)}`
@@ -995,21 +984,17 @@ ${C.dim("  Re-render after edits:")}   ${C.yellow("npm run sync")}   ${C.dim(`(f
 ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or the README`);
 
   // Offer to open the visual board. `--yes` launches without asking; `--no-board` skips it.
-  if (hasCockpit) {
-    // Launch only in a terminal: the server blocks until Ctrl+C, so a run without a TTY
-    // (CI, scripts) must never start it — even with `--yes`, which otherwise means
-    // "launch without asking".
-    const wantsBoard = has(args, "no-board") || !process.stdin.isTTY ? false
-      : yes ? true
-      : await askYesNo("Open the visual board now?", true);
-    closePrompts(); // the board server takes over stdin from here
-    if (wantsBoard) {
-      launchBoard(kit, kitName);
-    } else {
-      console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → prints its URL (usually http://localhost:5273)\n`);
-    }
+  // Launch only in a terminal: the server blocks until Ctrl+C, so a run without a TTY
+  // (CI, scripts) must never start it — even with `--yes`, which otherwise means
+  // "launch without asking".
+  const wantsBoard = has(args, "no-board") || !process.stdin.isTTY ? false
+    : yes ? true
+    : await askYesNo("Open the visual board now?", true);
+  closePrompts(); // the board server takes over stdin from here
+  if (wantsBoard) {
+    launchBoard(kit, kitName);
   } else {
-    console.log(`   • Visual board:  clone https://github.com/my-chiefmind/ai-maestro and run 'npm run board'\n`);
+    console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → http://127.0.0.1:3021\n`);
   }
 }
 
@@ -1430,7 +1415,7 @@ The usual flow — one command in your repo:
   cd ~/code/my-app
   npx @mychiefmind/ai-maestro setup        # copies the kit into ./maestro/ and sets you up
 
-Or clone the kit yourself (same result, plus the cockpit UI):
+Or clone the kit yourself (same result):
 
   git clone https://github.com/my-chiefmind/ai-maestro.git maestro
   node maestro/bin/cli.mjs setup
@@ -1480,7 +1465,83 @@ async function sync(args) {
   process.exit(run("render/sync.mjs", args));
 }
 
+// ── Argument policy (T-033) ─────────────────────────────────────────────────────────────
+// Parsing fails CLOSED. In the 2026-08-28 board-loss incident `setup --dir <tmp>` silently
+// ignored --dir (setup never had it) and ran against the current directory. So each command
+// this file handles itself declares every flag it reads in ONE table below — booleans and
+// value flags — plus the shared globals (--help, --yes). Anything else exits 2, naming flag
+// and command, before any filesystem work. `--` ends option parsing: only plain positionals
+// may follow it (validate's board path), forwarded as-is; a `--`-prefixed token after it is
+// rejected with exit 2, since no command here takes a flag-like positional and the command
+// bodies (and child scripts) would otherwise still read it as a flag. sync/validate forward to render/sync.mjs and scripts/validate-board.mjs, so
+// their tables list those scripts' flags. Delegated subcommands (ticket, plan, spec, run,
+// lanes, swarm, usage, drift) keep their own parsers and are passed through untouched —
+// scripts/swarm-config.mjs is the strict precedent this follows.
+const BRIEF_FLAGS = ["outcome", "users", "stack", "constraints", "run", "test"];
+const GLOBAL_FLAGS = { bool: ["help", "yes"], value: [] };
+const COMMAND_FLAGS = {
+  setup: { bool: ["no-board", "no-github-actions", "force"], value: ["name", "areas", ...BRIEF_FLAGS] },
+  init: { bool: [], value: ["dir", "name", "starter", "areas", ...BRIEF_FLAGS] },
+  update: {
+    bool: ["all", "dry-run", "force", "offline", "adopt-new", "no-adopt", "no-github-actions"],
+    value: ["registry", "kit"],
+  },
+  sync: { bool: ["all", "check"], value: ["project", "kit", "registry", "out"] },
+  validate: { bool: [], value: ["agents", "config"] },
+};
+
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// Validates `args` for `command` and returns the args the command should see: the option
+// tokens plus positionals, with a `--` separator removed. Commands without a table are
+// returned untouched. Exits 2 on an unknown flag or a value flag missing its value.
+function parseArgs(command, args) {
+  const table = COMMAND_FLAGS[command];
+  if (!table) return args;
+  const bool = new Set([...GLOBAL_FLAGS.bool, ...table.bool]);
+  const value = new Set([...GLOBAL_FLAGS.value, ...table.value]);
+  const fail = (msg) => { console.error(`✗ ${msg}\n  Run 'ai-maestro --help' for the flags each command accepts.`); process.exit(2); };
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      const rest = args.slice(i + 1);
+      const flagLike = rest.find((r) => r.startsWith("--"));
+      if (flagLike) fail(`'${command}' takes no flag-like arguments after '--' (got ${flagLike}).`);
+      out.push(...rest);
+      break;
+    }
+    if (!a.startsWith("--")) { out.push(a); continue; }
+    const name = a.slice(2);
+    if (name.includes("=")) fail(`--${name.split("=")[0]}=<value> syntax isn't supported for '${command}' — use --${name.split("=")[0]} <value>.`);
+    if (bool.has(name)) { out.push(a); continue; }
+    if (value.has(name)) {
+      const v = args[i + 1];
+      if (v === undefined || v.startsWith("--")) fail(`--${name} needs a value.`);
+      out.push(a, v); i++;
+      continue;
+    }
+    const near = [...bool, ...value]
+      .map((f) => [f, editDistance(name, f)])
+      .filter(([, dist]) => dist <= 2)
+      .sort((x, y) => x[1] - y[1])[0];
+    fail(`Unknown flag ${a} for '${command}'.${near ? ` Did you mean --${near[0]}?` : ""}`);
+  }
+  return out;
+}
+
 async function dispatch(command, args) {
+  args = parseArgs(command, args);
+  if (COMMAND_FLAGS[command] && has(args, "help")) { help(); return; }
   switch (command) {
     case "setup": await setup(args); break;
     case "update": await update(args); break;

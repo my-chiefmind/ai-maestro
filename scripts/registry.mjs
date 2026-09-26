@@ -1,6 +1,6 @@
 /**
  * registry.mjs — shared registry-file reading for tools that operate across many projects
- * (`maestro drift`, `maestro update --all`, `sync.mjs --all`, the cockpit's portfolio mode).
+ * (`maestro drift`, `maestro update --all`, `sync.mjs --all`, the web dashboard's portfolio mode).
  * One project list, one format, read the same way everywhere, so a project only has to be
  * listed once to be covered by all of them.
  *
@@ -55,7 +55,7 @@ function fail(code, message) {
  * Throws (ENOREGISTRY / EBADJSON / EBADREGISTRY / ECYCLE / EDUPNAME) rather than returning a
  * fallback — a missing or broken registry must never read as "zero projects", which would
  * render as "there is no work anywhere" instead of "the list failed to load". Same reasoning
- * the cockpit applies to its board allowlist (see board/specs/T-003.md §1).
+ * the web dashboard applies to its board allowlist (see board/specs/T-003.md §1).
  *
  * @param {string} registryPath
  * @param {{ includeParked?: boolean }} [opts]
@@ -130,7 +130,7 @@ export function readRegistry(registryPath, opts = {}) {
       }
 
       const name = entry.name ?? entry.path;
-      // Consumers key on name — the cockpit matches it exactly to pick which board a write
+      // Consumers key on name — the web dashboard matches it exactly to pick which board a write
       // lands on — so two projects sharing one is an ambiguity that must not be resolved by
       // whichever registry happened to load first.
       const clash = byName.get(name);

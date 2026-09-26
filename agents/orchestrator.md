@@ -17,20 +17,28 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
 3. **Reconcile before claiming.** Check merged/open PRs, existing branches, and existing
    worktrees against the ticket before touching it:
    - Work already **merged** → don't rebuild it. Audit the acceptance criteria against what
-     landed, fix the ticket's status, and report — a stale board is a status bug, not a
+     landed, fix the ticket's status through the CLI (`maestro ticket archive <id> --evidence …`
+     when it is done, otherwise `maestro ticket set-status <id> <status>`), and report — a stale board is a status bug, not a
      build request.
    - An existing **branch or worktree** for the ticket → **adopt and resume it**. Never
      recreate it or dispatch a second implementation in parallel; that's how the same
      feature gets built twice.
-4. **Claim it**: set `status: in-progress` and record that you're on it before dispatching.
-   ⚠️ This is **best-effort, not atomic** — the kit assumes **one orchestrator at a time**.
-   Do not run parallel orchestrators against the same board without external coordination;
-   two runs can claim the same ticket. If you already see a ticket `in-progress`, assume
-   another run owns it and skip it. Reconcile (step 3) complements this — it catches the
-   collisions the claim can't prevent.
-   > One orchestrator running several **lanes** is a different thing and is supported: the
-   > lanes come from `maestro lanes next`, which never returns two tickets that could touch
-   > the same files. Several orchestrators racing the same board is still unsafe.
+4. **Claim it** through the CLI — never by editing board JSON. Read the snapshot with
+   `maestro ticket eligibility <id> --json`, then claim against it:
+   ```sh
+   maestro ticket claim <id> --json --expect-version <v> --expect-archive-version <v> --expect-plan-version <v>
+   ```
+   The claim is **atomic**: under the board lock it re-checks eligibility and the three
+   snapshot versions (all-or-none) and moves the ticket to `in-progress` only if nothing
+   changed. A refused claim still **exits 0**, so read the JSON: continue only when it says
+   `"claimed": true`. On `"claimed": false` (its `conflicts` name what moved, or `verdict` says
+   the ticket is no longer eligible) someone else moved the board — re-read and re-pick; never
+   fall back to `set-status` to force it. An `in-progress` ticket that none of your lanes owns
+   belongs to another run: skip it. Reconcile (step 3) still catches work that landed outside
+   the board.
+   > One orchestrator running several **lanes** is supported: the lanes come from
+   > `maestro lanes next`, which never returns two tickets that could touch the same files,
+   > and each lane claims its own ticket the same way.
 5. **Isolate**: create a git worktree + branch for the ticket and bring its dependencies with
    it (see the `git-branch` and `worktree-cleanup` skills) — unless reconcile adopted an
    existing one.
@@ -55,7 +63,7 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
    - `tpm` → reconcile delivery readiness and return a proceed-or-block directive. Run it
      only when the ticket's plan explicitly includes it; it makes no product changes.
    - `pe` → produce a plan.
-   - `backend`/`frontend`/`devops`/`docs` → implement against the plan in the worktree.
+   - `backend`/`frontend`/`pipeline`/`devops`/`docs` → implement against the plan in the worktree.
    - `qa` → independent review vs. the ticket's acceptance criteria.
    - `pd` → delivery validation.
 
@@ -66,22 +74,25 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
    to `pe`. **Cap the build ↔ qa loop at two fix rounds**: when the cap is hit, file a
    blocker and stop instead of looping.
 7. **Land or block**:
-   - All gates pass → merge, move the ticket to `archive.json` with evidence, clean up the
-     worktree (see `worktree-cleanup`), report `done`.
+   - All gates pass → merge, archive the ticket with
+     `maestro ticket archive <id> --evidence "<SHA, test result>"`, clean up the worktree (see
+     `worktree-cleanup`; a lane worktree stays for its next ticket), report `done`.
    - **A merge is not done until it's pushed.** For a protected default branch, use the PR
      path: push the ticket branch, open a PR, squash-merge it. Otherwise a plain local
      merge then push is fine. Either way the result must land on the remote — a local-only
      merge is unfinished work.
-   - A gate fails, or the merge conflicts → file a **blocker ticket** with the specific
-     reason, set the ticket `blocked`, and **stop**. Do not attempt clever auto-resolution.
+   - A gate fails, or the merge conflicts → file the blocker and mark the ticket `blocked` in
+     one write with `maestro ticket block <id> --name "<blocker>" --desc "<specific reason>"`
+     (omit `--blocker-id` and the CLI allocates a free one), and **stop**. Do not attempt clever auto-resolution.
 
 ## Modes
 
 - **Discovery**: when asked "what do you see", read the board and report in-progress /
   blocked / ready / next-action — without dispatching anything.
 - **Resume**: when handed a ticket id, continue that ticket's plan from where it stopped.
-- **Abort**: when asked to stop a run, remove its worktree, **keep the branch**, and set the
-  ticket back to `todo`.
+- **Abort**: when asked to stop a run, **keep the branch**, reset the ticket with
+  `maestro ticket set-status <id> todo`, and report `aborted`. Remove a per-ticket worktree;
+  **keep a lane worktree** — it belongs to the lane, not the ticket.
 
 ## Hard rules
 

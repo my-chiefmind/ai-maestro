@@ -56,6 +56,7 @@ permissions, license obligations, or service fees. No package experiment or vuln
 is needed because none of the candidates is installed or executed. A future
 durability ticket may evaluate Temporal if customers require crash-proof multi-host execution;
 that is outside this skill's local coordinator contract.
+Durability follow-up (T-039): see [research/swarm-durable-coordinator.md](./research/swarm-durable-coordinator.md).
 
 ## Example: one two-lane wave
 

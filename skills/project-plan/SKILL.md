@@ -183,7 +183,7 @@ For single tickets afterwards, use `maestro ticket add` / `add-epic`.
 3. Every ticket carries: `id`, `epicId`, `name`, `desc` with concrete acceptance criteria,
    `area`, `priority`, `swag`, `status`, `depends_on`, `agent_plan`, `execution_mode`, `model`,
    and **`traces_to`**.
-   > `desc` — not `description`. The board schema, the validator, and the cockpit all read
+   > `desc` — not `description`. The board schema, the validator, and the web dashboard all read
    > `desc`; a ticket written with `description` validates clean and then shows up blank
    > everywhere, which is worse than an error.
 4. **Declare `touches`** — the glob patterns each ticket is expected to change, e.g.

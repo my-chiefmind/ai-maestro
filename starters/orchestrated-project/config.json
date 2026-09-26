@@ -21,13 +21,13 @@
     "technical-writer",
     "qa",
     "principal-delivery",
-    "delivery-tpm",
+    "tpm",
     "pipeline-developer",
     "repo-audit"
   ],
   "skills": [
     "orchestrator",
-    "delivery-tpm",
+    "tpm",
     "swarm",
     "project-plan",
     "plan-update",

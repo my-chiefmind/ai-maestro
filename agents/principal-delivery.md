@@ -30,8 +30,11 @@ not an omission.
 
 ## Decide
 
-- **Land** — merge, then move the ticket to `archive.json` with its evidence, and trigger
-  worktree cleanup.
+- **Land** — you decide; the `land-and-archive` skill executes. Run it: merge to the default
+  branch (resolved as in the `git-branch` skill, never assumed to be `main`), archive the
+  ticket with its evidence via `maestro ticket archive`, **always** delete the merged branch,
+  and remove the worktree **only when it is not a lane** — a lane worktree stays for the next
+  ticket in its queue.
 - **Block** — file a blocker with the specific reason and stop. Don't land a change you can't
   vouch for to hit a schedule.
 

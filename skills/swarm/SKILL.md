@@ -54,7 +54,7 @@ agent spawn/delegation facility:
 | Implementation | the ticket's area/plan agent: `backend-developer`, `frontend-developer`, `pipeline-developer`, `devops`, or `technical-writer` |
 | Independent review | `qa` |
 | Delivery approval | `principal-delivery` |
-| Delivery-control checkpoint (startup, recovery, drift, or merge contention) | `delivery-tpm` |
+| Delivery-control checkpoint (startup, recovery, drift, or merge contention) | `tpm` |
 | Repair | the affected implementation agent, never `qa` or `principal-delivery` |
 
 Use the host's live-agent inventory before dispatch, its spawn/delegate primitive to start a
@@ -77,7 +77,7 @@ Before every initial run and after recovery from a systemic failure:
    project-owned config correctly in vendored, sibling-kit, and package layouts.
 2. Run the `board-validate` and `orchestration-health` skills. Do not dispatch against an
    invalid board, an unexplained `in-progress` claim, or an orphaned worktree. After either
-   initial pre-flight or recovery from a systemic failure, invoke `delivery-tpm` once for a
+   initial pre-flight or recovery from a systemic failure, invoke `tpm` once for a
    pool-wide proceed/hold directive. It must name each affected ticket and either the exact
    next action or the owner decision required; do not spend one TPM agent per healthy lane.
 3. Confirm the primary checkout is the clean, current default branch. All ticket and board
@@ -100,7 +100,7 @@ A wave is a reconciliation interval, not a batch that waits for human permission
 swarm remains enabled:
 
 1. **Observe.** Reconcile agents, branches, PRs, worktrees, board status, and elapsed time.
-   Invoke `delivery-tpm` only when this reveals drift, merge contention, a stale checkpoint,
+   Invoke `tpm` only when this reveals drift, merge contention, a stale checkpoint,
    or evidence that changes a ticket's readiness; otherwise keep capacity on delivery stages.
 2. **Collect.** Receive completed development, QA, repair, and delivery results. Persist
    evidence before replacing an agent.

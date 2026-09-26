@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "maestro-registry.schema.json",
   "title": "AI Maestro project registry",
-  "description": "The list of projects that cross-project tools operate on — `maestro drift`, `maestro update --all`, `sync.mjs --all`, and the cockpit's portfolio mode. It replaces 'the projects that happen to sit in the same parent folder' with an explicit, ordered list, and it is the allowlist: a tool may only read or write boards belonging to a project named here.",
+  "description": "The list of projects that cross-project tools operate on — `maestro drift`, `maestro update --all`, `sync.mjs --all`, and the web dashboard's portfolio mode. It replaces 'the projects that happen to sit in the same parent folder' with an explicit, ordered list, and it is the allowlist: a tool may only read or write boards belonging to a project named here.",
   "type": "object",
   "required": ["projects"],
   "properties": {

@@ -46,5 +46,17 @@ For each finding: the **file:line**, a **concrete exploit scenario** (what an at
 realistic path. If a change reaches production data or secrets, treat prod access as opt-in —
 flag it, don't exercise it.
 
-This pass gates the merge for security-sensitive tickets the same way QA and the release gate
-do: unresolved high-severity findings block landing.
+## Verdict
+
+End with exactly one verdict — the release gate reads it by these words:
+
+- **Ship** — no unresolved high-severity findings. List what you checked; lower-severity
+  findings may ride as follow-ups.
+- **Block** — at least one unresolved high-severity finding (including any ever-committed
+  secret). List the blocking findings.
+
+A review that could not be completed returns **Block**, never Ship. The release gate requires
+this verdict only when an acceptance criterion on the ticket requires a security review;
+otherwise it records N/A. State the verdict in the running stage's report as that AC's
+evidence (the board has no in-flight verdict field; it is copied into the ticket's archive
+`evidence` when the ticket lands). A report with no verdict fails the gate.

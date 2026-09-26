@@ -2,7 +2,7 @@
  * board-core.mjs — the one true board validator.
  *
  * Pure functions, no I/O, no process.exit — so both the CLI (validate-board.mjs) and the
- * cockpit server can share the exact same integrity rules. A board is never "valid in the
+ * web dashboard server can share the exact same integrity rules. A board is never "valid in the
  * UI but invalid on the command line".
  *
  * The validator is archive-aware: a landed ticket moves from data.json to archive.json, so
@@ -215,7 +215,7 @@ export function ownershipVerdict(ticket, opts = {}) {
 /**
  * Every cross-initiative or dangling-initiative conflict a board holds against a given plan.
  *
- * ONE implementation, shared by the plan CLI's reverse preflight and the cockpit's plan-write
+ * ONE implementation, shared by the plan CLI's reverse preflight and the web dashboard's plan-write
  * route. These are the same question asked from two directions — "would this plan write break
  * the board?" — and the whole reason the preflight exists is that a second copy of a rule
  * drifts from the first. That is the defect class this module has already produced twice.
@@ -238,7 +238,7 @@ export function crossInitiativeConflicts(plan, { data = null, archivedEpics = []
   // DANGLING REFERENCES ARE CHECKED REGARDLESS OF MODE, and this is the whole reason the check
   // is not simply gated on initiativeModeActive. Deleting the LAST initiative turns the mode
   // off, so a mode-gated check would wave through every epic still pointing at it — the one
-  // removal the CLI refuses outright would become the one the cockpit performs silently.
+  // removal the CLI refuses outright would become the one the web dashboard performs silently.
   if (!initiativeModeActive(plan)) {
     const shadowed = shadowedEpicIds(board, archivedEpics);
     for (const e of board.epics ?? []) {
@@ -309,8 +309,8 @@ export function epicOwnershipVerdict(epic, plan) {
  * The verdict the orchestrator acts on: scope AND ownership, composed.
  *
  * THE SINGLE DEFINITION OF "may this ticket run". eligibleTickets filters on it, and the
- * cockpit's drawer previews with it, so the UI cannot say yes where the orchestrator says no.
- * It was briefly written out twice — once here, once by hand in the cockpit — and the copy
+ * web dashboard's drawer previews with it, so the UI cannot say yes where the orchestrator says no.
+ * It was briefly written out twice — once here, once by hand in the web dashboard — and the copy
  * diverged in two ways within a single change, so the composition itself is now a function
  * rather than a pattern each caller repeats.
  *
@@ -781,10 +781,20 @@ export function validateBoard(data, opts = {}) {
     // A shadowed archived epic is not reported at all: it is the live epic, whose own row above
     // already says everything true about it. Warning twice for one epic — once correctly, once
     // from a stale copy nothing can edit — is noise the reader cannot act on.
+    // An unassigned archived epic that PREDATES initiatives is not reported either (T-053).
+    // Plan initiatives carry no timestamp, so "predates" is read from history the archive
+    // already holds: neither the epic nor any archived ticket under it traces to an
+    // initiative-owned plan item. Such an epic cannot be edited, and its tickets resolved to no
+    // initiative before initiatives existed — a warning there has no action behind it.
     const shadowedLive = shadowedEpicIds(data, archivedEpics);
+    const items = planItems(plan);
+    const tracesOwned = (x) => (Array.isArray(x?.traces_to) ? x.traces_to : [])
+      .some((id) => (items.get(id)?.initiativeId ?? null) !== null);
     for (const e of archivedEpics) {
       if (e.sample || shadowedLive.has(e.id)) continue;
-      if (!e.initiativeId) warn(`archive: epic ${e.id} belongs to no initiative — archived tickets under it resolve to none.`);
+      const predatesInitiatives = !e.initiativeId && !tracesOwned(e) &&
+        !archived.some((t) => t.epicId === e.id && tracesOwned(t));
+      if (!e.initiativeId && !predatesInitiatives) warn(`archive: epic ${e.id} belongs to no initiative — archived tickets under it resolve to none.`);
       const v = epicOwnershipVerdict(e, plan);
       if (v.state === "unknown-initiative" || v.state === "cross-initiative") err(`archive: ${v.reason}`);
     }

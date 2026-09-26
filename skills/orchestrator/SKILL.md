@@ -1,12 +1,12 @@
 ---
 name: "orchestrator"
-description: "Start a board run: pre-flight the board and working tree, then hand the ticket to the orchestrator agent, which selects it, dispatches the pipeline in a worktree, gates it, and lands or blocks it. Use when asked to run the board, work the next ticket, or continue delivery — including via /orchestrator."
+description: "Start a board run: pre-flight the board and working tree, then hand the ticket to the orchestrator agent, which selects it, dispatches the pipeline in a worktree, gates it, and lands or blocks it. Use when asked to run the board, work the next ticket, or continue delivery — including when this skill is invoked by name."
 ---
 
 # Orchestrator (run entry point)
 
-This is the **entry point** for a board run — `/orchestrator`, "run the board", "work the next
-ticket". The loop itself lives in the **`orchestrator` agent**: it selects the ticket,
+This is the **entry point** for a board run — this skill invoked by name, "run the board", "work
+the next ticket". The loop itself lives in the **`orchestrator` agent**: it selects the ticket,
 dispatches each stage, enforces the gates, and lands or blocks. Your job here is to pre-flight,
 hand off, and report what actually happened.
 
@@ -22,30 +22,35 @@ Check these first; each one is a common cause of a wasted or destructive run.
 - **The working tree is clean** at the repo root (`git status`). Uncommitted work is carried
   into the ticket's worktree and muddies its diff. Ask before touching anything you didn't
   write.
-- **No run is already in flight.** A ticket already `in-progress` means another orchestrator
-  owns it — the loop is **one orchestrator at a time** and claiming is not atomic. Report the
-  in-flight ticket and stop rather than racing it.
+- **No unowned run is in flight.** An `in-progress` ticket that no lane of this run owns means
+  another run holds it (or one died holding it). Report it and stop rather than racing it. An
+  `in-progress` ticket a lane owns is normal in lane mode and does not block the run. Claims
+  themselves are atomic: the agent claims with `maestro ticket claim <id>` and the
+  `--expect-version` / `--expect-archive-version` / `--expect-plan-version` snapshot guard, so
+  a ticket that moved since it was read is refused, never double-claimed. A refusal exits 0,
+  so the agent claims with `--json` and proceeds only on `"claimed": true`.
 - **Delivery drift is resolved.** If the board, branch, worktree, PR, or gate evidence
-  disagrees, run `orchestration-health` first and then the `delivery-tpm` agent for a
+  disagrees, run `orchestration-health` first and then the `tpm` agent for a
   proceed-or-block directive. Do not dispatch implementation over a stale, orphaned, or
   unexpectedly active worktree. The TPM preserves it and asks the owner to choose resume,
   archive, or cleanup when that choice is not already authorized.
 - **The brief is real.** If `context.md` still has **Open questions** — commands or constraints
   left as `propose one` — resolve them first (see the `project-plan` skill). A ticket whose
   test command is unknown cannot pass a release gate.
-- **The ticket is in the plan.** Run `maestro plan status --board {{BOARD}}/data.json`. If the
-  project has a plan, a ticket may only run when its `traces_to` names a real plan item. A
-  ticket that traces to nothing, to an id the plan no longer defines, or to an `OUT-` id is
-  **out of scope**: report it and stop. Do not fix it by inventing a trace — either the plan
-  gains the requirement (`/plan-update`) or a human writes a `scope_exception` saying why this
-  runs anyway. A project with no plan yet has the gate off; say so rather than staying silent
+- **The ticket is in the plan.** Run `maestro plan gate --json --board {{BOARD}}/data.json`: it
+  returns `gating`, `inScopeIds`, and `outIds`. When `gating` is true, a ticket may only run
+  when its `traces_to` names an id in `inScopeIds`. A ticket that traces to nothing, to an id
+  the plan no longer defines, or to an `OUT-` id is **out of scope**: report it and stop. Do
+  not fix it by inventing a trace — either the plan gains the requirement (the `plan-update`
+  skill) or a human writes a `scope_exception` saying why this runs anyway. `gating: false`
+  means the project has no plan yet and the gate is off; say so rather than staying silent
   about it.
 - **Something is eligible.** If no `todo` ticket has all `depends_on` `done` and its
   `human_gate` cleared, report `idle` with the reason and stop. Never clear a human gate to
   make work eligible.
   > "Nothing to do" and "three things to do, none of them in the plan" call for opposite
   > responses from a human. If everything eligible is scope-blocked, report **that**, name the
-  > tickets, and point at `/plan-update` — never report a bare `idle`.
+  > tickets, and point at the `plan-update` skill — never report a bare `idle`.
 
 ## 2. Hand off
 
@@ -57,8 +62,8 @@ report the board's state and dispatch nothing).
 
 ## 3. Report
 
-Relay the agent's outcome verbatim in substance — `done`, `blocked`, `idle`, or `merge-failed`
-— with the ticket id, what ran, and the evidence (commit SHA, test result). Then say what's
+Relay the agent's outcome verbatim in substance — `done`, `blocked`, `idle`, `merge-failed`, or
+`aborted` — with the ticket id, what ran, and the evidence (commit SHA, test result). Then say what's
 eligible next.
 
 - **`done`** → the next run picks up whatever this unblocked. Say what that is.
@@ -66,6 +71,8 @@ eligible next.
   "try again"; a blocker is a decision for the human.
 - **`merge-failed`** → the branch and worktree still exist. Report the conflict; don't
   force-resolve it.
+- **`aborted`** → the ticket is back to `todo` and its branch is kept (a lane worktree is kept
+  too). Say so, so the next run knows it can resume from that branch.
 
 Never report a status you didn't get from the agent, and never soften one. A run reported
 `done` that didn't merge is worse than a run reported `blocked`.

@@ -1,5 +1,5 @@
 ---
-name: "delivery-tpm"
+name: "tpm"
 description: "Run delivery control for the current Maestro project, ticket, swarm, or messy worktree. Reconciles board and repository evidence into a proceed/block decision; does not implement, merge, deploy, or silently clean up work."
 ---
 

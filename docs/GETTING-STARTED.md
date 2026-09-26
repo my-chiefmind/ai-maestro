@@ -126,7 +126,7 @@ decision. Three ways to fill it in:
 - **`/plan-update`** — a section-by-section conversation. It proposes from your actual
   repository, writes what you agree to, and tells you the new percentage as it goes. You can
   also just say "add a requirement that exports are CSV" and skip the interview.
-- **The cockpit's Plan tab** — every section, editable in place.
+- **The web dashboard's Plan tab** — every section, editable in place.
 - **`maestro plan`** — the same operations from a shell. `maestro plan status` is the quick look.
 
 ### Completeness, and why it's a number
@@ -162,7 +162,7 @@ than a document.
 
 | Where | What happens to an out-of-scope ticket |
 | --- | --- |
-| `validate` / the cockpit's save button | **Warning.** The board stays valid — jot the ticket first, plan it after. |
+| `validate` / the web dashboard's save button | **Warning.** The board stays valid — jot the ticket first, plan it after. |
 | The orchestrator picking a ticket | **Refused.** Nothing runs that the plan doesn't cover. |
 
 Out of scope means: traces to nothing, traces to an id the plan doesn't define, or traces to
@@ -316,7 +316,7 @@ the same canonical `agents/` and `skills/` sources as Claude's files, so the tar
 
 ## The board — what a ticket needs
 
-`/project-plan` writes the plan and then the board for you, and the cockpit edits both with
+`/project-plan` writes the plan and then the board for you, and the web dashboard edits both with
 validated pickers — but this is the shape underneath, for when you hand-edit
 `maestro/board/data.json`.
 
@@ -362,9 +362,9 @@ node maestro/scripts/validate-board.mjs maestro/board/data.json
 
 ## Running the orchestrator
 
-Open your agentic coding tool at your **repo root** (not inside `maestro/`) and run
-**`/orchestrator`** or ask for the `orchestrator` agent by name. The skill
-pre-flights the board and your working tree, then hands off to the agent. Each run it will:
+Open your agentic coding tool at your **repo root** (not inside `maestro/`) and invoke the
+**`orchestrator`** skill (`/orchestrator` in Claude Code) or ask for the `orchestrator` agent by
+name. The skill pre-flights the board and your working tree, then hands off to the agent. Each run it will:
 
 1. Read `maestro/board/data.json` and pick the highest-priority unblocked `todo` ticket.
 2. Create a worktree + branch for it (via the `git-branch` skill).
@@ -372,11 +372,12 @@ pre-flights the board and your working tree, then hands off to the agent. Each r
 4. Land the change and archive the ticket, or file a blocker and stop.
 
 It does **one ticket per run** unless you tell it to keep going, so you stay in the loop between
-tickets. Run **one orchestrator at a time** — claiming a ticket is best-effort, not atomic.
+tickets. Claiming a ticket is atomic (`maestro ticket claim`), so two runs can never both claim the
+same ticket.
 
 ### Harness mode (optional): the orchestrate Workflow
 
-The `/orchestrator` skill is model-driven — the agent reads the method and follows it. If your
+The `orchestrator` skill is model-driven — the agent reads the method and follows it. If your
 tool supports **Workflow scripts** (Claude Code's Workflow tool) you can opt into a generated
 harness where the control flow is deterministic code instead: fix loops capped at 3, security
 and release gate verdicts enforced at merge (fail closed), one writer lease at a time, and a
@@ -399,14 +400,17 @@ tickets are archived (the land-and-archive convention), never left `done` on the
 
 ## The visual board
 
-The [cockpit](../README.md#the-cockpit) is the one part that runs a server, and it's optional:
+The kit itself runs no server. The visual board is the separate
+[web dashboard](../README.md#web-dashboard) package, `@mychiefmind/ai-maestro-web-ui`, and it's optional:
 
 ```bash
-cd maestro && npm run board   # installs the cockpit's deps if needed, then → http://localhost:5273
+cd maestro && npm run board   # runs npx @mychiefmind/ai-maestro-web-ui from the project root → http://127.0.0.1:3021
+npx ai-maestro-web-ui         # …or run it directly from the project root
 ```
 
-If you keep boards open for more than one project, the ports move rather than collide: 5273
-and 4600 are only the starting points, and the board prints the URL it settled on.
+If you keep boards open for more than one project, the ports move rather than collide: 3021
+is only the starting point, and the dashboard prints the URL it settled on.
+`npx ai-maestro-web-ui add <path>` registers more projects with it.
 
 ## Keeping it clean
 
@@ -444,8 +448,8 @@ The same command covers the other install shapes:
 | Git clone | `node <kit>/bin/cli.mjs update` — pulls the clone, then re-renders |
 
 For a **shared clone** used by several repos, `update` pulls once and prints the re-render
-command to run per project. The cockpit UI's dependencies are removed with the old kit files
-and reinstall on the next `npm run board`.
+command to run per project. A `cockpit/` folder left behind by an older release is no longer
+used — `update` leaves it alone and you can delete it; `npm run board` now runs the web dashboard.
 
 ## Managing several projects
 
@@ -491,7 +495,7 @@ moved, or read on its own, without rewriting anyone's paths:
 ```
 
 Project **names must be unique across the whole tree** — every tool keys on them, and the
-cockpit matches them exactly to decide which board a write lands on, so a duplicate is an error
+web dashboard matches them exactly to decide which board a write lands on, so a duplicate is an error
 rather than a race. Include cycles are detected and reported with the chain that formed them.
 
 A registry that is missing or malformed is a **hard error**, never an empty list: "the list

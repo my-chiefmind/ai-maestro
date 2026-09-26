@@ -6,9 +6,15 @@ description: "Read-only diagnostic for a stuck or suspicious board run: in-progr
 # Orchestration Health
 
 A read-only diagnostic over the orchestration state: the board (`{{BOARD}}/data.json` +
-`archive.json`), the per-ticket worktrees (`../.maestro-wt/*`), and their branches. It reports
+`archive.json`), every git worktree (`git worktree list --porcelain`), and their branches. Worktrees are
+matched to tickets **by the branch they have checked out** (branch names carry the ticket id,
+per the `git-branch` skill), never by directory name: a single-ticket run puts its worktree at
+`../.maestro-wt/<ticket-id>`, but a lane worktree (see `maestro lanes`) hosts a queue of tickets
+under one directory, so its path names no ticket. It reports
 inconsistencies and recommends fixes; it **never** changes board state, worktrees, or git.
-Apply remediations by hand or through the orchestrator — not from here.
+Apply remediations through `maestro ticket ...` (board changes), the `worktree-cleanup` skill
+(worktrees), or the `tpm` skill (anything needing a decision) — not from here, and never by
+editing the board files.
 
 ## Checks
 
@@ -16,29 +22,39 @@ Run all checks. Classify each finding as **ERROR** (blocks a safe run) or **WARN
 
 ### 1. Claims vs. reality
 
-The kit's loop is one orchestrator at a time, claiming by `status: in-progress` — so a claim
-with nothing behind it poisons every later run (the orchestrator skips the ticket forever).
+Work is claimed by `status: in-progress`, whether by a single run or by one of several lanes
+running in parallel — so a claim with nothing behind it poisons every later run (the scheduler
+skips the ticket forever).
 
-- Every `in-progress` ticket should have a live worktree (`../.maestro-wt/<ticket-id>`) or a
-  branch with commits newer than the claim. A claim with neither is an abandoned run —
-  **ERROR**; remediation: reset the ticket to `todo` (or `blocked` with the reason) so it
-  becomes eligible again.
+- Every `in-progress` ticket should have a branch for its id — checked out in some worktree, or
+  with commits newer than the claim. A claim with **no branch and no worktree** at all is an
+  abandoned run — **ERROR**; remediation: return it to `todo` (or `blocked` with the reason)
+  with `maestro ticket ...`, never by editing the board file.
+- A claim that looks stale but **still has a branch or worktree** is not safe to reset: it may
+  hold commits or uncommitted work. **ERROR**; remediation: hand it to the `tpm` skill (or the
+  owner) to decide resume, archive, or cleanup. Don't recommend resetting it to `todo`.
 - An `in-progress` ticket whose branch has merged to the default branch is a run that landed
   but never archived — **ERROR**; remediation: finish the land step (evidence + move to
   `archive.json`, see `land-and-archive`).
 
 ### 2. Orphaned and stale worktrees
 
-- Every directory under `../.maestro-wt/` should map to an active (`in-progress`) ticket. A
-  worktree for a `done`/archived ticket is leftover from a landed run — **WARNING**; safe to
-  clean up (see `worktree-cleanup`). A worktree for a ticket that doesn't exist on the board
-  at all is orphaned — **WARNING**.
+- Every worktree's checked-out branch should map to an active (`in-progress`) ticket. A
+  **lane** worktree is valid even between tickets — detached, or on a branch whose ticket just
+  landed — while the lane plan (`maestro lanes`) or a running swarm still has tickets queued on
+  it; don't flag it as orphaned.
+- A non-lane worktree whose branch belongs to a `done`/archived ticket is leftover from a
+  landed run — **WARNING**; clean it up per `worktree-cleanup`. For a lane worktree the same
+  finding means only the merged branch is left to delete — the worktree stays.
+- A worktree whose branch names no ticket on the board or in the archive is orphaned —
+  **WARNING**; route it to the `tpm` skill or its owner rather than removing it.
 - A worktree whose branch has no commits beyond its base is an empty shell — **WARNING**.
 
 ### 3. Stuck and under-explained tickets
 
 - An `in-progress` ticket whose branch has had no new commits for a long stretch is
-  potentially stuck — **WARNING**; inspect the worktree for a failed stage before resuming.
+  potentially stuck — **WARNING**; inspect the worktree for a failed stage, then route it to the
+  `tpm` skill or the owner for a resume/split/cleanup decision rather than resetting it.
 - A `blocked` ticket with no blocker ticket and no recorded reason is unexplained —
   **WARNING**; the next human to read the board can't tell what decision it's waiting on.
 

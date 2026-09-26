@@ -117,7 +117,7 @@ Write **one markdown file** into the board's reports folder:
 `{{BOARD}}/reports/repo-audit-<slug>-<YYYY-MM-DD>.md`
 
 The slug is the repo's directory name, lowercased. Create the folder if absent. That folder is
-flat and is what the cockpit's Reports tab lists, so **don't nest reports in a subfolder** — they
+flat and is what the web dashboard's Reports tab lists, so **don't nest reports in a subfolder** — they
 would stop being visible. If a report for the same repo and date exists, overwrite it; older
 dates are kept as history.
 

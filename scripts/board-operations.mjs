@@ -198,7 +198,7 @@ function moveToArchive(ctx, { id, status, evidence, doneAt, force = false, dropp
     const epic = find(ctx.data.epics, archived.epicId); if (epic) ctx.archive.epics.push(epic);
   }
   ctx.archive.tickets.push(archived);
-  return { data: ctx.data, archive: ctx.archive, result: { id, status, dependents }, human: `${id} archived as ${status}` };
+  return { data: ctx.data, archive: ctx.archive, writeFirst: "archive", result: { id, status, dependents }, human: `${id} archived as ${status}` };
 }
 
 export function archiveTicketOperation(ctx, { id, evidence, status = "done", doneAt } = {}) {
@@ -211,4 +211,62 @@ export function dropTicketOperation(ctx, { id, reason, status = "wont-do", force
   input(typeof reason === "string" && reason.length, "Drop reason is required.", { field: "reason" });
   input(ARCHIVE_ONLY_STATUSES.includes(status), `status must be one of ${ARCHIVE_ONLY_STATUSES.join(", ")}.`, { field: "status" });
   return moveToArchive(ctx, { id, evidence: reason, status, force, dropping: true });
+}
+
+/**
+ * Fields only an archived ticket carries — exactly what moveToArchive adds on the way out
+ * (`evidence`, which also holds a drop's reason, and `done_at`), plus the camelCase `doneAt`
+ * spelling hand edits have produced. Status is overwritten rather than stripped.
+ */
+export const ARCHIVE_ONLY_FIELDS = ["evidence", "done_at", "doneAt"];
+
+/** moveToArchive in reverse: one ticket from archive.tickets back to data.tickets. */
+export function unarchiveTicketOperation(ctx, { id, status = "review", withEpic = false } = {}) {
+  input(STATUSES.includes(status) && status !== "done",
+    `"${status}" is not a restorable status. Use one of: ${STATUSES.filter((s) => s !== "done").join(", ")}.`, { field: "status" });
+  const index = (ctx.archive.tickets ?? []).findIndex((ticket) => ticket.id === id);
+  if (index < 0) throw new BoardNotFoundError(`Ticket ${id} is not in the archive.`, { id, kind: "ticket" });
+  if (find(ctx.data.tickets, id)) throw new BoardDuplicateError(`Ticket ${id} is already on the active board.`, { id, kind: "ticket" });
+  const [archived] = ctx.archive.tickets.splice(index, 1);
+  const restored = { ...archived, status };
+  for (const field of ARCHIVE_ONLY_FIELDS) delete restored[field];
+  ctx.data.epics ??= []; ctx.data.tickets ??= [];
+  let restoredEpic = null;
+  if (restored.epicId && !find(ctx.data.epics, restored.epicId)) {
+    const epic = find(ctx.archive.epics, restored.epicId);
+    if (epic) {
+      input(withEpic, `Ticket ${id}'s epic ${restored.epicId} exists only in the archive. Pass --with-epic to restore it too.`,
+        { field: "epicId", epicId: restored.epicId });
+      // Copy, not move: other archived tickets still resolve their epic through archive.epics.
+      ctx.data.epics.push({ ...epic }); restoredEpic = epic.id;
+    }
+  }
+  ctx.data.tickets.push(restored);
+  // The ticket moves INTO data.json, so mutateBoard writes it first (T-063).
+  return { data: ctx.data, archive: ctx.archive, writeFirst: "data", result: { id, status, restoredEpic },
+    human: `${id} restored as ${status}${restoredEpic ? ` with epic ${restoredEpic}` : ""}` };
+}
+
+/**
+ * Retire an epic with no live tickets: move it from data.epics to archive.epics. Archiving a
+ * ticket may already have left a shadow copy of the epic there; the live copy replaces it so the
+ * archive holds exactly one entry, carrying the epic's latest fields (initiativeId included).
+ */
+export function archiveEpicOperation(ctx, { id } = {}) {
+  const index = (ctx.data.epics ?? []).findIndex((epic) => epic.id === id);
+  if (index < 0) {
+    const archived = Boolean(find(ctx.archive.epics, id));
+    throw new BoardNotFoundError(`Epic ${id} is not on the active board${archived ? " (it is already archived)" : ""}.`,
+      { id, kind: "epic", archived });
+  }
+  const live = (ctx.data.tickets ?? []).filter((ticket) => ticket.epicId === id).map((ticket) => ticket.id);
+  input(!live.length, `Epic ${id} still has live tickets: ${live.join(", ")}. Archive, drop or move them first.`,
+    { field: "id", tickets: live });
+  const [epic] = ctx.data.epics.splice(index, 1);
+  ctx.archive.epics ??= []; ctx.archive.tickets ??= [];
+  const shadow = ctx.archive.epics.findIndex((e) => e.id === id);
+  if (shadow >= 0) ctx.archive.epics[shadow] = epic; else ctx.archive.epics.push(epic);
+  // The epic moves INTO archive.json, so mutateBoard writes it first (T-063).
+  return { data: ctx.data, archive: ctx.archive, writeFirst: "archive",
+    result: { id, replacedShadow: shadow >= 0 }, human: `epic ${id} archived` };
 }

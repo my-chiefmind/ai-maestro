@@ -15,7 +15,7 @@ receives and what it produces. The orchestrator wires them together per the tick
 | `docs` | [technical-writer](../agents/technical-writer.md) | Writes the document a ticket asks for, when the document *is* the deliverable. | Ticket + plan | A branch with the document |
 | `qa` | [qa](../agents/qa.md) | Independent review of the diff vs. acceptance criteria. | A branch + the ticket | Pass, or a specific list of defects |
 | `pd` | [principal-delivery](../agents/principal-delivery.md) | Final delivery validation and landing decision. | A reviewed branch | Merge, or a blocker with a reason |
-| `tpm` | [delivery-tpm](../agents/delivery-tpm.md) | Reconciles delivery reality and enforces ticket readiness/WIP; it does not implement, QA, or land. | Board + ticket + repository state | A proceed-or-block delivery directive |
+| `tpm` | [tpm](../agents/tpm.md) | Reconciles delivery reality and enforces ticket readiness/WIP; it does not implement, QA, or land. | Board + ticket + repository state | A proceed-or-block delivery directive |
 
 One agent sits outside the pipeline — it answers a question about a repo rather than advancing
 a ticket, so it takes no `agent_plan` slot:
@@ -51,7 +51,7 @@ every healthy ticket.
   blocked ticket with live work is delivery drift; it is never safe to silently recreate or
   delete it.
 
-Use the `$delivery-tpm` skill (or `/delivery-tpm` in Claude) to run this assessment against the
+Use the `$tpm` skill (or `/tpm` in Claude) to run this assessment against the
 current board, a named ticket, swarm readiness, or a messy worktree. The `tpm` agent-plan stage
 is the ticket-level handoff that follows a proceed decision.
 

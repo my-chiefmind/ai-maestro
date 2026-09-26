@@ -1,6 +1,6 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.6.7",
+  "version": "0.6.9",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
@@ -37,11 +37,8 @@
     "!board/application-usage.jsonl",
     "!board/specs",
     "!board/reports",
-    "cockpit",
-    "!cockpit/node_modules",
-    "!cockpit/dist",
-    "!cockpit/.backups",
     "docs",
+    "!docs/RELEASING.md",
     "SECURITY.md",
     "VERSION"
   ],
@@ -58,9 +55,7 @@
     "sync": "node render/sync.mjs --project .",
     "swarm": "node scripts/swarm-config.mjs",
     "dev": "npm run board",
-    "preboard": "node scripts/cockpit-install.mjs",
-    "board": "npm --prefix cockpit run dev",
-    "cockpit:install": "node scripts/cockpit-install.mjs --force"
+    "board": "npx --yes @mychiefmind/ai-maestro-web-ui"
   },
   "keywords": [
     "ai-agents",

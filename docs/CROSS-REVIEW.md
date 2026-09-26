@@ -8,7 +8,7 @@ GitHub pull request as the handoff between them.
 
 ## Setting it up
 
-Four optional ticket fields are set from the cockpit's ticket drawer (Dev / Reviewer pickers)
+Four optional ticket fields are set from the web dashboard's ticket drawer (Dev / Reviewer pickers)
 or through the guarded writer:
 
 ```sh
@@ -50,7 +50,7 @@ literal model id via `codex exec -m`. See [MODEL-ROUTING.md](./MODEL-ROUTING.md)
 
 `maestro run` refuses to create or merge a PR for a ticket with no test command — either the
 ticket's own `testCmd`, or an area default at `config.orchestrator.testCmd.<area>`. Set it from
-the cockpit drawer's "Test command" field, or:
+the web dashboard drawer's "Test command" field, or:
 
 ```sh
 maestro ticket set-testcmd T-042 --cmd "npm test"
@@ -97,7 +97,7 @@ in command history or process arguments, and every non-dry run requires it.
 
 Merging is never automatic unless you pass `--auto-merge` — a hard-to-reverse, shared-branch
 action stays confirm-first by default, independent of whatever the reviewer decided. Every
-board mutation goes through the same locked, validated write path as the CLI and cockpit use
+board mutation goes through the same locked, validated write path as the CLI and web dashboard use
 elsewhere (`scripts/board-write.mjs`), so a run that fails partway leaves the ticket in a state
 you can inspect. Because the PR is found by branch name rather than kept only in memory,
 `--resume` on an already `in-progress`/`review` ticket picks up its existing PR instead of

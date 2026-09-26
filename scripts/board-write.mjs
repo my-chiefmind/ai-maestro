@@ -13,6 +13,8 @@
  *   maestro ticket set-status <id> <status> [coordination flags]
  *   maestro ticket block <id> --blocker-id <id> --name <n> --desc <d> [ticket fields]
  *   maestro ticket archive <id> --evidence <text> [--done-at YYYY-MM-DD]
+ *   maestro ticket unarchive <id> [--status <s>] [--with-epic]
+ *   maestro ticket archive-epic <id>
  *   maestro ticket version
  *
  * Common flags:
@@ -37,7 +39,7 @@ import { readPlanForBoard } from "./plan-io.mjs";
 import { planItems, planIsGating, scopeVerdict, TRACEABLE_PREFIXES, initiativeMap } from "./plan-core.mjs";
 import {
   createTicket, editTicket, setTicketStatus, setTicketEpic, createEpic, editEpic,
-  archiveTicket, dropTicket, getBoardVersion, readBoard,
+  archiveTicket, dropTicket, unarchiveTicket, archiveEpic, getBoardVersion, readBoard,
   getTicketEligibility, listTicketEligibility, claimTicket,
   BoardConflictError as PublicConflictError, BoardLockError as PublicLockError,
 } from "./board-api.mjs";
@@ -48,13 +50,13 @@ const KIT_ROOT = resolve(__dir, "..");
 
 const argv = process.argv.slice(2);
 const OPS = new Set([
-  "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "version",
+  "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "unarchive", "archive-epic", "version",
   "add", "edit", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop", "eligibility", "claim",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
 // add-epic) or take a file path (import), and must not be forced through the id guard below.
-const OPS_TAKING_ID = new Set(["edit", "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "retrace", "drop", "edit-epic", "claim"]);
+const OPS_TAKING_ID = new Set(["edit", "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "unarchive", "archive-epic", "retrace", "drop", "edit-epic", "claim"]);
 
 const flag = (name, fallback = null) => {
   const i = argv.indexOf(`--${name}`);
@@ -102,6 +104,8 @@ function usage() {
     maestro ticket block <id>                 mark blocked and file a blocker ticket
     maestro ticket archive <id>               land-and-archive a finished ticket
     maestro ticket drop <id>                  archive a ticket that will never be done
+    maestro ticket unarchive <id>             restore a mistakenly archived ticket to the board
+    maestro ticket archive-epic <id>          retire an epic that has no live tickets
     maestro ticket version                    print the board's content version
     maestro ticket eligibility [id]           read canonical dispatch eligibility (all or one)
     maestro ticket claim <id>                 atomically claim if still eligible
@@ -169,6 +173,17 @@ function usage() {
   drop flags:
     --reason <text>  (required)   --status <${ARCHIVE_ONLY_STATUSES.join("|")}>   --force
 
+  unarchive flags:
+    --status <s>  live status to restore as (default review; never done or a terminal state)
+    --with-epic   also restore the ticket's epic when it survives only in archive.json
+    --expect-archive-version <v>  refuse if archive.json moved since you read it
+    Drops archive-only fields (evidence / drop reason, done_at).
+
+  archive-epic flags:
+    --expect-archive-version <v>  refuse if archive.json moved since you read it
+    Refuses while any live ticket belongs to the epic. A shadow copy already in
+    archive.json (left by archiving its tickets) is replaced, never duplicated.
+
   Common: --board --archive --expect-version --agents --config --json --dry-run
 
   Exit 2 means the board moved or the lock was busy — re-read and retry. Exit 1 means the
@@ -232,7 +247,7 @@ if (OPS_TAKING_ID.has(op) && !ticketId) die(`${op} needs an id: maestro ticket $
 
 // Public operations are the implementation used by both library consumers and the CLI.
 // Keep this adapter limited to translating argv into object input and rendering the result.
-const PUBLIC_OPS = new Set(["add", "edit", "set-status", "set-epic", "add-epic", "edit-epic", "archive", "drop", "claim"]);
+const PUBLIC_OPS = new Set(["add", "edit", "set-status", "set-epic", "add-epic", "edit-epic", "archive", "drop", "unarchive", "archive-epic", "claim"]);
 if (PUBLIC_OPS.has(op)) {
   const common = {
     dataPath, archivePath, expectVersion: flag("expect-version") ?? undefined,
@@ -293,6 +308,13 @@ if (PUBLIC_OPS.has(op)) {
       call = editEpic({ ...common, id: ticketId, changes, force: has("force") });
     } else if (op === "archive") call = archiveTicket({ ...common, id: ticketId,
       evidence: flag("evidence") ?? undefined, status: flag("status", "done"), doneAt: flag("done-at") ?? undefined,
+    });
+    else if (op === "unarchive") call = unarchiveTicket({ ...common, id: ticketId,
+      status: flag("status", "review"), withEpic: has("with-epic"),
+      expectArchiveVersion: flag("expect-archive-version") ?? undefined,
+    });
+    else if (op === "archive-epic") call = archiveEpic({ ...common, id: ticketId,
+      expectArchiveVersion: flag("expect-archive-version") ?? undefined,
     });
     else call = dropTicket({ ...common, id: ticketId, reason: flag("reason") ?? undefined,
       status: flag("status", "wont-do"), force: has("force"),
@@ -713,7 +735,7 @@ try {
     mutate: (ctx) => {
       const out = RUN[op](ctx);
       human = out.human;
-      return { data: out.data, archive: out.archive, result: out.result };
+      return { data: out.data, archive: out.archive, writeFirst: out.writeFirst, result: out.result };
     },
   });
 

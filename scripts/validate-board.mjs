@@ -11,7 +11,7 @@
  * Exit code 0 = valid, 1 = problems found. No third-party dependencies.
  */
 
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync, readdirSync, realpathSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { validateBoard, agentFileToCode } from "./board-core.mjs";
@@ -42,40 +42,101 @@ function readJSON(p, fallback) {
 }
 
 /**
- * The codes a ticket's `agent_plan` may legally reference.
+ * The codes a ticket's `agent_plan` may legally reference (T-009).
  *
- * The PROJECT'S ROSTER WINS. `config.json` lists the agents this project
- * actually runs, and a project narrows that list on purpose — dropping
- * `devops` from the roster means work must not be routed to devops. Reading
- * the kit's `agents/` directory instead answers a different question ("what
- * agents does the kit ship?") and gets both directions wrong:
+ * A code is only dispatchable if an agent FILE backs it, so the base set is the installed
+ * agent files: `--agents <dir>` if given, else the project's rendered `.claude/agents/`
+ * (beside config.json, honouring `outDir`), else the kit's `agents/`.
  *
- *   - false NEGATIVE: a plan routed to an agent the project dropped passes
- *     validation, then has nowhere to run;
- *   - false POSITIVE: a project whose roster the kit doesn't ship fails
- *     validation on a perfectly good board.
+ * The PROJECT'S ROSTER then narrows and orders that set. Dropping `devops` from the roster
+ * means work must not be routed to devops even if the file is still installed; and a roster
+ * entry with no file behind it is an error — it names an agent that cannot run. An installed
+ * file the roster leaves out is only a warning. With no config or an empty roster the
+ * directory scan is the whole answer, as before.
  *
- * The cockpit already answers this correctly — see cockpit/server/index.mjs,
- * `config.roster.map(agentFileToCode)` — so before this fix the CLI and the UI
- * could disagree about whether the same board was valid. The directory scan
- * stays as the fallback for a board with no config beside it (and `--agents`
- * still overrides everything, for validating a board that lives elsewhere).
+ * Legacy roster names render/sync.mjs renames (`delivery-tpm` -> `tpm`) resolve to the new
+ * file with a warning to rename, rather than an error.
  */
-function loadAgentCodes(config) {
-  if (agentsDirExplicit) return codesFromDir();
-  if (Array.isArray(config?.roster) && config.roster.length > 0) {
-    return new Set(config.roster.map((name) => agentFileToCode(String(name).replace(/\.md$/, ""))));
-  }
-  return codesFromDir();
+const LEGACY_ROSTER_NAMES = { "delivery-tpm": "tpm" };
+
+/**
+ * Where the installed agent files live, and whether that is the project's own rendered set
+ * (only then is an off-roster file worth a warning — the kit catalogue always ships more
+ * agents than a project adopts). Codex-only renders have `.codex/agents/*.toml`, same basenames.
+ */
+/** realpath when the path exists (so /tmp and /private/tmp compare equal), else the path as given. */
+function realOrSelf(p) {
+  try { return realpathSync(p); } catch { return p; }
 }
 
-function codesFromDir() {
-  if (!existsSync(agentsDir)) return null;
-  return new Set(
-    readdirSync(agentsDir)
-      .filter((f) => f.endsWith(".md"))
-      .map((f) => agentFileToCode(f.replace(/\.md$/, "")))
-  );
+function installedAgentsDir(config, configPath) {
+  const kit = join(KIT_ROOT, "agents");
+  if (agentsDirExplicit) {
+    const dir = resolve(agentsDir);
+    return { dir, ext: ".md", rendered: realOrSelf(dir) !== realOrSelf(kit) };
+  }
+  if (config && configPath) {
+    const out = resolve(dirname(configPath), typeof config.outDir === "string" ? config.outDir : ".");
+    for (const [sub, ext] of [[".claude", ".md"], [".codex", ".toml"]]) {
+      const rendered = join(out, sub, "agents");
+      if (existsSync(rendered)) return { dir: rendered, ext, rendered: true };
+    }
+  }
+  return { dir: kit, ext: ".md", rendered: false };
+}
+
+/** Map of code -> file name for every agent file in `dir`, or null if the dir is missing. */
+function filesByCode(dir, ext = ".md") {
+  if (!existsSync(dir)) return null;
+  const map = new Map();
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(ext)).sort()) {
+    map.set(agentFileToCode(f.slice(0, -ext.length)), f);
+  }
+  return map;
+}
+
+/** Project-local agents render/sync.mjs overlays onto the kit's (its projAgentNames):
+ * `custom/agents/` and, outside the kit itself, the legacy `<project>/agents/`. */
+function projectOverlayCodes(configPath) {
+  const codes = new Set();
+  if (!configPath) return codes;
+  const project = resolve(dirname(configPath));
+  const dirs = [...(project === KIT_ROOT ? [] : [join(project, "agents")]), join(project, "custom", "agents")];
+  for (const d of dirs) for (const code of filesByCode(d)?.keys() ?? []) codes.add(code);
+  return codes;
+}
+
+function loadAgentCodes(config, configPath) {
+  const { dir, ext, rendered } = installedAgentsDir(config, configPath);
+  const installed = filesByCode(dir, ext);
+  const overlay = projectOverlayCodes(configPath);
+  const errors = [];
+  const warnings = [];
+  if (!Array.isArray(config?.roster) || config.roster.length === 0) {
+    return { codes: installed ? new Set(installed.keys()) : null, errors, warnings };
+  }
+  if (!installed && overlay.size === 0) {
+    errors.push(`No installed agents directory at ${dir} — cannot check the roster against agent files.`);
+    return { codes: new Set(), errors, warnings };
+  }
+  const codes = new Set();
+  for (const entry of config.roster) {
+    let name = String(entry).replace(/\.md$/, "");
+    if (LEGACY_ROSTER_NAMES[name]) {
+      warnings.push(`config.roster: "${name}" is a legacy name — rename it to "${LEGACY_ROSTER_NAMES[name]}".`);
+      name = LEGACY_ROSTER_NAMES[name];
+    }
+    const code = agentFileToCode(name);
+    if (!installed?.has(code) && !overlay.has(code)) {
+      errors.push(`config.roster: "${entry}" has no installed agent file (${name}${ext}) in ${dir} — it cannot be dispatched.`);
+      continue;
+    }
+    codes.add(code);
+  }
+  if (rendered && installed) for (const [code, file] of installed) {
+    if (!codes.has(code)) warnings.push(`Installed agent file ${file} (${dir}) is not on the roster — it will not be dispatched.`);
+  }
+  return { codes, errors, warnings };
 }
 
 function main() {
@@ -120,17 +181,20 @@ function main() {
   let planError = null;
   try { plan = readPlanForBoard(boardPath); } catch (e) { planError = e.message; }
 
+  const agents = loadAgentCodes(config, configExists ? configPath : null);
   const { errors, warnings, eligibleCount } = validateBoard(board, {
     archived: archive.tickets ?? [],
     archivedEpics: archive.epics ?? [],
-    agentCodes: loadAgentCodes(config),
+    agentCodes: agents.codes,
     config,
     plan,
   });
+  errors.unshift(...agents.errors);
   if (config) errors.push(...validateSwarmConfig(config));
 
   const pre = [];
   if (configWarning) pre.push(configWarning);
+  pre.push(...agents.warnings);
   if (planError) pre.push(`${planError} — the scope gate is skipped until it parses.`);
 
   finish(errors, [...pre, ...warnings], eligibleCount, plan, board, archive, config);
