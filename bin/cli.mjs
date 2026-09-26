@@ -27,6 +27,7 @@ import { createHash } from "crypto";
 import { readRegistry, findKitDir } from "../scripts/registry.mjs";
 import { tryBackup } from "../scripts/board-backup.mjs";
 import { emptyPlan, renderPlanMd, planCompleteness } from "../scripts/plan-core.mjs";
+import { repairRootPackageScripts } from "../scripts/root-scripts.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -1319,6 +1320,16 @@ async function update(args) {
     console.log(`\n  ${C.yellow("↪")} moved ${rescued.length} file(s) of your own into ${kitRel}/${CUSTOM_DIR}/ — they're safe there, and every future update leaves them alone:`);
     for (const r of rescued) console.log(`     ${r.from}  →  ${r.to}   ${C.dim(`(${r.why})`)}`);
     console.log(C.dim(`     custom/ overrides the kit file of the same name, so they keep working as before.`));
+  }
+
+  // Root package.json scripts from older kit versions ran the node_modules CLI, which drifts
+  // from the vendored kit this command just refreshed — and breaks a `npm run check` commit hook.
+  const projectRoot = projectRootForKit(kit);
+  const rootKitRel = relative(projectRoot, kit).split(sep).join("/");
+  const scriptFixes = repairRootPackageScripts(projectRoot, rootKitRel);
+  if (scriptFixes.length) {
+    console.log(`  ✓ repaired ${scriptFixes.length} outdated kit script(s) in package.json:`);
+    for (const f of scriptFixes) console.log(`     ${f.name}: ${f.from}  →  ${f.to}`);
   }
 
   await reconcileRoster(kit, kitRel, args, preRefreshLock);
