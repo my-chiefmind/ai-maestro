@@ -10,9 +10,80 @@ sources and never confuses them:
 | --- | --- | --- | --- |
 | **Measured** | `board/telemetry.jsonl`, written by `maestro run` | Exact stage duration, exact cycle time, and provider-reported token counts | It is a measurement |
 | **Reconstructed** | Your local Claude Code and Codex session transcripts | Historical time and tokens for work already done | Inferred, with a stated confidence, and labelled *estimated* everywhere it appears |
+| **Recorded** | `board/usage.jsonl`, appended through `appendUsage()` (public `./usage` API) | Provider-reported per-turn token counts captured from agent sessions — count-only, no prompt or tool text | Exact counts per turn, labelled *recorded*; a session already measured by telemetry is not counted again, and a recorded session is skipped by the transcript scan |
 | **Application** | `board/application-usage.jsonl`, appended through the public API | Exact provider counters for product/API calls such as DeepSeek | Exact token counts; never presented as agent runs or working time |
 
-Ticket totals are **derived** from both. Nothing is written onto the ticket record itself.
+Ticket totals are **derived** from all of them.
+
+**The recorded ledger is committed.** `board/usage.jsonl` is appended from many branches and
+worktrees, so it is merged with `merge=union` — `sync.mjs` adds the rule
+`<board>/usage.jsonl merge=union` to your repo's `.gitattributes` if it is missing (it never
+rewrites the file). A union merge can duplicate a line; every reader dedups by the record's
+`key` (`runtime:sessionId:turnId`), so a duplicate is never counted twice. Recording is on by
+default; set `"usage": { "record": false }` in `config.json` to turn it off. Import progress is
+kept in `board/usage-cursor.json`. Nothing is written onto the ticket record itself.
+
+### Importing transcripts: `maestro usage sync`
+
+```bash
+maestro usage sync                          # Claude Code + Codex, only sessions that changed
+maestro usage sync --runtime codex          # claude | codex | all (default all)
+maestro usage sync --session <id> --transcript <path>   # one transcript, e.g. from a hook
+maestro usage sync --all                    # ignore the cursor and re-read every session
+maestro usage sync --exclude-root <dir>     # a nested project whose sessions are not ours
+```
+
+`sync` reads your local Claude Code (`~/.claude/projects`) and Codex (`~/.codex/sessions`)
+transcripts for this project's roots, attributes each turn to a ticket (the `feat/T-xxx` branch
+is high confidence; otherwise the same command/mention heuristics as the report), and appends
+count-only records to `board/usage.jsonl`. It uses the same token binning as the report: bins
+are disjoint (Codex `input_tokens` includes cached input, which is subtracted), reasoning is
+inside output, and `total = input + output + cacheRead + cacheWrite`. Codex usage comes from
+per-turn `last_token_usage` (a repeated running total is not a new turn); `rate_limits` is ignored.
+
+- **Complete per session.** When any file of a session changed, every turn of that session is
+  re-offered and deduplicated by key, so a partially recorded session never hides turns
+  from the report (which skips a recorded session in the transcript scan).
+- **Idempotent.** A second run writes nothing — ledger and cursor bytes are unchanged.
+- **Scoped.** Sessions from other repos and from `--exclude-root` nested projects are ignored.
+- **Private.** No prompt, response or tool text and no paths are stored; cursor ids are
+  `runtime:sessionId:file`.
+- **Safe to run concurrently** (board lock) and bounded (transcripts over 256 MB are skipped
+  and counted in the summary). With `"usage": { "record": false }` it writes nothing and says so.
+
+### Automatic recording: Claude Code hooks
+
+**Recording is ON by default.** `maestro sync` (and therefore `setup` and `update`, which run
+it) adds three hooks to the project's `.claude/settings.json` — `Stop`, `SubagentStop` and
+`SessionEnd`. Each reads the hook's stdin JSON (`session_id`, `transcript_path`, `cwd`) and runs
+the equivalent of `maestro usage sync --runtime claude --session <id> --transcript <path>`
+using `scripts/usage-hook.mjs` from the capsule-local kit (`./maestro/scripts/…` when vendored,
+`./node_modules/@mychiefmind/ai-maestro/scripts/…` when installed as a package). It never uses
+`npx` and never touches the network; if neither local path exists, sync warns and adds no hooks.
+
+- **What is stored:** counts only — the same count-only records as `maestro usage sync` (token
+  bins, model id, branch, ticket id, timestamps). No prompt, response, tool text or path.
+- **Committed:** `board/usage.jsonl` is committed and merged with `merge=union`
+  (`.gitattributes`, added by sync); readers dedup by key.
+- **Never blocks the session:** the hook always exits 0 and prints nothing; the sync runs in a
+  child process killed after 4 s, and the settings entry carries `"timeout": 5`. If another sync
+  holds the board lock, the run is skipped (the next hook picks the turns up). Transcripts over
+  64 MB are left to a manual `maestro usage sync`. Errors go to `board/.usage-hook.log` as one
+  line of timestamp, event and error class — no prompts or paths. Sync adds that log to the project's `.gitignore`.
+- **Subagents:** `SubagentStop` also records the subagent's own transcript
+  (`agent_transcript_path`), labelled with its agent type.
+- **Formatting:** sync rewrites `.claude/settings.json` as 2-space JSON only when the hooks
+  change; comments/formatting of that file are not preserved on such a write.
+- **Your hooks are kept.** Existing entries are never changed or reordered; Maestro's entries
+  are appended after them and marked with `# ai-maestro:usage-hook` so a re-sync replaces them
+  in place (no duplicates) and an opt-out removes exactly them.
+- **Codex** has no stable hooks. The `SessionEnd` hook also runs a cursor-based
+  `maestro usage sync --runtime codex` inside the same time box — cheap, because unchanged
+  rollouts are skipped by size. Codex-only users should run `maestro usage sync` themselves
+  (e.g. before `maestro usage`).
+
+**Opting out:** set `"usage": { "record": false }` in `config.json` and run `maestro sync`. The
+Maestro hooks are removed (yours stay), and until you re-sync the hook command is a no-op.
 
 ---
 

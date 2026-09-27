@@ -113,24 +113,31 @@ export function distillCodexRollout(filePath) {
     } else if (rec?.type === "event_msg" && rec.payload?.type === "token_count") {
       const raw = rec.payload?.info?.total_token_usage;
       const usage = normaliseCodexUsage(raw);
-      if (usage) cumulative.push({ ts, usage, cwd, branch, sessionId, provider, model, mentions: currentMentions, commands: currentCommands });
+      // Per-turn delta as reported; rate_limits and everything else in the event is ignored.
+      const last = normaliseCodexUsage(rec.payload?.info?.last_token_usage);
+      if (usage) cumulative.push({ ts, usage, last, cwd, branch, sessionId, provider, model, mentions: currentMentions, commands: currentCommands });
     }
   }
   if (direct.length) return direct;
   /** @type {CodexUsage | null} */ let prev = null;
   return cumulative.flatMap((e) => {
     let usage;
-    if (!prev) usage = e.usage;
+    if (!prev) usage = e.last || e.usage;
     else {
       const previous = prev;
       const keys = /** @type {Array<keyof CodexUsage>} */ (["input", "output", "cacheRead", "cacheWrite", "thinking"]);
       const regressed = keys.some((k) => e.usage[k] < previous[k]);
-      usage = regressed ? e.usage : /** @type {CodexUsage} */ (Object.fromEntries(keys.map((k) => [k, e.usage[k] - previous[k]])));
+      const unchanged = keys.every((k) => e.usage[k] === previous[k]);
+      // A repeated token_count (same running total) is not a new turn, even if it repeats
+      // last_token_usage — using the delta there would double count.
+      usage = unchanged ? null : e.last || (regressed ? e.usage : /** @type {CodexUsage} */ (Object.fromEntries(keys.map((k) => [k, e.usage[k] - previous[k]]))));
     }
     prev = e.usage;
+    if (!usage) return [];
+    const { last: _last, ...rest } = e;
     if (Object.values(usage).every((v) => v === 0)) return [];
     const responseId = `cumulative:${e.ts}:${usage.input}:${usage.cacheRead}:${usage.cacheWrite}:${usage.output}:${usage.thinking}`;
-    return [{ ...e, kind: "turn", agentId: null, agentType: null, runtime: "codex", responseId, usage }];
+    return [{ ...rest, kind: "turn", agentId: null, agentType: null, runtime: "codex", responseId, usage }];
   });
 }
 

@@ -387,6 +387,13 @@ Usage reports separate runtime from inference provider and combine exact Codex c
 privacy-safe application ledger for provider calls such as DeepSeek; see
 [`docs/USAGE.md`](./docs/USAGE.md).
 
+**Token usage is recorded automatically.** `maestro sync` adds Claude Code `Stop`,
+`SubagentStop` and `SessionEnd` hooks to `.claude/settings.json` (your own hooks are kept) that
+append count-only records — no prompts or paths — to the committed `board/usage.jsonl`
+(`merge=union`). The hooks never block a session. Turn it off with `"usage": { "record": false }`
+in `config.json` and re-run `maestro sync`; see
+[automatic recording](./docs/USAGE.md#automatic-recording-claude-code-hooks).
+
 It reads and writes project data only through AI Maestro's public APIs (board, plan, spec,
 registry, and usage exports), with locking — see [`docs/PUBLIC-DATA-API.md`](./docs/PUBLIC-DATA-API.md).
 

@@ -39,6 +39,7 @@ import { scanTranscripts, zeroUsage, addUsage, totalTokens } from "./usage-scan.
 import { attribute, ticketIndex, DEFAULTS, rank } from "./usage-attribute.mjs";
 import { readRuns } from "./telemetry-io.mjs";
 import { readApplicationUsage } from "./application-usage.mjs";
+import { readUsage } from "./usage-ledger.mjs";
 
 export { totalTokens };
 
@@ -217,6 +218,38 @@ export function buildUsageReport(opts) {
     });
   }
 
+  // ── Recorded half ────────────────────────────────────────────────────────────────────
+  // Count-only turns captured into board/usage.jsonl. readUsage already dedups by key (a git
+  // union merge can duplicate lines); a session telemetry measured exactly is skipped here,
+  // and a recorded session is skipped by the transcript scan below, so no turn counts twice.
+  const recorded = readUsage(boardDir);
+  let recordedSkippedExact = 0;
+  const measuredSessions = new Set(exactSessions);
+  for (const r of recorded.records) {
+    const sessionKey = `${r.runtime}:${r.sessionId}`;
+    if (exactSessions.has(sessionKey) || exactSessions.has(r.sessionId)) { recordedSkippedExact++; continue; }
+    measuredSessions.add(sessionKey);
+    const ts = Date.parse(r.ts);
+    samples.push({
+      ticketId: r.ticketId,
+      project, projectKey,
+      model: r.model,
+      agent: r.agentType,
+      runtime: r.runtime,
+      provider: r.provider,
+      provenance: "recorded",
+      stage: "unknown",
+      date: dayOf(ts),
+      usage: { input: r.usage.input, output: r.usage.output, cacheRead: r.usage.cacheRead, cacheWrite: r.usage.cacheWrite, thinking: r.usage.reasoning },
+      ts,
+      durationMs: 0,
+      exact: false,
+      confidence: r.confidence,
+      evidence: `recorded:${r.key}`,
+      sessionId: r.sessionId,
+    });
+  }
+
   // ── Estimated half ────────────────────────────────────────────────────────────────────
   const scanning = transcriptScanEnabled(config, opts.env);
   let coverage = { turns: 0, attributed: 0, byConfidence: /** @type {Record<string, number>} */ ({}), unassignedReasons: /** @type {Record<string, number>} */ ({}), skippedExact: 0 };
@@ -231,7 +264,7 @@ export function buildUsageReport(opts) {
       useCache: opts.useCache,
     });
     scanStats = { sessions: scan.sessions, files: scan.files };
-    const attributed = attribute(scan.events, index, { ...opts.tuning, exactSessions });
+    const attributed = attribute(scan.events, index, { ...opts.tuning, exactSessions: measuredSessions });
     coverage = attributed.coverage;
     for (const t of attributed.turns) {
       samples.push({
@@ -403,6 +436,7 @@ export function buildUsageReport(opts) {
       ticketsWithUsage: ticketRows.length,
       exactRuns: runs.length,
       telemetrySkippedLines: telemetrySkipped,
+      ...(recorded.records.length || recorded.skipped || recorded.duplicates ? { recordedTurns: recorded.records.length - recordedSkippedExact, recordedSkippedExact, recordedSkippedLines: recorded.skipped, recordedDuplicateLines: recorded.duplicates } : {}),
       ...(application.events.length || application.skipped ? { applicationCalls: application.events.length, applicationSkippedLines: application.skipped } : {}),
       transcriptFiles: scanStats.files,
       transcriptSessions: scanStats.sessions,

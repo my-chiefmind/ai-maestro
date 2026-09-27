@@ -29,6 +29,7 @@ import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { readRegistry, findKitDir } from "../scripts/registry.mjs";
 import { agentFileToCode } from "../scripts/board-core.mjs";
+import { mergeUsageHooks, usageHookCommand } from "../scripts/usage-hook-settings.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const THIS_KIT = resolve(__dir, "..");
@@ -781,6 +782,65 @@ for (const [rel, content] of generated) {
 // `skip` was already applied when lock.files was built, so what check mode compares against
 // and what write mode records are the same bytes by construction.
 writeFileSync(lockPath, lockContent);
+
+// ── .gitattributes: union-merge the committed usage ledger ───────────────────────────
+// board/usage.jsonl is appended from many branches/worktrees; `merge=union` keeps both
+// sides instead of conflicting, and readers dedup by key. The file is the project's own, so
+// sync only appends the one rule when it is missing — it never rewrites or removes lines.
+{
+  const attrsPath = join(OUT, ".gitattributes");
+  const ledgerRel = posix(relative(OUT, join(PROJECT, "board", "usage.jsonl")));
+  const rule = `${ledgerRel} merge=union`;
+  const current = existsSync(attrsPath) ? readFileSync(attrsPath, "utf8") : "";
+  if (!current.split(/\r?\n/).some((l) => l.trim() === rule)) {
+    writeFileSync(attrsPath, current + (current && !current.endsWith("\n") ? "\n" : "") + rule + "\n");
+  }
+}
+
+// ── .gitignore: the usage hook's local error log is never committed ───────────────────
+// Appended once when missing; the project's own .gitignore lines are never rewritten. Only
+// when the hook is installed (usage.record and targets.claude) and the board sits under OUT.
+{
+  const ignorePath = join(OUT, ".gitignore");
+  const rule = posix(relative(OUT, join(PROJECT, "board", ".usage-hook.log")));
+  const current = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+  if (claudeEnabled && config?.usage?.record !== false && !rule.startsWith("..")
+      && !current.split(/\r?\n/).some((l) => l.trim() === rule || l.trim() === `/${rule}`)) {
+    writeFileSync(ignorePath, current + (current && !current.endsWith("\n") ? "\n" : "") + rule + "\n");
+  }
+}
+
+// ── Claude Code usage hooks: record token usage automatically ─────────────────────────
+// Stop / SubagentStop / SessionEnd run scripts/usage-hook.mjs from the capsule-local kit (no
+// npx, no network). The settings file is the user's: their entries are kept as-is and in
+// order; only entries carrying the maestro marker are replaced or removed. usage.record=false
+// (or targets.claude=false) removes ours. Written only when the result differs.
+{
+  const settingsPath = join(OUT, ".claude", "settings.json");
+  const enabled = claudeEnabled && config?.usage?.record !== false;
+  const under = (p) => { const r = relative(OUT, p); return r && !r.startsWith("..") && !r.startsWith("/") ? posix(r) : null; };
+  const candidates = [join(KIT, "scripts", "usage-hook.mjs"), join(THIS_KIT, "scripts", "usage-hook.mjs"),
+    join(OUT, "node_modules", "@mychiefmind", "ai-maestro", "scripts", "usage-hook.mjs")];
+  const scriptRel = candidates.filter((c) => existsSync(c)).map(under).find(Boolean) ?? null;
+  const boardRel = under(join(PROJECT, "board"));
+  let current, parseFailed = false;
+  if (existsSync(settingsPath)) {
+    try { current = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { parseFailed = true; }
+  }
+  if (parseFailed) {
+    console.warn("  ⚠ .claude/settings.json is not valid JSON — usage hooks not updated (fix it and re-run sync).");
+  } else {
+    if (enabled && (!scriptRel || !boardRel)) {
+      console.warn("  ⚠ usage hooks skipped: no capsule-local AI Maestro kit under the project (hooks never download). Run 'maestro usage sync' manually, or vendor the kit.");
+    }
+    const command = enabled && scriptRel && boardRel ? usageHookCommand(scriptRel, boardRel) : undefined;
+    const next = mergeUsageHooks(current, { enabled: !!command, command });
+    const text = JSON.stringify(next, null, 2) + "\n";
+    const before = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : null;
+    const changed = before === null ? Object.keys(next).length > 0 : JSON.stringify(current) !== JSON.stringify(next);
+    if (changed) { mkdirSync(dirname(settingsPath), { recursive: true }); writeFileSync(settingsPath, text); }
+  }
+}
 
 const agentCount = [...generated.keys()].filter((r) => r.includes(join(".claude", "agents"))).length;
 const skillCount = [...generated.keys()].filter((r) => r.startsWith(join(".claude", "skills")) && r.endsWith("SKILL.md")).length;

@@ -28,6 +28,7 @@ import { readRegistry, findKitDir } from "../scripts/registry.mjs";
 import { tryBackup } from "../scripts/board-backup.mjs";
 import { emptyPlan, renderPlanMd, planCompleteness } from "../scripts/plan-core.mjs";
 import { repairRootPackageScripts } from "../scripts/root-scripts.mjs";
+import { formatMenuLines } from "../scripts/menu-format.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -90,6 +91,12 @@ function samePath(a, b) {
 // Where a project's OWN agents/skills live, safe from every sweep below because `custom` is
 // not a VENDORED entry. render/sync.mjs merges it over the kit's roster.
 const CUSTOM_DIR = "custom";
+// custom/<RESCUED_DIR>/ holds user edits `update` had to keep but cannot render (see
+// refreshOverlayEntry). The renderer only reads custom/agents and custom/skills.
+const RESCUED_DIR = "rescued";
+// Present while an update is between "kit files refreshed" and "re-rendered". A re-run that
+// finds it finishes the job instead of reporting "already up to date" (VERSION already moved).
+const UPDATE_PENDING_FILE = ".maestro-update-pending";
 
 // Vendored folders that mix kit files with files the project may have added itself. Handled
 // like board/ rather than by the blind remove-and-recopy the other entries get: that swept
@@ -371,6 +378,22 @@ function refreshOverlayEntry(dest, entry, kind, prior, rescued) {
         ? "hand-edited kit file"
         : null;
     if (!why) continue;
+
+    // A hand-edited kit file whose name ALSO has an overlay in custom/ can't become a full
+    // override there: the renderer rejects override + overlay for one name (so the update
+    // itself would fail), and for skills the overlay's folder made the fork look like an
+    // existing custom/ copy and it was dropped. Keep the fork where nothing renders it — the
+    // overlay keeps applying to the fresh kit file — and say where it went.
+    const overlay = kind === "file" ? join(customDir, f.replace(/\.md$/, ".overlay.md")) : join(customDir, f, "OVERLAY.md");
+    if (shipped.has(f) && existsSync(overlay)) {
+      const keep = join(dest, CUSTOM_DIR, RESCUED_DIR, entry, f);
+      if (!existsSync(keep)) {
+        mkdirSync(dirname(keep), { recursive: true });
+        cpSync(abs, keep, { recursive: true, filter });
+      }
+      rescued.push({ from: join(entry, f), to: join(CUSTOM_DIR, RESCUED_DIR, entry, f), why: `${why}; your overlay still applies, the edited copy is kept for reference (not rendered)` });
+      continue;
+    }
 
     const target = join(customDir, f);
     if (existsSync(target)) {
@@ -1274,7 +1297,10 @@ async function update(args) {
 
   const before = readKitVersion(kit);
   const target = readKitVersion(KIT_ROOT);
-  if (before === target && !has(args, "force")) {
+  const pendingPath = join(kit, UPDATE_PENDING_FILE);
+  const pending = existsSync(pendingPath);
+  if (pending) console.log(`→ A previous update of ${kitRel}/ did not finish — completing it.`);
+  if (before === target && !has(args, "force") && !pending) {
     // "The project matches this CLI" only means "up to date" if the CLI is itself current. A
     // stale npx cache makes those two agree at any age, and this branch then reported a project
     // several releases behind as current — wrong, and reassuring, which is the worst pairing.
@@ -1301,6 +1327,7 @@ async function update(args) {
   // version shipped, and it's what makes "new in this release" distinguishable from
   // "unlisted for the last six releases".
   const preRefreshLock = readVendorLock(kit);
+  writeFileSync(pendingPath, `${target}\n`);
   const rescued = refreshVendoredKit(kit);
   console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
 
@@ -1346,6 +1373,7 @@ async function update(args) {
     run("scripts/validate-board.mjs", [boardData, "--agents", join(kit, "agents")], kit);
   }
 
+  rmSync(pendingPath, { force: true });
   console.log(`\n${C.green(C.b(`✅  ${kitRel}/ is on v${target}.`))}`);
 }
 
@@ -1565,7 +1593,7 @@ async function dispatch(command, args) {
     case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
     case "swarm": process.exit(run("scripts/swarm-config.mjs", args)); break;
-    case "usage": process.exit(run("scripts/usage-report.mjs", args)); break;
+    case "usage": process.exit(args[0] === "sync" ? run("scripts/usage-sync.mjs", args.slice(1)) : run("scripts/usage-report.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }
@@ -1576,8 +1604,7 @@ async function menu() {
   help();
   if (!process.stdin.isTTY) return;
   console.log("Pick a command:\n");
-  COMMANDS.forEach((c, i) => console.log(`  ${i + 1})  ${c.key.padEnd(9)} ${c.label}`));
-  console.log("  q)  quit\n");
+  console.log(formatMenuLines(COMMANDS).join("\n") + "\n");
   const answer = (await ask("Select 1-" + COMMANDS.length, "1")).toLowerCase();
   if (answer === "q" || answer === "quit") { closePrompts(); return; }
   const chosen = COMMANDS[Number(answer) - 1] || COMMANDS.find((c) => c.key === answer);

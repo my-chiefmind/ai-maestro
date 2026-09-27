@@ -15,6 +15,10 @@ export {
   ApplicationUsageInputError, ApplicationUsageBoardError, ApplicationUsageConflictError,
   ApplicationUsageLockError, ApplicationUsageReadError, ApplicationUsageWriteError,
 } from "./application-usage.mjs";
+export {
+  appendUsage, readUsage, readUsageCursor, validateUsageRecord, usageRecordEnabled,
+  UsageLedgerInputError, USAGE_LEDGER_FILE, USAGE_CURSOR_FILE, USAGE_RECORD_VERSION,
+} from "./usage-ledger.mjs";
 
 class UsageError extends Error {
   constructor(name, code, message, detail = {}) { super(message); this.name = name; this.code = code; Object.assign(this, detail); }

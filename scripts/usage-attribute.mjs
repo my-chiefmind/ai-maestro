@@ -244,6 +244,7 @@ export function attribute(events, index, opts = {}) {
         model: e.model, agentType: e.agentType || "main",
         sessionId, branch: e.branch, usage: e.usage, activeMs,
         runtime: e.runtime || "claude", provider: e.provider || "unknown",
+        ...(e.turnKey ? { turnKey: e.turnKey } : {}),
       });
     }
   }

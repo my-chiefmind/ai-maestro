@@ -45,7 +45,7 @@ export const DEFAULT_CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects"
 export const DEFAULT_CACHE_FILE = join(homedir(), ".maestro", "usage-cache.json");
 
 /** Bump when `distill()`'s output shape changes, so stale caches are re-read, not trusted. */
-export const CACHE_SCHEMA = 6;
+export const CACHE_SCHEMA = 7;
 
 /** Claude Code's own bookkeeping pseudo-model — retries and errors, never real inference. */
 const SYNTHETIC_MODEL = "<synthetic>";
@@ -258,6 +258,8 @@ export function distill(filePath, opts = {}) {
     const usage = rec?.message?.usage;
     const model = rec?.message?.model;
     const isTurn = rec.type === "assistant" && usage && model && model !== SYNTHETIC_MODEL;
+    const turnId = typeof rec?.message?.id === "string" && rec.message.id ? rec.message.id
+      : typeof rec?.requestId === "string" && rec.requestId ? rec.requestId : null;
     if (!isTurn && !mentions.length && !commands.length && !rec.gitBranch) continue;
 
     events.push({
@@ -269,9 +271,22 @@ export function distill(filePath, opts = {}) {
       agentId: typeof rec.agentId === "string" ? rec.agentId : null,
       agentType,
       ...(isTurn ? { model, usage: normaliseUsage(usage) } : {}),
+      ...(isTurn && turnId ? { responseId: turnId } : {}),
       mentions,
       commands,
     });
+  }
+  // Claude Code writes one line per content block, each repeating the same message.id with the
+  // message's full usage. Only the LAST occurrence is the turn; earlier ones are demoted to
+  // evidence (their mentions/commands still count) so usage is never multiplied.
+  const seen = new Set();
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.kind !== "turn" || !e.responseId) continue;
+    if (seen.has(e.responseId)) {
+      const { model: _m, usage: _u, responseId: _r, ...rest } = e;
+      events[i] = { ...rest, kind: "evidence" };
+    } else seen.add(e.responseId);
   }
   return events;
 }

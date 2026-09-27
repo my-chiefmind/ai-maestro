@@ -23,3 +23,4 @@ npm-debug.log*
 # Claude Code: track agent memory/config in this private repo; never its worktrees
 .claude/worktrees/
 .claude/**/.DS_Store
+board/.usage-hook.log
