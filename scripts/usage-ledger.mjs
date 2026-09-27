@@ -180,6 +180,22 @@ export function appendUsage(boardDir, records, opts = {}) {
 }
 
 /**
+ * Create an empty import cursor if none exists (under the board lock). The cursor's presence
+ * is what marks the one-time transcript backfill as done, even when there was nothing to import.
+ * @param {string} boardDir
+ * @param {{ lockOptions?: {timeoutMs?: number, staleMs?: number} }} [opts]
+ * @returns {boolean} whether a cursor was created
+ */
+export function ensureUsageCursor(boardDir, opts = {}) {
+  const dir = resolve(boardDir);
+  return withBoardLock(dir, () => {
+    if (existsSync(join(dir, USAGE_CURSOR_FILE))) return false;
+    writeAtomic(join(dir, USAGE_CURSOR_FILE), JSON.stringify({ v: 1, sources: {} }, null, 2) + "\n");
+    return true;
+  }, { op: "usage-cursor", ...(opts.lockOptions || {}) });
+}
+
+/**
  * Whether automatic usage recording is on for a project. Default ON; `usage.record: false`
  * in config.json turns it off.
  * @param {any} config

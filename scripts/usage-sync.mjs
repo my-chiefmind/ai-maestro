@@ -25,6 +25,19 @@ import { distillCodexRollout, codexRolloutFiles, DEFAULT_CODEX_HOME } from "./us
 import { attribute, ticketIndex } from "./usage-attribute.mjs";
 import { rootsForBoard } from "./usage-core.mjs";
 import { appendUsage, readUsage, readUsageCursor, usageRecordEnabled } from "./usage-ledger.mjs";
+import { linkedWorktreeRoots } from "./usage-worktree.mjs";
+
+/**
+ * The roots whose sessions belong to a board: the project (see rootsForBoard) plus every
+ * linked git worktree of the same repository — sessions run there are recorded on the main
+ * board. Directories that are not worktrees of this repo are never added.
+ * @param {string} boardDir
+ */
+export function ownedRoots(boardDir) {
+  const base = rootsForBoard(boardDir);
+  const wt = linkedWorktreeRoots(resolve(boardDir, ".."));
+  return [...new Set([...base, ...wt])];
+}
 
 export const RUNTIMES = ["claude", "codex"];
 /** A transcript larger than this is skipped (and reported), keeping a sync bounded. */
@@ -156,7 +169,7 @@ export function syncUsage(opts) {
   const result = { recording: usageRecordEnabled(config), runtimes: perRuntime, imported: 0, duplicates: 0, skippedFiles: 0, cursorUpdated: 0 };
   if (!result.recording) return result;
 
-  const roots = (opts.roots || rootsForBoard(boardDir)).map((r) => resolve(r));
+  const roots = (opts.roots || ownedRoots(boardDir)).map((r) => resolve(r));
   const excludeRoots = (opts.excludeRoots || []).map((r) => resolve(r));
   const maxFileBytes = opts.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const data = opts.data !== undefined ? opts.data : readJson(join(boardDir, "data.json"));
@@ -268,7 +281,7 @@ export function main(/** @type {string[]} */ argv) {
     --session <id>               only this session
     --transcript <path>          import this transcript file (needs --session)
     --subagent                   the --transcript is a Claude subagent file (<session>/subagents/agent-*.jsonl)
-    --all                        ignore the cursor and re-read every session (still dedups)
+    --all                        ignore the cursor and re-read every session (still dedups; the manual backfill)
     --exclude-root <dir>         a nested project whose sessions are not ours (repeatable)
     --board <dir>                board directory (default: ./board)
     --json                       print the summary as JSON

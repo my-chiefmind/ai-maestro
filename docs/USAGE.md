@@ -29,7 +29,7 @@ kept in `board/usage-cursor.json`. Nothing is written onto the ticket record its
 maestro usage sync                          # Claude Code + Codex, only sessions that changed
 maestro usage sync --runtime codex          # claude | codex | all (default all)
 maestro usage sync --session <id> --transcript <path>   # one transcript, e.g. from a hook
-maestro usage sync --all                    # ignore the cursor and re-read every session
+maestro usage sync --all                    # ignore the cursor and re-read every session (manual backfill)
 maestro usage sync --exclude-root <dir>     # a nested project whose sessions are not ours
 ```
 
@@ -69,9 +69,27 @@ using `scripts/usage-hook.mjs` from the capsule-local kit (`./maestro/scripts/�
   child process killed after 4 s, and the settings entry carries `"timeout": 5`. If another sync
   holds the board lock, the run is skipped (the next hook picks the turns up). Transcripts over
   64 MB are left to a manual `maestro usage sync`. Errors go to `board/.usage-hook.log` as one
-  line of timestamp, event and error class — no prompts or paths. Sync adds that log to the project's `.gitignore`.
+  line of timestamp, event, error class and a sanitised error message (path-like tokens are
+  dropped) — no prompts or paths. Sync adds that log to the project's `.gitignore`.
+- **First-run backfill:** the hooks only see sessions that end after they were installed. So when
+  a hook runs and the board has no `board/usage-cursor.json` yet, it starts a one-time full import
+  of the project's existing transcripts (Claude main + subagents, and Codex; same ownership rules
+  as `maestro usage sync`) in a **detached** background process — the hook does not wait for it.
+  The cursor it leaves behind marks the backfill done. To backfill by hand (or re-read
+  everything), run `maestro usage sync --all`. `MAESTRO_USAGE_BACKFILL=0` disables the automatic one.
 - **Subagents:** `SubagentStop` also records the subagent's own transcript
-  (`agent_transcript_path`), labelled with its agent type.
+  (`agent_transcript_path`), labelled with its agent type. If that file is not on disk yet the
+  hook waits up to 1 s, then falls back to `<session>/subagents/agent-<agent_id>.jsonl` and
+  finally to every `<session>/subagents/*.jsonl` (re-imports dedup by key).
+- **Worktrees:** a session started in a linked `git worktree` of the project records onto the
+  board of the **main checkout** (resolved via `git rev-parse --git-common-dir`), not the
+  worktree's copy that is discarded with it. Sessions in linked worktrees of this repository
+  count as the project's; a checkout elsewhere (e.g. under `/tmp`) that is not one of its
+  worktrees stays excluded.
+- **Repos without `maestro sync`:** the hooks live in `.claude/settings.json`, which only
+  `maestro sync` writes. A repo that is not a Maestro project (the AI Maestro kit repo itself,
+  for example) commits that file by hand — the kit repo's points at `scripts/usage-hook.mjs`
+  and `board/`. Without hooks, run `maestro usage sync` before reading usage.
 - **Formatting:** sync rewrites `.claude/settings.json` as 2-space JSON only when the hooks
   change; comments/formatting of that file are not preserved on such a write.
 - **Your hooks are kept.** Existing entries are never changed or reordered; Maestro's entries
