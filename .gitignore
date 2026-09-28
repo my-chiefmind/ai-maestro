@@ -24,3 +24,5 @@ npm-debug.log*
 .claude/worktrees/
 .claude/**/.DS_Store
 board/.usage-hook.log
+board/.usage-pending.jsonl
+board/.usage-cursor.json

@@ -2,7 +2,8 @@
 // @ts-check
 /**
  * `maestro usage sync` — import Claude Code and Codex transcript usage into the recorded
- * ledger (`board/usage.jsonl`).
+ * ledger. New records land in the untracked spool `board/.usage-pending.jsonl`; readers
+ * include it, and `maestro usage commit` folds it into the tracked `board/usage.jsonl`.
  *
  * Reuses the existing distillers (usage-scan `distill`, usage-codex `distillCodexRollout`) so
  * token binning is identical to the report: disjoint input / output / cacheRead / cacheWrite
@@ -12,7 +13,7 @@
  * so a partially-recorded session would hide its unrecorded turns. Therefore whenever any file
  * of a session changed, every file of that session is re-distilled and every owned turn is
  * offered to `appendUsage`, which dedups by the stable key `runtime:sessionId:turnId`.
- * The cursor (`board/usage-cursor.json`) only lets unchanged sessions be skipped cheaply.
+ * The cursor (`board/.usage-cursor.json`) only lets unchanged sessions be skipped cheaply.
  *
  * Nothing but counts and safe identifiers leaves this module: no prompt, response, or tool
  * text, and no filesystem paths (cursor ids are `runtime:sessionId:file`, not paths).
@@ -274,7 +275,8 @@ export function main(/** @type {string[]} */ argv) {
   }
   if (o.help || o.h) {
     process.stdout.write(`
-  maestro usage sync       import Claude Code / Codex transcript usage into board/usage.jsonl
+  maestro usage sync       import Claude Code / Codex transcript usage (into the untracked
+                           board/.usage-pending.jsonl; 'maestro usage commit' folds it into usage.jsonl)
 
   Flags:
     --runtime claude|codex|all   which runtime(s) to import (default all)

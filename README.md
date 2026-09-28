@@ -358,14 +358,26 @@ the [Quickstart](#quickstart) — then, from your coding tool at the repo root, 
 ## Web dashboard
 
 [`@mychiefmind/ai-maestro-web-ui`](https://www.npmjs.com/package/@mychiefmind/ai-maestro-web-ui)
-is the visual side of AI Maestro: a local web dashboard for one or many projects. It listens on
-`127.0.0.1` only, and you register projects by path, so each one keeps its own `maestro/` folder.
+(Cockpit Maestro) is the visual side of AI Maestro: a local web dashboard that listens on your
+own machine only. Each project keeps its own `maestro/` folder.
+
+**One project** — run it inside the project (the folder that has `./maestro`):
 
 ```bash
-npm install --save-dev @mychiefmind/ai-maestro @mychiefmind/ai-maestro-web-ui
-npx ai-maestro-web-ui              # opens the browser; if 3021 is busy, the next free port is used
-npx ai-maestro-web-ui add <path>   # register a project
+npx @mychiefmind/ai-maestro-web-ui
 ```
+
+**Many projects in one place** — make an empty folder your cockpit and run the same command
+there. It sets the folder up, installs what it needs, and opens the dashboard:
+
+```bash
+mkdir ~/cockpit && cd ~/cockpit
+npx @mychiefmind/ai-maestro-web-ui   # first time
+npm start                            # every time after
+```
+
+Then click **Add board** and pick each project folder, or run
+`npx ai-maestro-web-ui add <path>`. The cockpit opens at `http://cockpit.localhost:3021`.
 
 ![AI Maestro web dashboard — one project's board with readiness cards and Kanban columns](./docs/assets/web-ui-board.jpg)
 
@@ -389,8 +401,9 @@ privacy-safe application ledger for provider calls such as DeepSeek; see
 
 **Token usage is recorded automatically.** `maestro sync` adds Claude Code `Stop`,
 `SubagentStop` and `SessionEnd` hooks to `.claude/settings.json` (your own hooks are kept) that
-append count-only records — no prompts or paths — to the committed `board/usage.jsonl`
-(`merge=union`). The hooks never block a session. Turn it off with `"usage": { "record": false }`
+record count-only records — no prompts or paths — into the untracked
+`board/.usage-pending.jsonl`, so your checkout stays clean; `maestro usage commit` folds them into
+the committed `board/usage.jsonl` (`merge=union`). The hooks never block a session. Turn it off with `"usage": { "record": false }`
 in `config.json` and re-run `maestro sync`; see
 [automatic recording](./docs/USAGE.md#automatic-recording-claude-code-hooks).
 

@@ -1443,6 +1443,9 @@ function help() {
               Measured from run telemetry (board/telemetry.jsonl, written by 'maestro run')
               and, opt-in, reconstructed from local Claude Code transcripts with a stated
               confidence. --json / --csv / --html export the same figures. Tokens only.
+              'maestro usage sync' records into the untracked board/.usage-pending.jsonl;
+              'maestro usage commit' folds it into the tracked board/usage.jsonl (run it
+              on a branch before a PR so the records reach git by a normal commit).
   drift       Report version + hand-edit drift across a registry of projects
               Needs a registry file (default ./maestro-registry.json): { "projects": [
               { "name": "...", "path": "..." } ] }. --offline skips the npm version check;
@@ -1593,7 +1596,9 @@ async function dispatch(command, args) {
     case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
     case "swarm": process.exit(run("scripts/swarm-config.mjs", args)); break;
-    case "usage": process.exit(args[0] === "sync" ? run("scripts/usage-sync.mjs", args.slice(1)) : run("scripts/usage-report.mjs", args)); break;
+    case "usage": process.exit(args[0] === "sync" ? run("scripts/usage-sync.mjs", args.slice(1))
+      : args[0] === "commit" ? run("scripts/usage-commit.mjs", args.slice(1))
+      : run("scripts/usage-report.mjs", args)); break;
     case "drift": process.exit(run("scripts/maestro-drift.mjs", args)); break;
     default: console.error(`Unknown command: ${command}\n`); help(); process.exit(2);
   }

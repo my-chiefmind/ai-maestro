@@ -1,6 +1,6 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.6.13",
+  "version": "0.6.14",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
@@ -38,6 +38,8 @@
     "!board/usage.jsonl",
     "!board/usage-cursor.json",
     "!board/.usage-hook.log",
+    "!board/.usage-pending.jsonl",
+    "!board/.usage-cursor.json",
     "!board/specs",
     "!board/reports",
     "docs",

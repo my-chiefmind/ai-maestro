@@ -10,7 +10,7 @@ sources and never confuses them:
 | --- | --- | --- | --- |
 | **Measured** | `board/telemetry.jsonl`, written by `maestro run` | Exact stage duration, exact cycle time, and provider-reported token counts | It is a measurement |
 | **Reconstructed** | Your local Claude Code and Codex session transcripts | Historical time and tokens for work already done | Inferred, with a stated confidence, and labelled *estimated* everywhere it appears |
-| **Recorded** | `board/usage.jsonl`, appended through `appendUsage()` (public `./usage` API) | Provider-reported per-turn token counts captured from agent sessions — count-only, no prompt or tool text | Exact counts per turn, labelled *recorded*; a session already measured by telemetry is not counted again, and a recorded session is skipped by the transcript scan |
+| **Recorded** | `board/usage.jsonl` (committed) plus the untracked spool `board/.usage-pending.jsonl`, appended through `appendUsage()` (public `./usage` API) | Provider-reported per-turn token counts captured from agent sessions — count-only, no prompt or tool text | Exact counts per turn, labelled *recorded*; a session already measured by telemetry is not counted again, and a recorded session is skipped by the transcript scan |
 | **Application** | `board/application-usage.jsonl`, appended through the public API | Exact provider counters for product/API calls such as DeepSeek | Exact token counts; never presented as agent runs or working time |
 
 Ticket totals are **derived** from all of them.
@@ -21,7 +21,36 @@ worktrees, so it is merged with `merge=union` — `sync.mjs` adds the rule
 rewrites the file). A union merge can duplicate a line; every reader dedups by the record's
 `key` (`runtime:sessionId:turnId`), so a duplicate is never counted twice. Recording is on by
 default; set `"usage": { "record": false }` in `config.json` to turn it off. Import progress is
-kept in `board/usage-cursor.json`. Nothing is written onto the ticket record itself.
+kept in the untracked `board/.usage-cursor.json` (older kits used the tracked
+`board/usage-cursor.json`; it is still read, never written again). Nothing is written onto the
+ticket record itself.
+
+### Pending records and `maestro usage commit`
+
+Recording (the hooks, `maestro usage sync`, `appendUsage()`) never writes the tracked
+`board/usage.jsonl`. New records go to the **untracked** spool `board/.usage-pending.jsonl`, so
+a session running in your main checkout never leaves it dirty — `git pull --ff-only` and
+`npm run release:prepare` keep working. Every reader (the report, `--json`/`--csv`/`--html`,
+the portfolio view, the public `./usage` API and the web UI) reads `usage.jsonl` **plus** the
+spool, deduplicated by key, so numbers show up immediately.
+
+To put the records into git, fold them in on a branch and commit as usual:
+
+```bash
+git switch -c chore/usage-records
+maestro usage commit          # folds board/.usage-pending.jsonl into board/usage.jsonl, empties the spool
+git commit -am "chore: usage records" && git push   # then open a PR
+```
+
+`usage commit` merges by key (a record already in the ledger is not duplicated), keeps the
+ledger sorted, takes the board lock and replaces the file atomically. It is idempotent: with
+nothing pending it changes nothing. `--json` prints `{ committed, alreadyCommitted }`.
+`maestro sync` adds `board/.usage-pending.jsonl` and `board/.usage-cursor.json` to `.gitignore`
+(once, when usage recording is on).
+
+**Upgrading from an older kit:** if your `board/usage.jsonl` already has uncommitted additions
+(older hooks appended to it directly), the new hooks leave them alone. Commit them as they are,
+or run `maestro usage commit` and commit the result — both keep every record.
 
 ### Importing transcripts: `maestro usage sync`
 
@@ -36,7 +65,8 @@ maestro usage sync --exclude-root <dir>     # a nested project whose sessions ar
 `sync` reads your local Claude Code (`~/.claude/projects`) and Codex (`~/.codex/sessions`)
 transcripts for this project's roots, attributes each turn to a ticket (the `feat/T-xxx` branch
 is high confidence; otherwise the same command/mention heuristics as the report), and appends
-count-only records to `board/usage.jsonl`. It uses the same token binning as the report: bins
+count-only records to the pending spool `board/.usage-pending.jsonl` (see
+[`maestro usage commit`](#pending-records-and-maestro-usage-commit)). It uses the same token binning as the report: bins
 are disjoint (Codex `input_tokens` includes cached input, which is subtracted), reasoning is
 inside output, and `total = input + output + cacheRead + cacheWrite`. Codex usage comes from
 per-turn `last_token_usage` (a repeated running total is not a new turn); `rate_limits` is ignored.
@@ -63,8 +93,9 @@ using `scripts/usage-hook.mjs` from the capsule-local kit (`./maestro/scripts/�
 
 - **What is stored:** counts only — the same count-only records as `maestro usage sync` (token
   bins, model id, branch, ticket id, timestamps). No prompt, response, tool text or path.
-- **Committed:** `board/usage.jsonl` is committed and merged with `merge=union`
-  (`.gitattributes`, added by sync); readers dedup by key.
+- **Keeps the checkout clean:** records go to the untracked `board/.usage-pending.jsonl`;
+  `maestro usage commit` folds them into the committed `board/usage.jsonl` (merged with
+  `merge=union`, `.gitattributes` added by sync); readers dedup by key.
 - **Never blocks the session:** the hook always exits 0 and prints nothing; the sync runs in a
   child process killed after 4 s, and the settings entry carries `"timeout": 5`. If another sync
   holds the board lock, the run is skipped (the next hook picks the turns up). Transcripts over
@@ -72,7 +103,8 @@ using `scripts/usage-hook.mjs` from the capsule-local kit (`./maestro/scripts/�
   line of timestamp, event, error class and a sanitised error message (path-like tokens are
   dropped) — no prompts or paths. Sync adds that log to the project's `.gitignore`.
 - **First-run backfill:** the hooks only see sessions that end after they were installed. So when
-  a hook runs and the board has no `board/usage-cursor.json` yet, it starts a one-time full import
+  a hook runs and the board has no import cursor yet (`board/.usage-cursor.json`, or the
+  legacy `board/usage-cursor.json`), it starts a one-time full import
   of the project's existing transcripts (Claude main + subagents, and Codex; same ownership rules
   as `maestro usage sync`) in a **detached** background process — the hook does not wait for it.
   The cursor it leaves behind marks the backfill done. To backfill by hand (or re-read

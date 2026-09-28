@@ -22,6 +22,9 @@
  *     name, an error class and a sanitised error message (path-like tokens and anything but
  *     plain words are stripped) — never a prompt, path or transcript content.
  *
+ * Records go to the UNTRACKED spool `board/.usage-pending.jsonl` (see usage-ledger.mjs), so the
+ * checkout stays clean; `maestro usage commit` folds them into the tracked usage.jsonl.
+ *
  * Worktrees: when the board sits in a linked git worktree, usage is recorded on the board of
  * the MAIN checkout (the worktree's copy is discarded with the worktree). See usage-worktree.mjs.
  *
@@ -57,7 +60,8 @@ const AGENT_TRANSCRIPT_POLL_MS = 100;
 export const BACKFILL_RETRY_MS = 10 * 60 * 1000;
 /** The detached backfill may wait this long for the board lock. */
 const BACKFILL_LOCK_WAIT_MS = 30_000;
-const USAGE_CURSOR_FILE = "usage-cursor.json";
+/** The import cursor, and the tracked one older kits wrote (either marks the backfill done). */
+const USAGE_CURSOR_FILES = [".usage-cursor.json", "usage-cursor.json"];
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EVENT = /^[A-Za-z]{1,32}$/;
 
@@ -224,7 +228,7 @@ const backfillMarker = (/** @type {string} */ boardDir) =>
 export function maybeStartBackfill(boardDir, event) {
   try {
     if (process.env.MAESTRO_USAGE_BACKFILL === "0") return false;
-    if (existsSync(join(boardDir, USAGE_CURSOR_FILE))) return false;
+    if (USAGE_CURSOR_FILES.some((f) => existsSync(join(boardDir, f)))) return false;
     const marker = backfillMarker(boardDir);
     try { if (Date.now() - statSync(marker).mtimeMs < BACKFILL_RETRY_MS) return false; } catch { /* none */ }
     writeFileSync(marker, `${process.pid}\n`);

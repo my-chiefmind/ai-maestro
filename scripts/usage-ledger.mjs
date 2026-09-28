@@ -8,16 +8,29 @@
  * so it is merged with `merge=union` (see .gitattributes); a union merge can duplicate lines,
  * which is why every reader dedups by `key` and the writer never rewrites a prior record.
  *
- * Writes take the board directory lock, merge new records by key, keep the file sorted by
- * (ts, key), and replace it atomically. The import cursor (`board/usage-cursor.json`) is
- * written under the same lock, also atomically.
+ * Automatic recording (the hooks and `maestro usage sync`) never touches that tracked file:
+ * new records go to an UNTRACKED spool, `board/.usage-pending.jsonl`, so a session running in
+ * the main checkout never leaves it dirty (a dirty tracked file blocks `git pull --ff-only` and
+ * `release:prepare`). Readers see ledger + spool, deduped by key, so numbers appear at once.
+ * `maestro usage commit` (commitUsage) folds the spool into usage.jsonl — deduped, under the
+ * lock, atomically — and empties it; the result reaches git through a normal commit/PR.
+ *
+ * Writes take the board directory lock, merge new records by key, keep each file sorted by
+ * (ts, key), and replace it atomically. The import cursor (`board/.usage-cursor.json`, also
+ * untracked) is written under the same lock, also atomically. Older kits kept the cursor in the
+ * tracked `board/usage-cursor.json`; it is still read as a fallback but never written again.
  */
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, rmSync } from "fs";
 import { join, resolve } from "path";
 import { withBoardLock, writeAtomic } from "./board-io.mjs";
 
 export const USAGE_LEDGER_FILE = "usage.jsonl";
-export const USAGE_CURSOR_FILE = "usage-cursor.json";
+/** Untracked spool the hooks and `usage sync` append to; folded in by `maestro usage commit`. */
+export const USAGE_PENDING_FILE = ".usage-pending.jsonl";
+/** Untracked import cursor. */
+export const USAGE_CURSOR_FILE = ".usage-cursor.json";
+/** Tracked cursor written by older kits: read as a fallback, never written. */
+export const USAGE_LEGACY_CURSOR_FILE = "usage-cursor.json";
 export const USAGE_RECORD_VERSION = 1;
 
 const RECORD_FIELDS = ["v", "key", "runtime", "provider", "model", "ts", "sessionId", "agentType",
@@ -94,33 +107,49 @@ export function validateUsageRecord(record) {
 const byTsKey = (a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
 /**
- * Tolerant reader. Malformed/invalid lines are counted and skipped; duplicate keys (e.g. from
- * a git union merge) are kept once — first occurrence wins — so nothing is double counted.
- * @param {string} boardDir
- * @returns {{ records: ReturnType<typeof validateUsageRecord>[], skipped: number, duplicates: number }}
+ * Parse one JSONL file into `into` (dedup by key across calls, first occurrence wins).
+ * @param {string} path @param {Set<string>} seen @param {any[]} into
  */
-export function readUsage(boardDir) {
-  const path = join(resolve(boardDir), USAGE_LEDGER_FILE);
-  if (!existsSync(path)) return { records: [], skipped: 0, duplicates: 0 };
-  const seen = new Set();
-  const records = [];
+function readInto(path, seen, into) {
   let skipped = 0, duplicates = 0;
+  if (!existsSync(path)) return { skipped, duplicates };
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let rec;
     try { rec = validateUsageRecord(JSON.parse(line)); } catch { skipped++; continue; }
     if (seen.has(rec.key)) { duplicates++; continue; }
     seen.add(rec.key);
-    records.push(rec);
+    into.push(rec);
   }
+  return { skipped, duplicates };
+}
+
+/**
+ * Tolerant reader. Malformed/invalid lines are counted and skipped; duplicate keys (e.g. from
+ * a git union merge, or a record both committed and still pending) are kept once — first
+ * occurrence wins, the committed ledger first — so nothing is double counted.
+ * `pending: false` reads only the committed ledger.
+ * @param {string} boardDir
+ * @param {{ pending?: boolean }} [opts]
+ * @returns {{ records: ReturnType<typeof validateUsageRecord>[], skipped: number, duplicates: number, pending: number }}
+ */
+export function readUsage(boardDir, opts = {}) {
+  const dir = resolve(boardDir);
+  const seen = new Set();
+  /** @type {any[]} */ const records = [];
+  const a = readInto(join(dir, USAGE_LEDGER_FILE), seen, records);
+  const committed = records.length;
+  const b = opts.pending === false ? { skipped: 0, duplicates: 0 } : readInto(join(dir, USAGE_PENDING_FILE), seen, records);
+  const pending = records.length - committed;
   records.sort(byTsKey);
-  return { records, skipped, duplicates };
+  return { records, skipped: a.skipped + b.skipped, duplicates: a.duplicates + b.duplicates, pending };
 }
 
 /** @param {string} boardDir */
 export function readUsageCursor(boardDir) {
-  const path = join(resolve(boardDir), USAGE_CURSOR_FILE);
-  if (!existsSync(path)) return { v: 1, sources: {} };
+  const dir = resolve(boardDir);
+  const path = [USAGE_CURSOR_FILE, USAGE_LEGACY_CURSOR_FILE].map((f) => join(dir, f)).find((p) => existsSync(p));
+  if (!path) return { v: 1, sources: {} };
   try {
     const c = JSON.parse(readFileSync(path, "utf8"));
     return validateCursor(c);
@@ -144,7 +173,9 @@ function validateCursor(c) {
 
 /**
  * Append records (and optionally advance import cursors) under the board lock.
- * Records already present by key are skipped — never rewritten. Returns what was written.
+ * Records land in the untracked spool (USAGE_PENDING_FILE), never in the tracked ledger.
+ * Records already present by key (committed or pending) are skipped — never rewritten.
+ * Returns what was written.
  * @param {string} boardDir
  * @param {any[]} records
  * @param {{ cursor?: Record<string, {offset:number}>, lockOptions?: {timeoutMs?: number, staleMs?: number} }} [opts]
@@ -157,8 +188,7 @@ export function appendUsage(boardDir, records, opts = {}) {
   const cursorPatch = opts.cursor === undefined ? null : validateCursor({ v: 1, sources: opts.cursor }).sources;
   const dir = resolve(boardDir);
   return withBoardLock(dir, () => {
-    const { records: existing } = readUsage(dir);
-    const keys = new Set(existing.map((r) => r.key));
+    const keys = new Set(readUsage(dir).records.map((r) => r.key));
     const added = [];
     for (const r of valid) {
       if (keys.has(r.key)) continue;
@@ -166,8 +196,10 @@ export function appendUsage(boardDir, records, opts = {}) {
       added.push(r);
     }
     if (added.length) {
-      const all = [...existing, ...added].sort(byTsKey);
-      writeAtomic(join(dir, USAGE_LEDGER_FILE), all.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      /** @type {any[]} */ const spool = [];
+      readInto(join(dir, USAGE_PENDING_FILE), new Set(), spool);
+      const all = [...spool, ...added].sort(byTsKey);
+      writeAtomic(join(dir, USAGE_PENDING_FILE), all.map((r) => JSON.stringify(r)).join("\n") + "\n");
     }
     if (cursorPatch && Object.keys(cursorPatch).length) {
       const cur = readUsageCursor(dir);
@@ -189,10 +221,40 @@ export function appendUsage(boardDir, records, opts = {}) {
 export function ensureUsageCursor(boardDir, opts = {}) {
   const dir = resolve(boardDir);
   return withBoardLock(dir, () => {
-    if (existsSync(join(dir, USAGE_CURSOR_FILE))) return false;
+    if (existsSync(join(dir, USAGE_CURSOR_FILE)) || existsSync(join(dir, USAGE_LEGACY_CURSOR_FILE))) return false;
     writeAtomic(join(dir, USAGE_CURSOR_FILE), JSON.stringify({ v: 1, sources: {} }, null, 2) + "\n");
     return true;
   }, { op: "usage-cursor", ...(opts.lockOptions || {}) });
+}
+
+/**
+ * Fold the pending spool into the tracked ledger under the board lock: merge by key (a record
+ * already committed is not duplicated), keep the ledger sorted by (ts, key), replace it
+ * atomically, then remove the spool. Uncommitted edits already in usage.jsonl (a dirty file
+ * left by an older kit) are kept. Idempotent: with nothing pending it writes nothing.
+ * @param {string} boardDir
+ * @param {{ lockOptions?: {timeoutMs?: number, staleMs?: number} }} [opts]
+ * @returns {{ committed: number, alreadyCommitted: number }}
+ */
+export function commitUsage(boardDir, opts = {}) {
+  if (typeof boardDir !== "string" || !boardDir) throw new UsageLedgerInputError("boardDir must be a non-empty string.");
+  if (!object(opts) || Object.keys(opts).some((k) => k !== "lockOptions")) throw new UsageLedgerInputError("Unknown commitUsage option.");
+  const dir = resolve(boardDir);
+  return withBoardLock(dir, () => {
+    const spoolPath = join(dir, USAGE_PENDING_FILE);
+    if (!existsSync(spoolPath)) return { committed: 0, alreadyCommitted: 0 };
+    /** @type {any[]} */ const spool = [];
+    readInto(spoolPath, new Set(), spool);
+    const { records: ledger } = readUsage(dir, { pending: false });
+    const keys = new Set(ledger.map((r) => r.key));
+    const added = spool.filter((r) => !keys.has(r.key));
+    if (added.length) {
+      const all = [...ledger, ...added].sort(byTsKey);
+      writeAtomic(join(dir, USAGE_LEDGER_FILE), all.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    }
+    rmSync(spoolPath, { force: true });
+    return { committed: added.length, alreadyCommitted: spool.length - added.length };
+  }, { op: "commit-usage", ...(opts.lockOptions || {}) });
 }
 
 /**

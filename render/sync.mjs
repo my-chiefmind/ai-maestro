@@ -797,17 +797,29 @@ writeFileSync(lockPath, lockContent);
   }
 }
 
-// ── .gitignore: the usage hook's local error log is never committed ───────────────────
-// Appended once when missing; the project's own .gitignore lines are never rewritten. Only
-// when the hook is installed (usage.record and targets.claude) and the board sits under OUT.
+// ── .gitignore: local usage files are never committed ──────────────────────────────────
+// Appended once each when missing; the project's own .gitignore lines are never rewritten.
+// Only when the board sits under OUT and usage.record is on. The hook's error log also needs
+// the hook installed (targets.claude). The pending spool and import cursor are written by the
+// hooks AND by a manual `maestro usage sync` (e.g. Codex-only), so they need only usage.record;
+// keeping them untracked is what keeps the checkout clean (T-073) — `maestro usage commit`
+// folds the spool into the tracked board/usage.jsonl.
 {
   const ignorePath = join(OUT, ".gitignore");
-  const rule = posix(relative(OUT, join(PROJECT, "board", ".usage-hook.log")));
-  const current = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
-  if (claudeEnabled && config?.usage?.record !== false && !rule.startsWith("..")
-      && !current.split(/\r?\n/).some((l) => l.trim() === rule || l.trim() === `/${rule}`)) {
-    writeFileSync(ignorePath, current + (current && !current.endsWith("\n") ? "\n" : "") + rule + "\n");
+  const recording = config?.usage?.record !== false;
+  const rules = [
+    [".usage-hook.log", claudeEnabled && recording],
+    [".usage-pending.jsonl", recording],
+    [".usage-cursor.json", recording],
+  ].filter(([, on]) => on).map(([f]) => posix(relative(OUT, join(PROJECT, "board", String(f)))));
+  let current = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+  const before = current;
+  for (const rule of rules) {
+    if (rule.startsWith("..")) continue;
+    if (current.split(/\r?\n/).some((l) => l.trim() === rule || l.trim() === `/${rule}`)) continue;
+    current += (current && !current.endsWith("\n") ? "\n" : "") + rule + "\n";
   }
+  if (current !== before) writeFileSync(ignorePath, current);
 }
 
 // ── Claude Code usage hooks: record token usage automatically ─────────────────────────
