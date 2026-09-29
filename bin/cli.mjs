@@ -644,7 +644,7 @@ function launchBoard(kitDir, kitName) {
   console.log("\n→ Starting the visual board (downloads the web dashboard on first run)…");
   // Not a fixed URL: the dashboard takes the next free port when 3021 is busy — which it is
   // whenever another project's board is open — and prints the one it settled on below.
-  console.log("   → serves http://127.0.0.1:3021 (or the next free port it prints)    (press Ctrl+C to stop)\n");
+  console.log("   → serves http://maestro.localhost:3021 (or the next free port it prints)    (press Ctrl+C to stop)\n");
   const r = spawnSync("npm", ["run", "board"], {
     cwd: kitDir,
     stdio: "inherit",
@@ -733,7 +733,7 @@ async function init(args) {
     : IS_PACKAGED
       ? `   2. Review the work on the board (${rel}/board/data.json).`
       : `   2. Review the work on the board (${rel}/board/data.json), or open the visual board:
-        cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (→ http://127.0.0.1:3021, or the next free port it prints)`;
+        cd ${relative(process.cwd(), KIT_ROOT) || "."} && npm run board   (→ http://maestro.localhost:3021, or the next free port it prints)`;
   const syncCmd = IS_PACKAGED
     ? `npx @mychiefmind/ai-maestro sync --project ${rel}`
     : `node ${rel}/render/sync.mjs --project ${rel}`;
@@ -1014,7 +1014,7 @@ ${C.dim("  Full cheat sheet:")}        the ${C.b("Help")} tab on the board, or t
   if (wantsBoard) {
     launchBoard(kit, kitName);
   } else {
-    console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → http://127.0.0.1:3021\n`);
+    console.log(`   • Visual board (later):   cd ${kitName} && npm run board   → http://maestro.localhost:3021 (or the next free port it prints)\n`);
   }
 }
 
@@ -1447,6 +1447,7 @@ function help() {
               { "name": "...", "path": "..." } ] }. --offline skips the npm version check;
               --strict exits 1 if anything needs attention (for CI).
   init        Alternative: set up as a small capsule pointing at a kit elsewhere
+  version     Print this CLI's version (also --version, -v)
 
 The usual flow — one command in your repo:
 
@@ -1621,7 +1622,8 @@ async function menu() {
 }
 
 switch (cmd) {
-  case "-h": case "--help": help(); break;
+  case "-h": case "--help": case "help": help(); break;
+  case "-v": case "--version": case "version": console.log(readKitVersion(KIT_ROOT)); break;
   case undefined: await menu(); break;
   default: await dispatch(cmd, rest);
 }

@@ -404,7 +404,7 @@ The kit itself runs no server. The visual board is the separate
 [web dashboard](../README.md#web-dashboard) package, `@mychiefmind/ai-maestro-web-ui`, and it's optional:
 
 ```bash
-cd maestro && npm run board   # runs npx @mychiefmind/ai-maestro-web-ui from the project root → http://127.0.0.1:3021
+cd maestro && npm run board   # runs npx @mychiefmind/ai-maestro-web-ui from the project root → http://maestro.localhost:3021
 npx ai-maestro-web-ui         # …or run it directly from the project root
 ```
 
