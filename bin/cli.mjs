@@ -51,8 +51,8 @@ const IS_PACKAGED = KIT_ROOT.split(sep).includes("node_modules") || KIT_ROOT.inc
 
 // What `setup` copies into <repo>/maestro/ when installed from npm. Everything the clone
 // flow relies on. The visual board is the separate @mychiefmind/ai-maestro-web-ui package
-// (fetched by `npm run board`), so nothing UI-related is vendored. A cockpit/ folder left by
-// an older release is simply ignored by `update` — it is not in this list, so never touched.
+// (fetched by `npm run board`), so nothing UI-related is vendored. An old dashboard folder left
+// by an older release is simply ignored by `update` — it is not in this list, so never touched.
 const VENDORED = ["agents", "skills", "render", "scripts", "board", "starters", "docs", "bin", "VERSION", "README.md", "LICENSE"];
 
 // Never carry these into the user's repo — they're rebuildable and heavy.
@@ -211,29 +211,25 @@ anything in this folder.
   );
 }
 
-// Whether this project wants the GitHub PR-title workflow — repos hosted on GitLab, Bitbucket,
-// or without CI at all can opt out (--no-github-actions at setup/init/update). `false` is
-// persisted in config.json so later `update` runs keep honoring it without repeating the flag.
-// Missing the field entirely (every config.json before this) defaults to true, matching the
-// scaffold's prior unconditional behavior.
+// Whether this project wants the GitHub PR template — repos hosted on GitLab, Bitbucket, or
+// elsewhere can opt out (--no-github-actions at setup/init/update; the flag keeps its old name
+// so existing scripts still work). `false` is persisted in config.json so later `update` runs
+// keep honoring it without repeating the flag. Missing the field defaults to true.
 function githubActionsWanted(config) {
   return config.githubActions !== false;
 }
 
-// Install the repository-level GitHub convention that connects every PR to the work board.
-// These files live outside maestro/, so vendoring the kit cannot place them by itself. Never
-// overwrite a project's existing template; the uniquely named workflow is safe to add once.
+// Install the repository-level GitHub PR template that connects every PR to the work board.
+// It lives outside maestro/, so vendoring the kit cannot place it by itself. Never overwrite a
+// project's existing template. No GitHub Actions workflow is seeded: checks run locally (T-076),
+// and a workflow a project already has is left alone.
 // Callers must check githubActionsWanted() first — this always writes when called.
 function seedGitHubFiles(repoRoot, kit) {
   const source = join(kit, "starters", "github");
   if (!existsSync(source)) return;
 
-  const workflowDir = join(repoRoot, ".github", "workflows");
-  mkdirSync(workflowDir, { recursive: true });
-  const workflow = join(workflowDir, "maestro-pr-title.yml");
-  if (!existsSync(workflow)) cpSync(join(source, "maestro-pr-title.yml"), workflow);
-
   const githubDir = join(repoRoot, ".github");
+  mkdirSync(githubDir, { recursive: true });
   const template = join(githubDir, "PULL_REQUEST_TEMPLATE.md");
   if (!existsSync(template)) cpSync(join(source, "PULL_REQUEST_TEMPLATE.md"), template);
 }
@@ -1338,7 +1334,7 @@ async function update(args) {
   if (has(args, "no-github-actions") && config.githubActions !== false) {
     config.githubActions = false;
     writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
-    console.log(`  ✓ disabled the GitHub Actions PR-title workflow in ${kitRel}/config.json — future updates won't re-add it (delete .github/workflows/maestro-pr-title.yml and .github/PULL_REQUEST_TEMPLATE.md yourself if you want the existing files gone too)`);
+    console.log(`  ✓ disabled the GitHub PR template in ${kitRel}/config.json — future updates won't re-add it (delete .github/PULL_REQUEST_TEMPLATE.md yourself if you want the existing file gone too)`);
   }
   if (githubActionsWanted(config)) seedGitHubFiles(projectRootForKit(kit), kit);
   // Name what moved. The line above used to be the whole report, which read as an all-clear
@@ -1386,8 +1382,8 @@ function help() {
               Offers to open the visual board at the end (--no-board to skip, --yes to auto-open)
               Answer non-interactively with: --name, --areas, --outcome, --users, --stack,
               --constraints, --run, --test  (anything omitted defaults to "propose one")
-              --no-github-actions skips the GitHub PR-title workflow/template it otherwise adds
-              to .github/ — for repos on another host or CI, or none at all. Remembered in
+              --no-github-actions skips the GitHub PR template it otherwise adds
+              to .github/ — for repos hosted outside GitHub. Remembered in
               config.json, so later 'update' runs keep honoring it.
   update      Bring a set-up kit to this CLI's version
               Refreshes the kit files in maestro/ and re-renders Claude + Codex targets; your config.json,
@@ -1402,7 +1398,7 @@ function help() {
               If the project already matches this CLI, it checks that the CLI is itself current
               before saying so — npx runs a cached copy unless you name a version, and a stale
               one would otherwise call a months-old project up to date. --offline skips it.
-              --no-github-actions disables the GitHub PR-title workflow/template (persisted to
+              --no-github-actions disables the GitHub PR template (persisted to
               config.json) if you didn't already opt out at setup — it only stops future
               re-adds, it doesn't remove files already in .github/.
   sync        Re-render Claude + Codex targets from config.json + context.md

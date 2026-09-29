@@ -358,7 +358,7 @@ the [Quickstart](#quickstart) — then, from your coding tool at the repo root, 
 ## Web dashboard
 
 [`@mychiefmind/ai-maestro-web-ui`](https://www.npmjs.com/package/@mychiefmind/ai-maestro-web-ui)
-(Cockpit Maestro) is the visual side of AI Maestro: a local web dashboard that listens on your
+(Maestro) is the visual side of AI Maestro: a local web dashboard that listens on your
 own machine only. Each project keeps its own `maestro/` folder.
 
 **One project** — run it inside the project (the folder that has `./maestro`):
@@ -367,17 +367,17 @@ own machine only. Each project keeps its own `maestro/` folder.
 npx @mychiefmind/ai-maestro-web-ui
 ```
 
-**Many projects in one place** — make an empty folder your cockpit and run the same command
+**Many projects in one place** — make an empty folder your Maestro Hub and run the same command
 there. It sets the folder up, installs what it needs, and opens the dashboard:
 
 ```bash
-mkdir ~/cockpit && cd ~/cockpit
+mkdir ~/maestro-hub && cd ~/maestro-hub
 npx @mychiefmind/ai-maestro-web-ui   # first time
 npm start                            # every time after
 ```
 
 Then click **Add board** and pick each project folder, or run
-`npx ai-maestro-web-ui add <path>`. The cockpit opens at `http://cockpit.localhost:3021`.
+`npx ai-maestro-web-ui add <path>`. Maestro Hub opens at `http://maestro.localhost:3021`.
 
 ![AI Maestro web dashboard — one project's board with readiness cards and Kanban columns](./docs/assets/web-ui-board.jpg)
 

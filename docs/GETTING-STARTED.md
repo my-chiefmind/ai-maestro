@@ -448,8 +448,8 @@ The same command covers the other install shapes:
 | Git clone | `node <kit>/bin/cli.mjs update` — pulls the clone, then re-renders |
 
 For a **shared clone** used by several repos, `update` pulls once and prints the re-render
-command to run per project. A `cockpit/` folder left behind by an older release is no longer
-used — `update` leaves it alone and you can delete it; `npm run board` now runs the web dashboard.
+command to run per project. The old built-in dashboard folder an older release left in `maestro/` is no
+longer used — `update` leaves it alone and you can delete it; `npm run board` now runs the web dashboard.
 
 ## Managing several projects
 
