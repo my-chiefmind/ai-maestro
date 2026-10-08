@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { assertReservation, deliverySettings } from './delivery-store.mjs';
+import { applyGuardedBoardTransition } from "./delivery-policy.mjs";
+import { loadBoardContext } from "./board-context.mjs";
 /**
  * board-write.mjs — `maestro ticket <op>`: the only supported way to change a board.
  *
@@ -242,6 +245,21 @@ if (op === "next-id") {
   process.exit(0);
 }
 
+function parseApproval() {
+  if (!has("approval")) return undefined;
+  const raw = flag("approval");
+  if (raw === null) die('--approval needs a JSON object.');
+  let approval;
+  try { approval = JSON.parse(raw); }
+  catch (error) { die(`Invalid --approval JSON: ${error.message}`); }
+  if (!approval || typeof approval !== "object" || Array.isArray(approval)) {
+    die('--approval must be a JSON object.');
+  }
+  return approval;
+}
+
+const approval = parseApproval();
+
 const ticketId = argv[1] && !argv[1].startsWith("--") ? argv[1] : null;
 if (OPS_TAKING_ID.has(op) && !ticketId) die(`${op} needs an id: maestro ticket ${op} <id> …`);
 
@@ -252,6 +270,7 @@ if (PUBLIC_OPS.has(op)) {
   const common = {
     dataPath, archivePath, expectVersion: flag("expect-version") ?? undefined,
     dryRun: DRY_RUN,
+    ...(approval ? { approval } : {}),
     ...(has("agents") ? { agentsDir: flag("agents") } : {}),
     ...(has("config") ? { configPath: flag("config") } : {}),
   };
@@ -260,6 +279,8 @@ if (PUBLIC_OPS.has(op)) {
   try {
     if (op === "add") call = createTicket({ ...common,
       id: flag("id") ?? undefined, name: flag("name") ?? undefined, desc: flag("desc") ?? undefined,
+      reservation: flag("reservation") ? JSON.parse(flag("reservation")) : undefined,
+      acceptanceCriteria: flag("acceptance-criteria") ? JSON.parse(flag("acceptance-criteria")) : undefined,
       epicId: flag("epic") ?? undefined, area: flag("area") ?? undefined,
       priority: flag("priority", "P2"), swag: flag("swag", "M"), status: flag("status", "todo"),
       depends_on: list("depends-on") ?? [], agent_plan: list("agent-plan"), model: flag("model") ?? undefined,
@@ -279,6 +300,7 @@ if (PUBLIC_OPS.has(op)) {
       ...(has("next-agent") ? { nextAgent: flag("next-agent") } : {}),
     } });
     else if (op === "claim") call = claimTicket({ ...common, id: ticketId,
+      ...(flag("owner") ? { owner: flag("owner"), requestId: flag("request-id"), branch: flag("branch") } : {}),
       expectArchiveVersion: flag("expect-archive-version") ?? undefined,
       expectPlanVersion: flag("expect-plan-version") ?? undefined,
       coordination: {
@@ -716,7 +738,16 @@ try {
       mutateBoard({
         dataPath, archivePath, expectVersion, validate, op: `${op}(dry-run)`,
         mutate: (ctx) => {
+          const context = { ...loadBoardContext({ dataPath, archivePath, configPath: flag("config") ?? undefined }), ...ctx };
+          const delivery = deliverySettings(context, { write: true });
+          let reservationVerified = false;
+          if (delivery?.mode === 'git' && op === 'import') {
+            for (const ticket of IMPORT_DOC.tickets ?? []) assertReservation(delivery, ticket.id, IMPORT_DOC.reservations?.[ticket.id]);
+            reservationVerified = true;
+          }
+          const before = structuredClone(ctx);
           const out = RUN[op](ctx);
+          applyGuardedBoardTransition(context, before, { data: out.data ?? ctx.data, archive: out.archive ?? ctx.archive }, { approval, reservationVerified });
           preview = out;
           const stop = new Error("__dry_run__");
           stop.dryRun = true;
@@ -733,7 +764,16 @@ try {
   const { result, version, changed } = mutateBoard({
     dataPath, archivePath, expectVersion, validate, op,
     mutate: (ctx) => {
+      const context = { ...loadBoardContext({ dataPath, archivePath, configPath: flag("config") ?? undefined }), ...ctx };
+      const delivery = deliverySettings(context, { write: true });
+      let reservationVerified = false;
+      if (delivery?.mode === 'git' && op === 'import') {
+        for (const ticket of IMPORT_DOC.tickets ?? []) assertReservation(delivery, ticket.id, IMPORT_DOC.reservations?.[ticket.id]);
+        reservationVerified = true;
+      }
+      const before = structuredClone(ctx);
       const out = RUN[op](ctx);
+      applyGuardedBoardTransition(context, before, { data: out.data ?? ctx.data, archive: out.archive ?? ctx.archive }, { approval, reservationVerified });
       human = out.human;
       return { data: out.data, archive: out.archive, writeFirst: out.writeFirst, result: out.result };
     },

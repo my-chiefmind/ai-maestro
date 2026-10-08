@@ -92,7 +92,8 @@ function usage() {
     maestro plan show [--section <key>]     print the plan
     maestro plan coverage                   plan items vs the tickets working them
     maestro plan gate --json                the scope boundary, for machine callers
-    maestro plan check [--traces FR-1,NFR-2] run the plan's enforce commands (CI-friendly)
+    maestro plan check [--traces FR-1,NFR-2] run trusted plan shell commands (CI-friendly)
+    maestro plan check --dry-run             preview commands without executing them
 
     maestro plan init                       create an empty plan
     maestro plan set-goal --text <t> [--metric <m>]...
@@ -192,6 +193,7 @@ function initiativePatch(plan) {
 function write(mutate) {
   try {
     const r = applyPlan({ planPath: PLAN_PATH, operation: mutate.operation, params: mutate.params,
+      configPath: flag("config") ?? undefined, executionRepo: flag("execution-repo") ?? undefined,
       expectVersion: flag("expect-version"), projectName: projectName(), dryRun: DRY_RUN,
       allowBoardOrphans: mutate.allowBoardOrphans === true, force: mutate.force === true });
     if (!JSON_OUT) for (const w of r.warnings) process.stderr.write(`  ⚠ ${w}\n`);
@@ -410,6 +412,14 @@ function runEnforceChecks(plan) {
   }
 
   const cwd = resolve(flag("cwd") ?? repoRoot());
+  if (DRY_RUN) {
+    const commands = items.map(({ id, enforce }) => ({ id, enforce }));
+    if (JSON_OUT) return ok({ dryRun: true, ran: 0, cwd, commands });
+    out(`Preview only — no commands executed. Working directory: ${cwd}`);
+    out("Review plan commands before trusting them:");
+    for (const item of commands) out(`  ${item.id}: ${item.enforce}`);
+    process.exit(0);
+  }
   const results = [];
   for (const item of items) {
     // shell: true so a project can declare a real command line ("npm run x && npm run y"),

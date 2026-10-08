@@ -1,3 +1,7 @@
+import { deliveryInputs } from './delivery-contract.mjs';
+import { deliverySettings, readRecord, assertReservation } from './delivery-store.mjs';
+import { acquireOwnership } from './delivery-coordination.mjs';
+import { applyGuardedBoardTransition, criteriaFor } from './delivery-policy.mjs';
 /**
  * Supported public API for reading and applying targeted Maestro board changes.
  * Callers provide a board directory or data.json path; no whole-board replacement is exposed.
@@ -76,7 +80,7 @@ function validateEligibilityOptions(options, single) {
     throw new BoardInputError("Eligibility options must be an object.");
   }
   const allowed = new Set([
-    "boardPath", "dataPath", "archivePath", "configPath", "agentsDir", "lockOptions",
+    "boardPath", "dataPath", "archivePath", "configPath", "agentsDir", "lockOptions", "executionRepo",
     ...(single ? ["id"] : []),
   ]);
   const unknown = Object.keys(options).filter((key) => !allowed.has(key));
@@ -107,8 +111,8 @@ function validateClaimOptions(options) {
     throw new BoardInputError("Claim options must be an object.");
   }
   const allowed = new Set([
-    "boardPath", "dataPath", "archivePath", "configPath", "agentsDir", "lockOptions",
-    "id", "coordination", "expectVersion", "expectArchiveVersion", "expectPlanVersion", "dryRun",
+    "boardPath", "dataPath", "archivePath", "configPath", "agentsDir", "lockOptions", "executionRepo",
+    "id", "coordination", "forgeAdapter", "owner", "requestId", "branch", "expectVersion", "expectArchiveVersion", "expectPlanVersion", "dryRun",
   ]);
   const unknown = Object.keys(options).filter((key) => !allowed.has(key));
   if (unknown.length) throw new BoardInputError(`Unknown claim option(s): ${unknown.join(", ")}.`);
@@ -167,9 +171,14 @@ export function claimTicket(options = {}) {
       if (!verdict.eligible || conflicts.length) {
         return { write: false, result: { claimed: false, verdict, conflicts } };
       }
+      const settings = deliverySettings(context, { write: true });
+      if (settings) criteriaFor(ticket);
+      if (settings) acquireOwnership(context, options);
+      const before = structuredClone({ data, archive });
       const changed = setTicketStatusOperation(context, {
         id: options.id, status: "in-progress", coordination: options.coordination ?? {},
       });
+      applyGuardedBoardTransition(context, before, { data: changed.data, archive });
       return {
         data: changed.data,
         result: { claimed: true, verdict, conflicts: [], transition: changed.result },
@@ -204,7 +213,28 @@ function runOperation(options, operation, operationName) {
         }
       }
       const context = { ...loadBoardContext(options), data, archive };
-      return operation(context, options);
+      const settings = deliverySettings(context, { write: true });
+      let trusted = {};
+      if (settings) {
+        if (settings.mode === 'git' && operationName === 'create-ticket') {
+          assertReservation(settings, options.id, options.reservation);
+          trusted.reservationVerified = true;
+        }
+        if (settings.mode === 'git' && operationName === 'set-ticket-status' && options.status === 'in-progress') throw new BoardInputError('Shared implementation must use claimTicket.');
+        if (operationName === 'archive-ticket' && (options.status ?? 'done') === 'done') {
+          const saved = readRecord(settings, 'ownership', options.id);
+          if (!saved || saved.record.ownerSessionId !== options.deliveryOwnership?.owner || saved.record.generation !== options.deliveryOwnership?.generation) throw new BoardInputError('Guarded archive requires current ownership credentials.');
+          const ticket = data.tickets.find(t => t.id === options.id);
+          if (!['in-progress', 'review'].includes(ticket.status)) throw new BoardInputError('Ticket status blocks guarded completion.');
+          const eligibility = ticketEligibilityVerdict({ ...ticket, status: 'todo' }, { data, archivedTickets: archive.tickets ?? [], archivedEpics: archive.epics ?? [], plan: context.plan });
+          if (!eligibility.eligible) throw new BoardInputError(eligibility.reasons.map(reason => reason.message).join('; '));
+          trusted = { deliveryRecord: saved.record, currentScopeDigest: deliveryInputs(context, settings, ticket).scope };
+        }
+      }
+      const before = structuredClone({ data, archive });
+      const changed = operation(context, options);
+      applyGuardedBoardTransition(context, before, { data: changed.data ?? data, archive: changed.archive ?? archive }, { approval: options.approval, ...trusted });
+      return changed;
     },
     validate: ({ data, archive }) => {
       const context = { ...loadBoardContext(options), data, archive };

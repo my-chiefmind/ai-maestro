@@ -1,3 +1,4 @@
+import { criteriaFor, DELIVERY_PHASES } from './delivery-policy.mjs';
 /**
  * board-core.mjs — the one true board validator.
  *
@@ -343,6 +344,13 @@ export const isSafeEligibilityReference = (value) =>
   typeof value === "string" && SAFE_REFERENCE.test(value);
 const safeReference = isSafeEligibilityReference;
 
+/** Active dependencies must be done; legacy tickets also accept any archived outcome. */
+function dependencyIsComplete(activeDependency, archivedDependency, requiresCompletedWork) {
+  if (activeDependency) return activeDependency.status === "done";
+  if (requiresCompletedWork) return archivedDependency?.status === "done";
+  return Boolean(archivedDependency);
+}
+
 /**
  * Complete, fail-closed answer to "may this live ticket be dispatched now?".
  * `code` and `details` are stable; `message` is display-only. Details contain only
@@ -387,10 +395,11 @@ export function ticketEligibilityVerdict(ticket, context = {}) {
         continue;
       }
       const dependency = active.get(dependencyId);
+      const archivedDependency = archivedTickets.find(row => row?.id === dependencyId);
       if (!dependency && !archivedIds.has(dependencyId)) {
         reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.DEPENDENCY_MISSING,
           "A dependency is missing.", { dependencyId }));
-      } else if (dependency && dependency.status !== "done") {
+      } else if (!dependencyIsComplete(dependency, archivedDependency, Boolean(ticket.acceptanceCriteria))) {
         reasons.push(eligibilityReason(ELIGIBILITY_REASON_CODES.DEPENDENCY_UNSATISFIED,
           "A dependency is not complete.", { dependencyId }));
       }
@@ -598,6 +607,11 @@ export function validateBoard(data, opts = {}) {
     if (archivedIds.has(t.id)) err(`${id}: also present in archive.json — ids must be unique across data.json + archive.json.`);
     ticketIds.add(t.id);
     statusById.set(t.id, t.status);
+    if (config?.delivery?.enabled || t.acceptanceCriteria != null) {
+      try { criteriaFor(t); } catch (error) { err(`${id}: ${error.message}`); }
+      if (config?.delivery?.enabled && t.status === 'done') err(`${id}: guarded completion must be archived with verified evidence.`);
+    }
+    if (t.delivery?.phase && !DELIVERY_PHASES.includes(t.delivery.phase)) err(`${id}: invalid delivery phase.`);
 
     if (ARCHIVE_ONLY_STATUSES.includes(t.status)) {
       // A declined or duplicate ticket belongs in the archive; leaving it live either

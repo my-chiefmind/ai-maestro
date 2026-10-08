@@ -62,12 +62,15 @@
  */
 
 import { existsSync, mkdirSync, readFileSync } from "fs";
+import { randomUUID } from "node:crypto";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { eligibleTickets } from "./board-core.mjs";
 import { runStage as runStageRaw } from "./run-stage.mjs";
-import { boardVersion } from "./board-io.mjs";
+import { boardVersion, withBoardLock } from "./board-io.mjs";
+import { claimTicket } from "./board-api.mjs";
+import { reviewVerdict } from "./review-verdict.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planIsGating, scopeVerdict } from "./plan-core.mjs";
 
@@ -94,6 +97,8 @@ function usage() {
     --auto-merge            squash-merge the PR if the reviewer records an APPROVED review
                              and both local verification and reported PR checks pass; without
                              it, an approval is left for a human to merge
+    --owner <id>            guarded ownership session (required in guarded mode)
+    --request-id <id>       stable guarded claim request (reuse on resume)
     --resume                pick up an already in-progress/review ticket from its existing PR
                              instead of starting the dev stage over
     --dry-run               resolve and print the plan (roles, models, branch); run nothing
@@ -168,13 +173,21 @@ const timeoutMs = timeoutSeconds * 1000;
 const reviewerGhToken = process.env.MAESTRO_REVIEWER_GH_TOKEN || null;
 
 if (!existsSync(dataPath)) die(`Board file not found: ${dataPath}. Pass --board <path>.`);
-const data = JSON.parse(readFileSync(dataPath, "utf8"));
-const archive = existsSync(archivePath) ? JSON.parse(readFileSync(archivePath, "utf8")) : { epics: [], tickets: [] };
+const snapshot = (() => { try { return withBoardLock(dirname(dataPath), () => ({
+  data: JSON.parse(readFileSync(dataPath, "utf8")),
+  archive: existsSync(archivePath) ? JSON.parse(readFileSync(archivePath, "utf8")) : { epics: [], tickets: [] },
+  config: existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : null,
+  version: boardVersion(dataPath), archiveVersion: boardVersion(archivePath),
+  planVersion: boardVersion(join(dirname(dataPath), "plan.json")),
+  plan: (() => { try { return readPlanForBoard(dataPath); } catch (error) { throw new Error(`Cannot read the ticket plan: ${error.message}`); } })(),
+}), { op: 'runner-snapshot' }); } catch (error) { die(error.message); } })();
+const { data, archive, config } = snapshot;
 const ticket = (data.tickets || []).find((t) => t.id === ticketId);
 if (!ticket) die(`${ticketId} is not a live ticket on ${dataPath}.`);
-const readVersion = boardVersion(dataPath);
+const readVersion = snapshot.version;
+const readArchiveVersion = snapshot.archiveVersion;
+const readPlanVersion = snapshot.planVersion;
 
-const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : null;
 const crossReview = config?.crossReview ?? null;
 
 const devRuntime = ticket.dev_runtime || crossReview?.dev?.runtime;
@@ -205,14 +218,7 @@ if (!testCmd || typeof testCmd !== "string" || !testCmd.trim()) {
 // ── Eligibility — the same gate the orchestrator itself applies, so this command can't start
 //    work the rest of the kit wouldn't consider ready (blocked, human-gated, out of scope, or
 //    already claimed). --resume is the only way around it, and only onto an existing PR.
-const plan = (() => {
-  try {
-    const p = readPlanForBoard(dataPath);
-    return planIsGating(p) ? p : null;
-  } catch {
-    return null;
-  }
-})();
+const plan = planIsGating(snapshot.plan) ? snapshot.plan : null;
 
 if (resume) {
   if (!["in-progress", "review"].includes(ticket.status)) {
@@ -264,10 +270,33 @@ function ensureBinary(cmd) {
   const r = spawnSync(cmd, ["--version"], { stdio: "ignore" });
   if (r.error?.code === "ENOENT") die(`"${cmd}" was not found on PATH.`);
 }
+// The configured push remote defines both forge repository and host. Never let GH_HOST
+// or gh's default repository redirect identity checks to a same-named repository elsewhere.
+let forgeCache;
+function forgeTarget() {
+  if (forgeCache) return forgeCache;
+  const remote = git(repoDir, ['config', '--get', 'remote.origin.url']);
+  if (remote.status !== 0 || !remote.stdout.trim()) throw new Error('origin remote identity unavailable');
+  const info = spawnSync('gh', ['repo', 'view', remote.stdout.trim(), '--json', 'nameWithOwner,url'], { cwd: repoDir, encoding: 'utf8' });
+  if (info.status !== 0) throw new Error('origin repository lookup failed');
+  const value = JSON.parse(info.stdout);
+  const url = new URL(value.url);
+  if (!/^[^/]+\/[^/]+$/.test(value.nameWithOwner) || url.protocol !== 'https:' || url.pathname.replace(/^\/|\/$/g, '') !== value.nameWithOwner) throw new Error('invalid origin repository identity');
+  const originHost = remote.stdout.trim().match(/^(?:https:\/\/|ssh:\/\/git@|git@)([^/:]+)[:/]/)?.[1];
+  if (originHost && originHost.toLowerCase() !== url.hostname.toLowerCase()) throw new Error('forge host differs from origin');
+  forgeCache = { host: url.hostname, repository: `${url.hostname}/${value.nameWithOwner}`, name: value.nameWithOwner };
+  return forgeCache;
+}
+function forgeGh(args, options = {}) {
+  const target = forgeTarget();
+  const flags = args[0] === 'api' || args[0] === 'auth' ? ['--hostname', target.host] : ['--repo', target.repository];
+  return spawnSync('gh', [...args, ...flags], options);
+}
 ensureBinary(devRuntime);
 ensureBinary(reviewerRuntime);
 ensureBinary("gh");
-if (spawnSync("gh", ["auth", "status"], { cwd: repoDir, stdio: "ignore" }).status !== 0) {
+try { forgeTarget(); } catch (error) { die(`PR discovery is unknown: ${error.message}. Reconcile before retrying.`); }
+if (forgeGh(["auth", "status"], { cwd: repoDir, stdio: "ignore" }).status !== 0) {
   die("gh is not authenticated in this environment — run 'gh auth login' first.");
 }
 if (!reviewerGhToken) {
@@ -283,19 +312,35 @@ function setStatus(status, extra = []) {
 /** The single open (or most recent) PR for a branch, found via gh — never trusted from an
  *  agent's own claim. Returns null if none exists yet. */
 function findPr(branch) {
-  const r = spawnSync("gh", ["pr", "list", "--head", branch, "--state", "all", "--json", "url,number,state"],
-    { cwd: repoDir, encoding: "utf8" });
-  if (r.status !== 0) return null;
+  // REST pagination includes closed and merged deliveries. Never infer absence from errors.
   try {
-    const list = JSON.parse(r.stdout || "[]");
-    return list.find((p) => p.state === "OPEN") || null;
-  } catch {
-    return null;
-  }
+    const identity = forgeTarget().name;
+    const r = forgeGh(["api", "--paginate", "--slurp", `repos/${identity}/pulls?state=all&per_page=100&head=${encodeURIComponent(identity.split('/')[0] + ':' + branch)}`], { cwd: repoDir, encoding: "utf8" });
+    if (r.status !== 0) throw new Error("pull request lookup failed");
+    const pages = JSON.parse(r.stdout);
+    if (!Array.isArray(pages) || pages.some(page => !Array.isArray(page))) throw new Error("invalid paginated response");
+    const pulls = pages.flat();
+    if (pulls.some(p => !p || !Number.isInteger(p.number) || !p.html_url || !['open', 'closed'].includes(p.state) ||
+      typeof p.head?.ref !== 'string' || !p.head?.repo?.full_name || !p.base?.repo?.full_name)) throw new Error("incomplete pull request identity");
+    const matches = pulls.filter(p => p.head?.ref === branch && p.head?.repo?.full_name === identity && p.base?.repo?.full_name === identity);
+    if (matches.length > 1) throw new Error("multiple deliveries require reconciliation");
+    if (!matches.length) return { status: "absent" };
+    const p = matches[0];
+    if (!p.html_url || !p.number || !['open', 'closed'].includes(p.state)) throw new Error("invalid pull request identity");
+    return { status: "found", pr: { url: p.html_url, number: p.number, state: p.merged_at ? "MERGED" : p.state.toUpperCase() } };
+  } catch (error) { return { status: "unknown", reason: error.message }; }
+}
+
+function existingPr(branch) {
+  const result = findPr(branch);
+  if (result.status === "unknown") die(`PR discovery is unknown: ${result.reason}. Reconcile before retrying.`);
+  if (result.status === "absent") return null;
+  if (result.pr.state !== "OPEN") die(`Existing delivery is ${result.pr.state}: ${result.pr.url}. Reconcile acceptance or an explicit repair attempt before implementation.`);
+  return result.pr;
 }
 
 function ghPrJson(prUrl, fields) {
-  const r = spawnSync("gh", ["pr", "view", prUrl, "--json", fields], { cwd: repoDir, encoding: "utf8" });
+  const r = forgeGh(["pr", "view", prUrl, "--json", fields], { cwd: repoDir, encoding: "utf8" });
   if (r.status !== 0) return null;
   try { return JSON.parse(r.stdout); } catch { return null; }
 }
@@ -303,16 +348,14 @@ function ghPrJson(prUrl, fields) {
 /** The reviewer's verdict as GitHub itself recorded it (latest review's state), not as the
  *  reviewer agent claimed it — a claimed "approve" GitHub refused to record (e.g. self-review)
  *  reads as no verdict here, which the caller treats as a hard failure. */
-function verifiedVerdict(prUrl, reviewerLogin, previousCount) {
-  const info = ghPrJson(prUrl, "reviews");
-  const reviews = (info?.reviews || []).filter((review) => review.author?.login === reviewerLogin);
-  if (reviews.length <= previousCount) return null;
-  const state = String(reviews[reviews.length - 1]?.state || "").toUpperCase();
-  return { APPROVED: "approve", CHANGES_REQUESTED: "request-changes", COMMENTED: "comment" }[state] ?? null;
+function verifiedVerdict(prUrl, reviewerLogin, previousCount, headSha) {
+  const info = ghPrJson(prUrl, "reviews,headRefOid,author");
+  if (!info || info.headRefOid !== headSha) return null;
+  return reviewVerdict({ reviews: info.reviews, reviewerLogin, authorLogin: info.author?.login, headSha, previousCount });
 }
 
 function ghLogin(env) {
-  const r = spawnSync("gh", ["api", "user", "--jq", ".login"], { cwd: repoDir, encoding: "utf8", env: { ...process.env, ...env } });
+  const r = forgeGh(["api", "user", "--jq", ".login"], { cwd: repoDir, encoding: "utf8", env: { ...process.env, ...env } });
   if (r.status !== 0 || !r.stdout.trim()) die("Could not resolve a GitHub login for one of the pipeline roles.");
   return r.stdout.trim();
 }
@@ -396,16 +439,130 @@ ${ticket.desc || "(none)"}
 You are a read-only reviewer. Do not edit, format, commit, push, switch branches, or merge.
 Review the PR's diff against the ticket using git and gh. Then take exactly ONE of these real
 GitHub actions yourself:
-  - Defects found:            gh pr review ${prUrl} --request-changes -b "<specific defects>"
-  - Acceptable, but you want a human to look before it lands: gh pr review ${prUrl} --comment -b "<notes>"
-  - Meets the ticket and is safe to land: gh pr review ${prUrl} --approve -b "<summary>"
+  - Defects found:            gh pr review ${prUrl} --repo ${forgeTarget().repository} --request-changes -b "<specific defects>"
+  - Acceptable, but you want a human to look before it lands: gh pr review ${prUrl} --repo ${forgeTarget().repository} --comment -b "<notes>"
+  - Meets the ticket and is safe to land: gh pr review ${prUrl} --repo ${forgeTarget().repository} --approve -b "<summary>"
 
 Do NOT run \`gh pr merge\` yourself under any circumstances — merging is a separate, gated
 step regardless of your verdict.`;
 }
 
+/** Guarded execution records dispatch intent before invoking either runtime and keeps
+ * uncertain failures fenced. Evidence is written outside the source checkout. */
+async function runGuarded() {
+  const api = await import('./delivery-api.mjs');
+  if (autoMerge) die('Guarded runner requires human merge; use delivery acceptance after merge.');
+  const owner = flag('owner');
+  const requestId = flag('request-id');
+  if (!owner || !requestId) die('Guarded runner needs --owner and --request-id; reuse them when resuming.');
+  const baseOptions = { dataPath, archivePath, configPath, id: ticketId, owner, requestId, branch: branchName, executionRepo: resolve(worktreeDir) };
+  if (!existsSync(worktreeDir)) {
+    if (resume) die('Guarded resume worktree is missing; restore it before reconciliation.');
+    if (git(repoDir, ['fetch', 'origin']).status !== 0) die('Cannot fetch guarded implementation base.');
+    git(repoDir, ['remote', 'set-head', 'origin', '-a']);
+    const base = git(repoDir, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    if (base.status !== 0) die('Cannot resolve guarded implementation base.');
+    mkdirSync(dirname(worktreeDir), { recursive: true });
+    if (git(repoDir, ['worktree', 'add', worktreeDir, '-b', branchName, base.stdout.trim()]).status !== 0) die('Cannot create guarded worktree.');
+  }
+  if (git(worktreeDir, ['branch', '--show-current']).stdout.trim() !== branchName) die('Guarded worktree is on another branch.');
+  const claimed = resume ? null : api.guardedClaim({ ...baseOptions,
+    expectVersion: readVersion, expectArchiveVersion: readArchiveVersion, expectPlanVersion: readPlanVersion });
+  if (claimed && !claimed.claimed) die('Guarded claim refused; reconcile eligibility before retrying.');
+  const current = api.deliveryStatus(baseOptions);
+  if (!current || current.record.ownerSessionId !== owner) die('Guarded ownership belongs to another session.');
+  const options = { ...baseOptions, generation: current.record.generation };
+  const quote = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+  const cliContext = `--board ${quote(dataPath)} --archive ${quote(archivePath)} --config ${quote(configPath)} --execution-repo ${quote(resolve(worktreeDir))} --owner ${quote(owner)} --generation ${options.generation}`;
+  const statusCommand = `maestro delivery status ${quote(ticketId)} ${cliContext} --json`;
+  const runtimeFlags = ['claude-flag', 'codex-flag'].flatMap(name => flagAll(name).map(value => ` --${name} ${quote(value)}`)).join('');
+  const resumeCommand = `maestro run ${quote(ticketId)} --resume --board ${quote(dataPath)} --archive ${quote(archivePath)} --config ${quote(configPath)} --repo ${quote(repoDir)} --owner ${quote(owner)} --request-id ${quote(requestId)} --timeout ${timeoutSeconds}${runtimeFlags}`;
+  const evidenceDir = resolve(worktreeDir, git(worktreeDir, ['rev-parse', '--git-common-dir']).stdout.trim(), 'maestro', 'reviews');
+  const reportFor = attemptId => join(evidenceDir, `${ticketSegment}-${attemptId}.json`);
+  function uncertainDispatch(attemptId, reason, stage) {
+    return `${reason}\nDispatch remains running or uncertain: owner=${owner}, generation=${options.generation}, attempt=${attemptId}.` +
+      (stage === 'qa' ? `\nQA report: ${reportFor(attemptId)}` : '') +
+      `\nInspect: ${statusCommand}\nConfirm through the runtime/harness that this exact attempt stopped or never started. Register that proof as a trusted delivery.trustedDispatchEvidence reference before running:\n` +
+      `maestro delivery dispatch-stop ${quote(ticketId)} ${cliContext} --attempt-id ${quote(attemptId)} --evidence '<trusted-evidence-reference>'\nThen resume: ${resumeCommand}`;
+  }
+  function reportFailure(attemptId, reportPath, reason) {
+    return `QA report rejected for attempt ${attemptId}: ${reason}\nReport: ${reportPath}\nNo QA pass is inferred from this failure; submission has not been attempted. The completed worker remains stopped; preserve this report for inspection.\nInspect: ${statusCommand}\nRequest a fresh independent review: ${resumeCommand}`;
+  }
+
+  const preflight = api.preflight({ ...options, action: 'resume' });
+  if (!preflight.ready) die(`Guarded preflight refused: ${preflight.reasons.join('; ')}`);
+  if (current.record.dispatch && !current.record.dispatch.stoppedEvidence) die(uncertainDispatch(current.record.dispatch.attemptId, 'Previous dispatch needs reconciliation before resuming.', current.record.dispatch.stage));
+  if (['submitted', 'awaiting-dev-acceptance', 'ready-for-closure', 'closed'].includes(current.record.state)) {
+    if (current.record.state === 'submitted') api.recordMerge(options);
+    console.log(`${ticketId} requires explicit acceptance/closure evidence; use maestro delivery status and acceptance. No new worker started.`);
+    return;
+  }
+  const devLogin = ghLogin();
+  const reviewerEnv = { GH_TOKEN: reviewerGhToken, GITHUB_TOKEN: reviewerGhToken, GH_ENTERPRISE_TOKEN: reviewerGhToken, GITHUB_ENTERPRISE_TOKEN: reviewerGhToken, GH_HOST: forgeTarget().host };
+  const reviewerLogin = ghLogin(reviewerEnv);
+  if (devLogin.toLowerCase() === reviewerLogin.toLowerCase()) die('Guarded QA requires an independent reviewer identity.');
+  function dispatch(stage, runtime, model, prompt, env, attemptId = randomUUID()) {
+    api.beginDispatch({ ...options, stage, attemptId });
+    console.log(`Dispatch ${stage}: ${attemptId}`);
+    if (stage === 'qa') console.log(`QA report: ${reportFor(attemptId)}`);
+    // A thrown timeout/spawn failure leaves dispatch uncertain. Never infer termination.
+    try {
+      const result = runStageRaw({ boardDir: boardDirPath, ticketId, stage, runtime, model, prompt,
+        extraFlags: flagAll(runtime === 'claude' ? 'claude-flag' : 'codex-flag'), cwd: worktreeDir,
+        env: { ...process.env, ...env }, timeoutMs });
+      api.acknowledgeDispatch({ ...options, attemptId, agentIdentity: result.sessionId || attemptId });
+      api.stopDispatch({ ...options, attemptId, harnessAdapter: { resolveAttempt: id => ({
+        attemptId: id, state: 'stopped', evidence: `Synchronous runtime returned successfully for ${attemptId}`,
+      }) } });
+    } catch (error) { throw new Error(uncertainDispatch(attemptId, `${stage} dispatch did not complete: ${error.message}`, stage)); }
+  }
+  if (['claimed', 'repair-required'].includes(current.record.state)) {
+    installDeps(worktreeDir);
+    dispatch('implementation', devRuntime, devModel, devPrompt());
+  }
+  if (current.record.state !== 'qa-passed') {
+    const contract = api.deliveryContract(options);
+    const head = git(worktreeDir, ['rev-parse', 'HEAD']).stdout.trim();
+    const beforeStatus = git(worktreeDir, ['status', '--porcelain']).stdout;
+    if (beforeStatus.trim()) die('Guarded implementation left uncommitted work.');
+    mkdirSync(evidenceDir, { recursive: true });
+    const qaAttemptId = randomUUID();
+    const reportPath = reportFor(qaAttemptId);
+    const prompt = `Independently review ticket ${ticketId} against the following frozen contract. Do not change source files, commit, push, open a PR, or merge.
+Run the declared checks and inspect requirements. Write a JSON QA report at ${reportPath}.
+Contract: ${JSON.stringify(contract)}
+Report fields: ticketId=${ticketId}, deliveryAttemptId=${contract.deliveryAttemptId}, scopeDigest=${contract.scope}, reviewedCodeSha=${head}, reviewerIdentity=${reviewerLogin}, implementationIdentity=${devLogin}, verdict=PASS/FAIL/BLOCKED.
+For PASS include criteria [{id,status:PASS,evidence}] for pre-merge criteria only; checks [{command,exitCode,revision,evidence}]; gates with each required gate mapped to {status:PASS,evidence}. Report actual evidence; never invent checks or approvals. FAIL/BLOCKED must include evidence explaining defects. Post-deploy requirements remain pending.`;
+    dispatch('qa', reviewerRuntime, reviewerModel, prompt, reviewerEnv, qaAttemptId);
+    if (git(worktreeDir, ['rev-parse', 'HEAD']).stdout.trim() !== head || git(worktreeDir, ['status', '--porcelain']).stdout !== beforeStatus) die('Reviewer mutated guarded worktree; verdict rejected.');
+    let qa;
+    try {
+      qa = JSON.parse(readFileSync(reportPath, 'utf8'));
+      if (!qa || typeof qa !== 'object' || Array.isArray(qa)) throw new Error('expected a JSON QA object');
+      if (qa.reviewerIdentity !== reviewerLogin || qa.implementationIdentity !== devLogin || qa.reviewedCodeSha !== head) throw new Error('QA provenance differs from dispatched reviewer/head');
+      api.recordQa({ ...options, qa });
+    } catch (error) {
+      const reason = error.code === 'ENOENT' ? 'reviewer completed without creating the required report' : error instanceof SyntaxError ? 'report is not valid JSON' : error.message;
+      throw new Error(reportFailure(qaAttemptId, reportPath, reason));
+    }
+    if (qa.verdict !== 'PASS') {
+      console.log(`${ticketId} requires same-ticket repair. QA: ${reportPath}`);
+      return;
+    }
+  }
+  api.gateDelivery(options);
+  const submitted = api.submitDelivery({ ...options, requestId: `${requestId}-submit` });
+  console.log(`Guarded delivery submitted: ${submitted.pr.url}. Human merge and explicit completion evidence remain required.`);
+}
+
+if (config?.delivery?.enabled === true) {
+  try { await runGuarded(); } catch (error) { die(error.message); }
+  process.exit(0);
+}
+
 // ── Dev stage (skipped on --resume when a PR already exists) ──────────────────────────────
-let prUrl = resume ? findPr(branchName)?.url : null;
+let prUrl = existingPr(branchName)?.url;
+if (prUrl && !resume) die("An existing delivery requires --resume.");
 let defaultBranch = "";
 
 const fetch = git(repoDir, ["fetch", "origin"], { stdio: "inherit" });
@@ -416,19 +573,22 @@ if (remoteHead.status !== 0) die(`Could not resolve origin/HEAD in ${repoDir} �
 defaultBranch = remoteHead.stdout.trim().replace(/^origin\//, "");
 
 if (!prUrl) {
-  if (resume) die(`--resume was passed but no PR was found for branch "${branchName}" — nothing to pick up. Run without --resume once the ticket is eligible again, or open the PR by hand.`);
+  if (resume && !existsSync(worktreeDir)) die(`Resume requires the existing implementation worktree at ${worktreeDir}.`);
 
-  if (existsSync(worktreeDir)) {
+  if (!resume && existsSync(worktreeDir)) {
     die(`${resolve(worktreeDir)} already exists — a previous run may be in progress or was left ` +
       `uncleaned. Inspect it (git -C ${repoDir} worktree list) and remove it yourself before retrying.`);
   }
 
   console.log(`\n→ dev stage (${devRuntime}/${devModel})…`);
-  setStatus("in-progress", ["--expect-version", readVersion]);
+  const claim = resume ? null : claimTicket({ dataPath, archivePath, configPath, id: ticketId,
+    expectVersion: readVersion, expectArchiveVersion: readArchiveVersion, expectPlanVersion: readPlanVersion });
+  if (claim && !claim.result.claimed) die(`Could not claim ${ticketId}: eligibility or board/archive/plan snapshot changed.`);
 
   mkdirSync(dirname(worktreeDir), { recursive: true });
-  const wt = git(repoDir, ["worktree", "add", worktreeDir, "-b", branchName, `origin/${defaultBranch}`], { stdio: "inherit" });
+  const wt = resume ? { status: 0 } : git(repoDir, ["worktree", "add", worktreeDir, "-b", branchName, `origin/${defaultBranch}`], { stdio: "inherit" });
   if (wt.status !== 0) die(`git worktree add failed (see above) — ${ticketId} is left "in-progress".`);
+  if (git(worktreeDir, ["branch", "--show-current"]).stdout.trim() !== branchName) die("Resumed implementation worktree is on another branch.");
   installDeps(worktreeDir);
 
   runStage("dev", devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
@@ -437,13 +597,13 @@ if (!prUrl) {
   runTests(worktreeDir);
   const push = git(worktreeDir, ["push", "-u", "origin", branchName], { stdio: "inherit" });
   if (push.status !== 0) die(`Could not push ${branchName}; ${ticketId} remains in-progress.`);
-  const create = spawnSync("gh", ["pr", "create", "--head", branchName,
+  const create = forgeGh(["pr", "create", "--head", branchName,
     "--title", `${ticket.name || ticketId} (${ticketId})`,
     "--body", `AI Maestro cross-review delivery for ${ticketId}.\n\nTest: ${testCmd}`],
     { cwd: worktreeDir, stdio: "inherit" });
-  if (create.status !== 0 && !findPr(branchName)) die(`Could not create a PR for ${branchName}.`);
+  if (create.status !== 0 && !existingPr(branchName)) die(`Could not create a PR for ${branchName}.`);
 
-  const pr = findPr(branchName);
+  const pr = existingPr(branchName);
   if (!pr) {
     die(`Dev stage finished but no PR was found for branch "${branchName}" (checked via gh pr list) — ` +
       `${ticketId} is left "in-progress"; the worktree at ${resolve(worktreeDir)} is left for you to inspect.`);
@@ -471,18 +631,26 @@ if (!prUrl) {
   if (!localHead || localHead !== remoteHead) {
     die(`The resumed worktree does not match origin/${branchName}; refusing to review or test stale code.`);
   }
+  if (ticket.status === "in-progress") {
+    runStage("dev", devRuntime, devModel, devPrompt(), flagAll(devRuntime === "claude" ? "claude-flag" : "codex-flag"), worktreeDir);
+    assertCleanCommittedWorktree(worktreeDir, defaultBranch);
+    runTests(worktreeDir);
+    if (git(worktreeDir, ["push", "origin", branchName], { stdio: "inherit" }).status !== 0) die("Could not push same-ticket repair.");
+  }
   if (ticket.status !== "review") setStatus("review");
 }
 
 // ── Reviewer stage ──────────────────────────────────────────────────────────────────────────
 console.log(`\n→ reviewer stage (${reviewerRuntime}/${reviewerModel})…`);
-const reviewerEnv = reviewerGhToken ? { GH_TOKEN: reviewerGhToken, GITHUB_TOKEN: reviewerGhToken } : undefined;
+const reviewerEnv = reviewerGhToken ? { GH_TOKEN: reviewerGhToken, GITHUB_TOKEN: reviewerGhToken, GH_ENTERPRISE_TOKEN: reviewerGhToken, GITHUB_ENTERPRISE_TOKEN: reviewerGhToken, GH_HOST: forgeTarget().host } : undefined;
 const devLogin = ghLogin();
 const reviewerLogin = ghLogin(reviewerEnv);
 if (reviewerLogin === devLogin) {
   die(`Developer and reviewer resolve to the same GitHub account (${devLogin}). Supply a distinct reviewer token; GitHub cannot record an independent approval from the PR author.`);
 }
-const priorReviewerReviews = (ghPrJson(prUrl, "reviews")?.reviews || [])
+const priorReviewInfo = ghPrJson(prUrl, "reviews,headRefOid,author");
+if (!priorReviewInfo || !Array.isArray(priorReviewInfo.reviews)) die("Could not read review history; refusing review from unknown state.");
+const priorReviewerReviews = priorReviewInfo.reviews
   .filter((review) => review.author?.login === reviewerLogin).length;
 const reviewerHeadBefore = git(worktreeDir, ["rev-parse", "HEAD"]).stdout.trim();
 const reviewerStatusBefore = git(worktreeDir, ["status", "--porcelain"]).stdout;
@@ -493,7 +661,7 @@ if (reviewerHeadAfter !== reviewerHeadBefore || reviewerStatusAfter !== reviewer
   die("Reviewer mutated the worktree; its verdict is rejected and the PR remains unmerged for inspection.");
 }
 
-const verdict = verifiedVerdict(prUrl, reviewerLogin, priorReviewerReviews);
+const verdict = verifiedVerdict(prUrl, reviewerLogin, priorReviewerReviews, reviewerHeadBefore);
 if (!verdict) {
   die(`No matching review action was found on ${prUrl}'s own history after the reviewer stage ran — ` +
     `possibly blocked by GitHub (e.g. self-review) or the reviewer didn't actually call \`gh pr review\`. ` +
@@ -505,21 +673,22 @@ if (verdict === "request-changes") {
   const reviewerReviews = (ghPrJson(prUrl, "reviews")?.reviews || [])
     .filter((review) => review.author?.login === reviewerLogin);
   const notes = reviewerReviews[reviewerReviews.length - 1]?.body || "(no review body)";
-  const r = spawnSync(NODE, [join(KIT_ROOT, "scripts", "board-write.mjs"), "block", ticketId,
-    "--name", `Review requested changes on ${ticketId}`, "--desc", `${notes}\n\nPR: ${prUrl}`,
-    "--board", dataPath], { stdio: "inherit", cwd: repoDir });
-  if (r.status !== 0) die(`Reviewer requested changes on ${prUrl}, but filing the blocker failed (see above).`);
-  console.log(`\n${ticketId} blocked; a blocker ticket was filed with the reviewer's notes. Worktree left at ${resolve(worktreeDir)} for the next dev pass.`);
+  setStatus("in-progress");
+  console.log(`\n${ticketId} requires repair on the same ticket and branch. Review: ${notes}\nPR: ${prUrl}\nWorktree: ${resolve(worktreeDir)}`);
 } else if (verdict === "comment") {
   console.log(`\n${ticketId} stays "review" — the reviewer commented on ${prUrl} without a verdict. Nothing else to do.`);
 } else if (autoMerge) {
   runTests(worktreeDir);
-  const initialChecks = ghPrJson(prUrl, "statusCheckRollup")?.statusCheckRollup || [];
+  const mergeInfo = ghPrJson(prUrl, "statusCheckRollup,headRefOid,reviews,author");
+  if (!mergeInfo || mergeInfo.headRefOid !== reviewerHeadBefore || !Array.isArray(mergeInfo.statusCheckRollup) ||
+    reviewVerdict({ reviews: mergeInfo.reviews, reviewerLogin, authorLogin: mergeInfo.author?.login, headSha: reviewerHeadBefore }) !== 'approve') die('Review/head/check state changed or is unknown; refusing merge.');
+  if (git(worktreeDir, ['rev-parse', 'HEAD']).stdout.trim() !== reviewerHeadBefore || git(worktreeDir, ['status', '--porcelain']).stdout.trim()) die('Verification mutated reviewed work; refusing merge.');
+  const initialChecks = mergeInfo.statusCheckRollup;
   if (initialChecks.length) {
-    const checks = spawnSync("gh", ["pr", "checks", prUrl, "--watch", "--fail-fast"], { stdio: "inherit", cwd: repoDir });
+    const checks = forgeGh(["pr", "checks", prUrl, "--watch", "--fail-fast"], { stdio: "inherit", cwd: repoDir });
     if (checks.status !== 0) die(`Required PR checks failed on ${prUrl}; refusing to merge.`);
   }
-  const merge = spawnSync("gh", ["pr", "merge", prUrl, "--squash"], { stdio: "inherit", cwd: repoDir });
+  const merge = forgeGh(["pr", "merge", prUrl, "--squash", "--match-head-commit", reviewerHeadBefore], { stdio: "inherit", cwd: repoDir });
   if (merge.status !== 0) {
     die(`Reviewer approved ${prUrl}, but \`gh pr merge\` failed (see above) — ${ticketId} is left "review" with an approved, unmerged PR.`);
   }

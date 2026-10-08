@@ -33,6 +33,15 @@
  * }
  */
 
+// POSIX shell literal for data arguments in the workflow's command examples.
+// Reject NUL, which cannot be represented in an OS command argument.
+// This is shell quoting, not a sandbox for agent instructions or configured commands.
+function shellArg(value) {
+  const text = String(value);
+  if (/\x00/.test(text)) throw new Error("command argument contains NUL");
+  return "'" + text.replace(/'/g, "'\\''") + "'";
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MAX_FIX_LOOPS      = 3;
@@ -62,7 +71,7 @@ const BOARD_REPO = BOARD.replace(/[\/\\]board[\/\\][^\/\\]+$/, "");
 // Injected by the wrapper with the kit's real path. The fallback derives it from the board,
 // which is correct in the vendored layout (kit IS the board's parent) and wrong in the
 // capsule layout — which is exactly why sync injects it instead.
-const TICKET_CMD = PROJECT_CONFIG.TICKET_CMD || `node ${BOARD_REPO}/scripts/board-write.mjs`;
+const TICKET_CMD = PROJECT_CONFIG.TICKET_CMD || `node ${shellArg(BOARD_REPO + "/scripts/board-write.mjs")}`;
 
 // How every board-writing prompt must handle the command's exit codes. Exit 2 is the
 // contended case — another writer held the lock or the board moved — and is precisely the
@@ -78,7 +87,7 @@ const BOARD_RETRY = `
 // board at all, so a post-hoc check could only ever report someone else's damage.
 const BOARD_EPILOGUE = PUBLISH_BOARD ? `
   Then publish the transition:
-    git -C ${BOARD_REPO} add ${BOARD} ${ARCHIVE} && git -C ${BOARD_REPO} commit -m "board: transition" && git -C ${BOARD_REPO} push
+    git -C ${shellArg(BOARD_REPO)} add ${shellArg(BOARD)} ${shellArg(ARCHIVE)} && git -C ${shellArg(BOARD_REPO)} commit -m "board: transition" && git -C ${shellArg(BOARD_REPO)} push
   If the commit or push fails, report it — an unpublished transition does not count as recorded.` : `
   Do NOT commit or push the board — this project keeps its board data local (PUBLISH_BOARD=false).`;
 
@@ -542,7 +551,7 @@ async function readBoard() {
     `Read ${BOARD} as the active board and ${ARCHIVE} as the archive. Return the active board's epics and tickets arrays plus archiveTickets containing every archived ticket. If a file is absent or empty, use an empty array. Do not treat a missing dependency as archived.
 
   Run EXACTLY this command and return its parsed JSON as \`eligibility\`:
-    ${TICKET_CMD} eligibility --board ${BOARD} --archive ${ARCHIVE} --json
+    ${TICKET_CMD} eligibility --board ${shellArg(BOARD)} --archive ${shellArg(ARCHIVE)} --json
   Copy the command output verbatim. Do not recalculate eligibility from board fields. If the
   command fails, return eligibility={ok:false,verdicts:[],version:"",archiveVersion:"",planVersion:""}
   so the deterministic preflight fails closed and starts no work.
@@ -573,13 +582,13 @@ async function markBoard(id, status, coord) {
   // pair lands in one atomic write — split across two, a crash between them leaves the
   // board advertising a stage that is not running.
   const coordFlags = coord
-    ? ` --execution-mode "${coord.executionMode}" --agent-plan "${coord.agentPlan.join(",")}"` +
-      ` --current-agent "${coord.currentAgent}" --next-agent "${coord.nextAgent}"`
+    ? ` --execution-mode ${shellArg(coord.executionMode)} --agent-plan ${shellArg(coord.agentPlan.join(","))}` +
+      ` --current-agent ${shellArg(coord.currentAgent)} --next-agent ${shellArg(coord.nextAgent)}`
     : "";
   await agent(
     `Move ticket ${id} to "${status}" on the board by running this command:
 
-    ${TICKET_CMD} set-status ${id} ${status} --board ${BOARD} --json${coordFlags}
+    ${TICKET_CMD} set-status ${shellArg(id)} ${shellArg(status)} --board ${shellArg(BOARD)} --json${coordFlags}
 ${BOARD_RETRY}
 ${BOARD_EPILOGUE}
   Return the command's JSON output.`,
@@ -588,15 +597,15 @@ ${BOARD_EPILOGUE}
 }
 
 async function claimBoard(id, snapshot, coord) {
-  const coordFlags = ` --execution-mode "${coord.executionMode}" --agent-plan "${coord.agentPlan.join(",")}"` +
-    ` --current-agent "${coord.currentAgent}" --next-agent "${coord.nextAgent}"`;
+  const coordFlags = ` --execution-mode ${shellArg(coord.executionMode)} --agent-plan ${shellArg(coord.agentPlan.join(","))}` +
+    ` --current-agent ${shellArg(coord.currentAgent)} --next-agent ${shellArg(coord.nextAgent)}`;
   return await agent(
     `Atomically claim ticket ${id}. Run EXACTLY this command and return its parsed JSON verbatim:
 
-    ${TICKET_CMD} claim ${id} --board ${BOARD} --archive ${ARCHIVE} --json \\
-      --expect-version "${snapshot.version}" \\
-      --expect-archive-version "${snapshot.archiveVersion}" \\
-      --expect-plan-version "${snapshot.planVersion}"${coordFlags}
+    ${TICKET_CMD} claim ${shellArg(id)} --board ${shellArg(BOARD)} --archive ${shellArg(ARCHIVE)} --json \\
+      --expect-version ${shellArg(snapshot.version)} \\
+      --expect-archive-version ${shellArg(snapshot.archiveVersion)} \\
+      --expect-plan-version ${shellArg(snapshot.planVersion)}${coordFlags}
 
   The command re-loads board, archive, and plan under the shared lock. Never replace it with
   set-status. If claimed=false, do not retry from the stale snapshot and do not create a run
@@ -614,8 +623,8 @@ async function archiveTicketDone(record) {
     `Land ticket ${record.ticket} following the land-and-archive convention, by running this
   command with <TODAY> replaced by today's date in YYYY-MM-DD form:
 
-    ${TICKET_CMD} archive ${record.ticket} --board ${BOARD} --archive ${ARCHIVE} --json \\
-      --evidence "${evidence}" --done-at <TODAY>
+    ${TICKET_CMD} archive ${shellArg(record.ticket)} --board ${shellArg(BOARD)} --archive ${shellArg(ARCHIVE)} --json \\
+      --evidence ${shellArg(evidence)} --done-at <TODAY>
 
   The command moves the ticket out of ${BOARD} and into ${ARCHIVE} in one guarded write —
   both files, or neither. That matters here more than anywhere else: a ticket that lands in
@@ -633,9 +642,9 @@ ${BOARD_EPILOGUE}
 async function verifyWriterState(record, handoff) {
   return await agent(
     `Verify the state of the worktree at ${record.worktree} after a writer handoff. Run ONLY these read-only commands (do NOT run anything that writes — no checkout, reset, clean, fix, or formatters):
-       git -C ${record.worktree} status --porcelain          # clean = empty output
-       git -C ${record.worktree} rev-list --count origin/main..HEAD   # newCommits
-       ${handoff.commit ? `git -C ${record.worktree} merge-base --is-ancestor ${handoff.commit} HEAD && echo COMMIT_OK || echo COMMIT_MISSING` : `echo COMMIT_MISSING   # the handoff named no commit`}
+       git -C ${shellArg(record.worktree)} status --porcelain          # clean = empty output
+       git -C ${shellArg(record.worktree)} rev-list --count origin/main..HEAD   # newCommits
+       ${handoff.commit ? `git -C ${shellArg(record.worktree)} merge-base --is-ancestor ${shellArg(handoff.commit)} HEAD && echo COMMIT_OK || echo COMMIT_MISSING` : `echo COMMIT_MISSING   # the handoff named no commit`}
      Return: clean (boolean — status output was empty), newCommits (the count), commitExists (boolean — COMMIT_OK).`,
     { label: `verify-handoff-${record.ticket}`, schema: WORKTREE_VERIFICATION_SCHEMA }
   );
@@ -674,19 +683,20 @@ async function setupWorktree(repoPath, worktreePath, branch) {
 
   Run these steps in order, and STOP/report if any fails:
   1. Confirm the primary checkout is on main:
-       git -C ${repoPath} rev-parse --abbrev-ref HEAD   # must print "main"; if not, git -C ${repoPath} checkout main
+       git -C ${shellArg(repoPath)} rev-parse --abbrev-ref HEAD   # must print "main"; if not, git -C ${shellArg(repoPath)} checkout main
   2. Clean up any stale residue from a previous run:
-       git -C ${repoPath} worktree remove ${worktreePath} --force  2>/dev/null || true
-       git -C ${repoPath} branch -D ${branch}  2>/dev/null || true
+       git -C ${shellArg(repoPath)} worktree remove ${shellArg(worktreePath)} --force  2>/dev/null || true
+       git -C ${shellArg(repoPath)} branch -D ${shellArg(branch)}  2>/dev/null || true
   3. Fetch and create the worktree off the remote main:
-       git -C ${repoPath} fetch origin
-       git -C ${repoPath} worktree add ${worktreePath} -b ${branch} origin/main
-  4. Copy the local .env into the worktree so tests don't fail on missing config:
-       cp ${repoPath}/.env ${worktreePath}/.env  2>/dev/null || true
+       git -C ${shellArg(repoPath)} fetch origin
+       git -C ${shellArg(repoPath)} worktree add ${shellArg(worktreePath)} -b ${shellArg(branch)} origin/main
+  4. Do not copy .env files, credentials, or other local secrets into the worktree.
+     Use the project's documented test configuration. If required configuration is missing,
+     report a blocker; never copy secrets to make tests pass.
   5. Verify: the worktree dir exists and HEAD is ${branch}:
-       git -C ${worktreePath} rev-parse --abbrev-ref HEAD   # must print "${branch}"
+       git -C ${shellArg(worktreePath)} rev-parse --abbrev-ref HEAD   # must print ${shellArg(branch)}
   6. Re-confirm the PRIMARY checkout is still on main:
-       git -C ${repoPath} rev-parse --abbrev-ref HEAD   # must still print "main"
+       git -C ${shellArg(repoPath)} rev-parse --abbrev-ref HEAD   # must still print "main"
 
   Return a short confirmation that the worktree at ${worktreePath} is on branch ${branch} and the primary checkout is on main.`,
     { label: `worktree-setup-${branch}` }
@@ -696,9 +706,9 @@ async function setupWorktree(repoPath, worktreePath, branch) {
 async function verifyWorktree(repoPath, worktreePath, branch) {
   const res = await agent(
     `Verify an existing git worktree is intact for a resume. Run:
-       git -C ${repoPath} worktree list
-       git -C ${worktreePath} rev-parse --abbrev-ref HEAD   # should print "${branch}"
-       test -d ${worktreePath} && echo DIR_OK || echo DIR_MISSING
+       git -C ${shellArg(repoPath)} worktree list
+       git -C ${shellArg(worktreePath)} rev-parse --abbrev-ref HEAD   # should print ${shellArg(branch)}
+       test -d ${shellArg(worktreePath)} && echo DIR_OK || echo DIR_MISSING
      Return a one-line text answer that starts with "OK" if the worktree exists AND is on branch ${branch}, otherwise starts with "MISSING".`,
     { label: `verify-worktree-${branch}` }
   );
@@ -710,29 +720,29 @@ async function mergeAgent(repoPath, worktreePath, branch, id, name) {
   const prFlow = `Land branch "${branch}" via a PULL REQUEST (protected main — never merge locally), then tear down the isolated worktree.
 
   Instructions:
-  1. git -C ${worktreePath} push -u origin ${branch}
-  2. From ${worktreePath}: gh pr create --head ${branch} --title "${name} (${id})" --body "Automated orchestrator delivery for ticket ${id}."
-  3. From ${worktreePath}: gh pr merge ${branch} --squash --delete-branch — if required checks are pending, wait (gh pr checks ${branch} --watch); if checks FAIL or the merge is refused, return status="conflict" with the failing check/conflict details and STOP — do NOT remove the worktree.
+  1. git -C ${shellArg(worktreePath)} push -u origin ${shellArg(branch)}
+  2. From ${shellArg(worktreePath)}: gh pr create --head ${shellArg(branch)} --title ${shellArg(name + " (" + id + ")")} --body ${shellArg("Automated orchestrator delivery for ticket " + id + ".")}
+  3. From ${shellArg(worktreePath)}: gh pr merge ${shellArg(branch)} --squash --delete-branch — if required checks are pending, wait (gh pr checks ${shellArg(branch)} --watch); if checks FAIL or the merge is refused, return status="conflict" with the failing check/conflict details and STOP — do NOT remove the worktree.
   4. If the PR merges:
-       git -C ${repoPath} checkout main && git -C ${repoPath} pull --ff-only
-       git -C ${repoPath} worktree remove ${worktreePath} --force
-       git -C ${repoPath} branch -D ${branch} 2>/dev/null || true
-  5. Confirm: git -C ${repoPath} rev-parse --abbrev-ref HEAD   # must print "main", up to date with origin/main
+       git -C ${shellArg(repoPath)} checkout main && git -C ${shellArg(repoPath)} pull --ff-only
+       git -C ${shellArg(repoPath)} worktree remove ${shellArg(worktreePath)} --force
+       git -C ${shellArg(repoPath)} branch -D ${shellArg(branch)} 2>/dev/null || true
+  5. Confirm: git -C ${shellArg(repoPath)} rev-parse --abbrev-ref HEAD   # must print "main", up to date with origin/main
   6. Return status="merged" with the squash-merge commit SHA and PR number, or status="conflict" with details.`;
 
   const localFlow = `Merge branch "${branch}" into main in the PRIMARY checkout at ${repoPath}, PUSH it, then tear down the isolated worktree.
 
   Instructions:
-  1. git -C ${repoPath} checkout main && git -C ${repoPath} pull --ff-only
-  2. git -C ${repoPath} merge --no-ff ${branch} -m "Merge ${id}: ${name}"
+  1. git -C ${shellArg(repoPath)} checkout main && git -C ${shellArg(repoPath)} pull --ff-only
+  2. git -C ${shellArg(repoPath)} merge --no-ff ${shellArg(branch)} -m ${shellArg("Merge " + id + ": " + name)}
   3. If there are conflicts: return status="conflict" and list the conflicting files. Abort the merge and STOP — do NOT remove the worktree.
   4. If merge succeeds:
-       git -C ${repoPath} push origin main    # REQUIRED — a local-only merge is not done
-       git -C ${repoPath} worktree remove ${worktreePath} --force
-       git -C ${repoPath} branch -D ${branch}
+       git -C ${shellArg(repoPath)} push origin main    # REQUIRED — a local-only merge is not done
+       git -C ${shellArg(repoPath)} worktree remove ${shellArg(worktreePath)} --force
+       git -C ${shellArg(repoPath)} branch -D ${shellArg(branch)}
   5. Confirm the primary checkout is on main and pushed:
-       git -C ${repoPath} rev-parse --abbrev-ref HEAD   # must print "main"
-       git -C ${repoPath} rev-list --count origin/main..main   # must print 0 after push
+       git -C ${shellArg(repoPath)} rev-parse --abbrev-ref HEAD   # must print "main"
+       git -C ${shellArg(repoPath)} rev-list --count origin/main..main   # must print 0 after push
   6. If the push is rejected (protected branch / non-fast-forward): return status="conflict" with the rejection — do NOT force-push.
   7. Return status="merged" with the merge commit SHA, or status="conflict" with details.`;
 
@@ -778,26 +788,26 @@ async function blockTicket(record, board, desc, tag, blockerArea, blockerAgent) 
     VERIFY BEFORE FILING (T-008 AC4) — run these read-only commands first and include their
     output as evidence in the blocker desc. An agent must never declare work lost, destroyed,
     or missing without checking git:
-       git -C ${record.repoPath} branch --list ${record.branch}
-       git -C ${record.repoPath} log -5 --oneline ${record.branch} --  2>/dev/null || true
-       git -C ${record.worktree} status --porcelain  2>/dev/null || echo WORKTREE_GONE
-       git -C ${record.repoPath} reflog --date=iso -10  2>/dev/null | head -10
+       git -C ${shellArg(record.repoPath)} branch --list ${shellArg(record.branch)}
+       git -C ${shellArg(record.repoPath)} log -5 --oneline ${shellArg(record.branch)} --  2>/dev/null || true
+       git -C ${shellArg(record.worktree)} status --porcelain  2>/dev/null || echo WORKTREE_GONE
+       git -C ${shellArg(record.repoPath)} reflog --date=iso -10  2>/dev/null | head -10
     If this blocker claims work was lost/destroyed but the branch shows the commits, DO NOT
     file it as written — report the discrepancy as the finding instead (the work exists; the
     coordination failed).
 
     Block the ticket and file the blocker in one guarded write:
 
-      ${TICKET_CMD} block ${record.ticket} --board ${BOARD} --json \\
-        --name "BLOCKER: ${record.ticket} ${tag}" --desc "${desc}" \\
-        --epic "${record.epicId}" --area "${area}"
+      ${TICKET_CMD} block ${shellArg(record.ticket)} --board ${shellArg(BOARD)} --json \\
+        --name ${shellArg("BLOCKER: " + record.ticket + " " + tag)} --desc ${shellArg(desc)} \\
+        --epic ${shellArg(record.epicId)} --area ${shellArg(area)}
 
     The blocker's id is allocated by the command from the board's current contents and comes
     back in its JSON — do not choose one yourself, or two concurrent blockers collide.
 ${BOARD_RETRY}
 ${BOARD_EPILOGUE}
     Then clean up the isolated worktree (the work is preserved on branch ${record.branch}):
-       git -C ${record.repoPath} worktree remove ${record.worktree} --force  2>/dev/null || true
+       git -C ${shellArg(record.repoPath)} worktree remove ${shellArg(record.worktree)} --force  2>/dev/null || true
     Confirm ${record.repoPath} is on main afterward.
 
     Return outcome="blocked", ticketId="${record.ticket}", blockerTicket=<the id the command allocated, from its JSON>, blockerDesc="${desc}", summary.`,
@@ -819,10 +829,10 @@ async function mergeFailed(record, board, detail) {
 
     Block the ticket and file the blocker in one guarded write:
 
-      ${TICKET_CMD} block ${record.ticket} --board ${BOARD} --json \\
-        --name "BLOCKER: ${record.ticket} merge-conflict" \\
-        --desc "Merge conflict on branch ${record.branch}: ${detail}" \\
-        --epic "${record.epicId}" --area "${record.area || ""}" --failure-kind merge-conflict
+      ${TICKET_CMD} block ${shellArg(record.ticket)} --board ${shellArg(BOARD)} --json \\
+        --name ${shellArg("BLOCKER: " + record.ticket + " merge-conflict")} \\
+        --desc ${shellArg("Merge conflict on branch " + record.branch + ": " + detail)} \\
+        --epic ${shellArg(record.epicId)} --area ${shellArg(record.area || "")} --failure-kind merge-conflict
 
     The blocker's id is allocated by the command and returned in its JSON — do not pick one.
 ${BOARD_RETRY}
@@ -852,23 +862,26 @@ async function runStage(record, code) {
 
   const workBlock = writer
     ? `Implement/fix your part of the ticket fully. Every file you Write/Edit MUST live under ${record.worktree}.
-       1. Confirm the worktree branch: git -C ${record.worktree} rev-parse --abbrev-ref HEAD   # must be ${record.branch}
+       1. Confirm the worktree branch: git -C ${shellArg(record.worktree)} rev-parse --abbrev-ref HEAD   # must be ${shellArg(record.branch)}
        2. Read prior handoffs (below) so you build on, not redo, earlier stages.
        3. Do your stage's work. Run tests from ${record.worktree}: ${record.testCmd}
        4. If you changed files, commit them:
-            git -C ${record.worktree} add -A
-            git -C ${record.worktree} commit -m "feat(${record.ticket}): ${type} stage"
-          Then capture the commit: git -C ${record.worktree} log -1 --format=%H,%ct
+            Review changed paths and stage only intended source files using git -C ${shellArg(record.worktree)} add -- <quoted paths>.
+            Never stage .env files or credentials. Inspect git -C ${shellArg(record.worktree)} diff --cached before committing.
+            Do not use blanket staging (git add -A or git add .).
+            git -C ${shellArg(record.worktree)} diff --cached --check
+            git -C ${shellArg(record.worktree)} commit -m ${shellArg("feat(" + record.ticket + "): " + type + " stage")}
+          Then capture the commit: git -C ${shellArg(record.worktree)} log -1 --format=%H,%ct
        5. status="done" on success; "blocked" if you hit a genuine blocker; "error" if tests can't be made to pass.`
     : code === "qa"
       ? `Review the change in the worktree:
-       1. git -C ${record.worktree} diff origin/main...HEAD
+       1. git -C ${shellArg(record.worktree)} diff origin/main...HEAD
        2. Look for correctness bugs, security issues, missing error handling, breaking API changes, test gaps.
        3. Run the security-review skill, then run checks from ${record.worktree}: ${record.testCmd}
        4. status="ship" to pass, or "block" with specific file:line findings[] the next agent must fix.
        5. REQUIRED gate verdict — set securityReview="ship" if the security-review skill found no security issue, "block" if it found one (you MUST also status="block" with the finding), or "n/a" if the change has no security-relevant surface. A merge cannot proceed without a positive securityReview.`
       : `Principal-delivery validation in the worktree:
-       1. Confirm implementation matches the ticket spec (git -C ${record.worktree} diff origin/main...HEAD).
+       1. Confirm implementation matches the ticket spec (git -C ${shellArg(record.worktree)} diff origin/main...HEAD).
        2. Verify acceptance criteria, runbook completeness (if applicable), and no hardcoded secrets.
        3. Run the release-gate skill, then run tests from ${record.worktree}: ${record.testCmd}
        4. status="ship" to approve the merge, or "block" with issues in findings[].
@@ -1070,9 +1083,9 @@ async function startTicket(ticket, board) {
 
       Block the ticket and file the blocker in one guarded write:
 
-        ${TICKET_CMD} block ${ticket.id} --board ${BOARD} --json \\
-          --name "BLOCKER: ${ticket.name}" --desc "${pre.blockers.join("; ")}" \\
-          --epic "${ticket.epicId}" --area "${area}"
+        ${TICKET_CMD} block ${shellArg(ticket.id)} --board ${shellArg(BOARD)} --json \\
+          --name ${shellArg("BLOCKER: " + ticket.name)} --desc ${shellArg(pre.blockers.join("; "))} \\
+          --epic ${shellArg(ticket.epicId)} --area ${shellArg(area)}
 
       The blocker's id is allocated by the command and returned in its JSON — do not pick one.
 ${BOARD_RETRY}
@@ -1212,11 +1225,11 @@ async function doAbort(id) {
   await writeRecord(r);
   await agent(
     `Abort the orchestrate run for ${r.ticket}. Remove the isolated worktree but KEEP the branch for inspection:
-       git -C ${r.repoPath} worktree remove ${r.worktree} --force  2>/dev/null || true
-     Confirm ${r.repoPath} is on main: git -C ${r.repoPath} rev-parse --abbrev-ref HEAD
+       git -C ${shellArg(r.repoPath)} worktree remove ${shellArg(r.worktree)} --force  2>/dev/null || true
+     Confirm ${shellArg(r.repoPath)} is on main: git -C ${shellArg(r.repoPath)} rev-parse --abbrev-ref HEAD
      Then return the ticket to the queue:
 
-       ${TICKET_CMD} set-status ${r.ticket} todo --board ${BOARD} --json
+       ${TICKET_CMD} set-status ${shellArg(r.ticket)} todo --board ${shellArg(BOARD)} --json
 ${BOARD_RETRY}
 ${BOARD_EPILOGUE}
      Return a short confirmation.`,

@@ -1410,6 +1410,8 @@ function help() {
               writers can't silently overwrite each other. 'import' bulk-adds a whole planned
               board in one write and only ever ADDS — an existing id is an error, never an
               overwrite. Run 'maestro ticket --help' for the full list.
+  delivery    Guarded delivery: preflight | claim | qa | gate | submit | merge | accept | repair | archive
+              Run maestro delivery --help for structured evidence and recovery operations.
   run         Run a cross-review-enabled ticket: dev → PR → reviewer
               A triggered, one-shot pipeline, not a daemon — checks the ticket is eligible
               (todo, no human_gate, deps done, in scope), then runs the dev role in its own
@@ -1590,6 +1592,7 @@ async function dispatch(command, args) {
     case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
     case "spec": process.exit(run("scripts/spec-write.mjs", args)); break;
+    case "delivery": process.exit(run("scripts/delivery-write.mjs", args)); break;
     case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
     case "swarm": process.exit(run("scripts/swarm-config.mjs", args)); break;

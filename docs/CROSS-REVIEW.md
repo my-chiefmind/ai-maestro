@@ -81,8 +81,10 @@ not a shortcut around the rest of the kit's safety rules. One invocation:
    didn't actually record is a hard failure, not a silent success. Any reviewer mutation of
    the worktree also rejects the verdict.
 4. **Acts on the verified verdict:**
-   - **request-changes** → files a blocker ticket with the reviewer's notes (`maestro ticket
-     block`), same as any other failed gate. The worktree is left in place for the next pass.
+   - **request-changes** → returns the existing ticket to `in-progress` and reports the
+     reviewer’s notes. Repair the same ticket and branch, push the repaired commit, and
+     rerun review with `--resume`. The worktree is preserved; in-scope defects do not create
+     a separate blocker ticket.
    - **comment** → the ticket stays `review`; the comment is on the PR for a human to read.
    - **approve** → with `--auto-merge`, re-runs local verification, waits for reported PR
      checks, squash-merges, confirms GitHub recorded the merge commit, archives the ticket with
@@ -100,8 +102,9 @@ action stays confirm-first by default, independent of whatever the reviewer deci
 board mutation goes through the same locked, validated write path as the CLI and web dashboard use
 elsewhere (`scripts/board-write.mjs`), so a run that fails partway leaves the ticket in a state
 you can inspect. Because the PR is found by branch name rather than kept only in memory,
-`--resume` on an already `in-progress`/`review` ticket picks up its existing PR instead of
-re-running (and potentially duplicating) the dev stage.
+`--resume` on an already `in-progress`/`review` ticket picks up its existing PR. If no PR
+exists, it can continue implementation in the existing worktree. With an existing PR,
+repair and push the branch before resuming review.
 
 Run `maestro run --help` for the full flag list, including `--dry-run` (resolves eligibility,
 roles, branch, and worktree path; touches nothing), and `--claude-flag`/`--codex-flag`
@@ -114,3 +117,19 @@ human approving each tool call.
 Try `--dry-run` on a real ticket before ever running it with `--auto-merge` against a real
 repository, and read a run's console output — it names the exact worktree, branch, and PR at
 every step, and tells you exactly what to run by hand if anything needs a closer look.
+
+## Guarded delivery and recovery
+
+The flow above describes legacy cross-review. With `delivery.enabled: true`, the runner
+uses structured independent QA and guarded submission, then leaves merging to a human.
+A merge alone does not complete the ticket: required acceptance and closure evidence must
+pass separately. See [Delivery recovery](./DELIVERY-RECOVERY.md) for configuration,
+missing QA reports, and uncertain dispatches.
+
+Independent agent QA, a recorded GitHub review, and a passing CI check are separate facts.
+The guarded runner's JSON QA report does not create a GitHub approval. Repository rules
+must separately require any desired GitHub reviews or CI checks.
+
+PR discovery fails closed when authentication, network requests, or response parsing fail;
+unknown is not treated as absent. An unreadable or malformed plan also blocks the run.
+Restore access or repair the plan through the supported plan commands before retrying.

@@ -32,6 +32,8 @@
       "type": "object",
       "required": ["id", "status"],
       "properties": {
+        "acceptanceCriteria": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "text", "phase"], "properties": {"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]+$"}, "text": {"type": "string", "minLength": 1}, "phase": {"enum": ["pre-merge", "post-deploy"]}}}},
+        "delivery": {"type": "object", "properties": {"phase": {"enum": ["implementing", "qa", "repair-required", "ready-for-human-review", "awaiting-dev-acceptance", "ready-for-closure"]}}},
         "id":             { "type": "string", "description": "Unique ticket identifier, e.g. T-014." },
         "epicId":         { "type": "string", "description": "The epic this ticket belongs to." },
         "name":           { "type": "string" },

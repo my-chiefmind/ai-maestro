@@ -73,7 +73,7 @@ export function createTicketOperation(ctx, values = {}) {
   if (values.model != null) input(MODELS.includes(values.model), `--model must be one of ${MODELS.join(", ")}.`, { field: "model" });
   if (values.execution_mode != null) input(MODES.includes(values.execution_mode), `--execution-mode must be one of ${MODES.join(", ")}.`, { field: "execution_mode" });
   const ticket = { id, name: values.name, desc: values.desc, status, priority, swag, depends_on: values.depends_on ?? [] };
-  for (const key of ["epicId", "area", "model", "execution_mode", "agent_plan", "traces_to", "human_gate", "testCmd", "wave", "touches"]) {
+  for (const key of ["epicId", "area", "model", "execution_mode", "agent_plan", "traces_to", "human_gate", "testCmd", "wave", "touches", "acceptanceCriteria"]) {
     if (values[key] != null) ticket[key] = values[key];
   }
   assertTraceable(ticket.traces_to, plan, values.force);
@@ -94,7 +94,7 @@ function normalizeRouting(changes) {
   return out;
 }
 
-const EDITABLE_TICKET = new Set(["name", "desc", "epicId", "area", "priority", "swag", "depends_on", "agent_plan", "model", "execution_mode", "traces_to", "scope_exception", "human_gate", "testCmd", "touches", "wave", "currentAgent", "nextAgent", ...ROUTING_FIELDS]);
+const EDITABLE_TICKET = new Set(["name", "desc", "epicId", "area", "priority", "swag", "depends_on", "agent_plan", "model", "execution_mode", "traces_to", "scope_exception", "human_gate", "testCmd", "touches", "wave", "currentAgent", "nextAgent", "acceptanceCriteria", ...ROUTING_FIELDS]);
 export function editTicketOperation(ctx, { id, changes = {}, force = false } = {}) {
   input(id, "Ticket id is required.", { field: "id" });
   const ticket = find(ctx.data.tickets, id);

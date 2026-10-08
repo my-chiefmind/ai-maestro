@@ -12,7 +12,7 @@ when this package executes code, what it trusts, and what it talks to over the n
 | --- | --- | --- |
 | Does installing run code? | ✅ **No** — no install lifecycle hooks, enforced by test | [§1](#1-install-time-behaviour) |
 | Runtime dependencies? | ✅ **Zero** in the published package | [§3](#3-dependency-tree) |
-| Outbound network calls? | ✅ **None at runtime** — no telemetry, analytics, or crash reporting | [§2](#2-runtime-network-surface) |
+| Outbound network calls? | Explicit commands can contact registries/remotes; no telemetry, analytics, or crash reporting | [§2](#2-runtime-network-surface) |
 | Does the kit run a server? | ✅ **No** — the visual board is the separate `@mychiefmind/ai-maestro-web-ui` package, fetched only on explicit `npm run board` | [§2](#the-visual-board-is-a-separate-package) |
 
 ### Contents
@@ -23,6 +23,7 @@ when this package executes code, what it trusts, and what it talks to over the n
 | **2** | [Runtime network surface](#2-runtime-network-surface) |
 | **3** | [Dependency tree](#3-dependency-tree) |
 | **4** | [What this design does and doesn't claim](#4-what-this-design-does-and-doesnt-claim) |
+| **5** | [Executable project configuration](#5-executable-project-configuration) |
 
 ---
 
@@ -67,25 +68,19 @@ registry — only when a user explicitly starts the board, never during install.
 
 ## 2. Runtime network surface
 
-> **The kit makes no outbound network calls, with one exception (below): `maestro drift`'s
-> npm version check, off by default in the sense that `--offline` skips it and a failed lookup
-> degrades to "unknown" rather than erroring.**
-
-The enumerated surface:
+The kit has no telemetry, analytics, or crash reporting. Explicit operations can invoke
+network-capable tools:
 
 | Component | Contacts | When |
 | --- | --- | --- |
-| `bin/cli.mjs`, `render/` | Nothing. No HTTP client, no `fetch`, no sockets. | — |
-| `scripts/`, all except `maestro-drift.mjs` | Nothing. | — |
-| `scripts/maestro-drift.mjs` (`maestro drift`) | Shells out to `npm view @mychiefmind/ai-maestro version` — your configured npm registry — to report whether each registry project is behind the latest release. `--offline` skips it; a failed/timed-out lookup reports "unknown" rather than failing the command. | Every `maestro drift` run, unless `--offline` |
-| `npm run board` | Your configured npm registry, to fetch `@mychiefmind/ai-maestro-web-ui` via `npx`. The dashboard is a separate package with its own security model. | Only when you start the board |
+| CLI update checks and `maestro drift` | Configured npm registry through `npm view` | When checking versions; drift supports `--offline` |
+| CLI updates and ticket workflows | Configured Git remotes and code-host APIs through Git and the host CLI | When updating, pushing, or managing pull requests |
+| `npm run board` | Configured npm registry through `npx` | When starting the separate dashboard |
+| Plan enforcement and configured test commands | Whatever the project command accesses | When explicitly executing those checks |
+| Usage snapshot HTML | Google Fonts | When opening a generated snapshot in a browser |
 
-There is **no telemetry, no analytics, and no crash reporting**, and no plan to add any.
-
-Beyond `maestro drift`, the only host contacted is your own npm registry, when you explicitly
-run `npm run board`. Any model-provider traffic comes from your AI coding
-tool (Claude Code and similar) under your own credentials and configuration — this kit
-neither proxies nor observes it.
+Model-provider traffic comes from the configured AI coding tool under the user's
+credentials. The kit does not proxy that traffic.
 
 ### The visual board is a separate package
 
@@ -97,10 +92,10 @@ validated write path as the CLI.
 
 ### On the "URL strings" scanner alert
 
-Socket flags documentation filenames (`README.md`, `CLAUDE.md`, `AGENTS.md`, `SKILL.md`,
-`context.md`) and this project's own GitHub URLs. Audited and confirmed informational: the
-GitHub URLs appear in CLI help text and docs as printed strings, never as fetch targets, and
-the filenames are the kit's own artifacts. No code change was warranted, and none was made.
+The 0.6.17 report lists localhost dashboard URLs, the repository URL, and Google Fonts
+URLs. Localhost and repository links appear in help text. Generated usage snapshot HTML
+loads Google Fonts when opened; this is a browser request, not telemetry from the CLI.
+URL presence alone does not demonstrate malicious behavior.
 
 ---
 
@@ -124,3 +119,23 @@ The kit has no install-time execution and no `preboard` hook. The one place it a
 manager to fetch code is `npm run board`, an explicit user action that runs a separately
 published package via `npx`. The goal is a design that is defensible on the merits — explicit
 trigger, no injectable arguments, no hidden install step — not a green badge.
+
+
+## 5. Executable project configuration
+
+`maestro plan check` intentionally executes each selected plan item's `enforce` command
+with the user's shell and permissions, like a project test script. Plans, test commands,
+workflow configuration, agent instructions, and run records must come from trusted sources.
+Review changes to them before running agents or checks, especially in pull requests from
+untrusted contributors. Do not run those checks with secrets or privileged CI credentials.
+
+Use `maestro plan check --dry-run` (optionally with `--traces` and `--json`) to inspect
+commands and their working directory without executing them. A preview is not a sandbox
+or an approval bound to later file contents; review the actual revision that will execute.
+
+The orchestrator does not copy local `.env` files into worktrees. Missing test credentials
+must be handled through the project's documented configuration or reported as a blocker.
+Writer instructions require staging intended files and reviewing the staged diff instead
+of blanket staging. Workflow command data is quoted for POSIX shells; configured command
+strings remain executable code. Shell quoting does not prevent an agent from following
+malicious natural-language instructions, and these prompts are not a security sandbox.

@@ -59,7 +59,7 @@ export function loadBoardContext(options = {}, { requireData = true } = {}) {
     agentCodes = new Set(config.roster.map((name) => agentFileToCode(String(name).replace(/\.md$/, ""))));
   } else agentCodes = codesFromDir(join(KIT_ROOT, "agents"));
 
-  return { ...paths, data, archive, config, plan, agentCodes };
+  return { ...paths, data, archive, config, plan, agentCodes, executionRepo: options.executionRepo, forgeAdapter: options.forgeAdapter };
 }
 
 export function validateBoardContext({ data, archive, config, plan, agentCodes }) {

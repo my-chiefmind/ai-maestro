@@ -5,6 +5,7 @@ import { withBoardLock } from "./board-io.mjs";
 import { planPaths, readPlan as readPlanFile, planVersion, mutatePlan, PlanConflictError, PlanValidationError } from "./plan-io.mjs";
 import { applyPlanOperation, PlanInputError, PlanNotFoundError } from "./plan-operations.mjs";
 import { crossInitiativeConflicts } from "./board-core.mjs";
+import { deliverySettings } from "./delivery-store.mjs";
 import { BoardLockError } from "./board-errors.mjs";
 export { PlanInputError, PlanNotFoundError, PlanConflictError, PlanValidationError };
 export class PlanLockError extends BoardLockError {
@@ -21,7 +22,7 @@ function lockErrors(fn) {
 
 function pathOf(options = {}) {
   if (!options || typeof options !== "object" || Array.isArray(options)) throw new PlanInputError("Options must be an object.");
-  const unknown = Object.keys(options).filter((key) => !["planPath", "boardPath", "operation", "params", "expectVersion", "projectName", "dryRun", "lockOptions", "allowBoardOrphans", "force"].includes(key));
+  const unknown = Object.keys(options).filter((key) => !["planPath", "boardPath", "configPath", "executionRepo", "operation", "params", "expectVersion", "projectName", "dryRun", "lockOptions", "allowBoardOrphans", "force"].includes(key));
   if (unknown.length) throw new PlanInputError(`Unknown plan option(s): ${unknown.join(", ")}.`);
   if (options.planPath !== undefined) {
     if (typeof options.planPath !== "string" || !options.planPath.trim() || !options.planPath.endsWith(".json")) throw new PlanInputError("planPath must name a JSON file.");
@@ -47,8 +48,11 @@ export function applyPlan(options = {}) {
   const path = pathOf(options);
   return lockErrors(() => mutatePlan({ planPath: path, expectVersion: options.expectVersion, projectName: options.projectName, dryRun: options.dryRun, lockOptions: options.lockOptions, op: `plan-${options.operation}`, mutate: (plan) => {
     if (options.operation === "init" && existsSync(path) && !options.force) throw new PlanInputError(`A plan already exists at ${path}. Use maestro plan status to see it, or --force to reset it.`);
-    const output = applyPlanOperation(plan, options.operation, options.params);
     const boardPath = join(dirname(path), "data.json");
+    const configPath = options.configPath ?? join(dirname(path), "..", "config.json");
+    const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : null;
+    deliverySettings({ dataPath: boardPath, config, executionRepo: options.executionRepo }, { write: true });
+    const output = applyPlanOperation(plan, options.operation, options.params);
     let board = null;
     try {
       if (existsSync(boardPath)) {
