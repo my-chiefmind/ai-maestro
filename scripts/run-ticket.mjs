@@ -68,7 +68,8 @@ import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { eligibleTickets } from "./board-core.mjs";
 import { runStage as runStageRaw } from "./run-stage.mjs";
-import { boardVersion, withBoardLock } from "./board-io.mjs";
+import { boardVersion, snapshotVersion, withBoardLock } from "./board-io.mjs";
+import { applyLocalStatus } from "./local-status.mjs";
 import { claimTicket } from "./board-api.mjs";
 import { reviewVerdict } from "./review-verdict.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
@@ -173,14 +174,22 @@ const timeoutMs = timeoutSeconds * 1000;
 const reviewerGhToken = process.env.MAESTRO_REVIEWER_GH_TOKEN || null;
 
 if (!existsSync(dataPath)) die(`Board file not found: ${dataPath}. Pass --board <path>.`);
-const snapshot = (() => { try { return withBoardLock(dirname(dataPath), () => ({
-  data: JSON.parse(readFileSync(dataPath, "utf8")),
-  archive: existsSync(archivePath) ? JSON.parse(readFileSync(archivePath, "utf8")) : { epics: [], tickets: [] },
-  config: existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : null,
-  version: boardVersion(dataPath), archiveVersion: boardVersion(archivePath),
-  planVersion: boardVersion(join(dirname(dataPath), "plan.json")),
-  plan: (() => { try { return readPlanForBoard(dataPath); } catch (error) { throw new Error(`Cannot read the ticket plan: ${error.message}`); } })(),
-}), { op: 'runner-snapshot' }); } catch (error) { die(error.message); } })();
+const snapshot = (() => { try { return withBoardLock(dirname(dataPath), () => {
+  const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : null;
+  // config.localStatus: the logical board (files + the shared status store) and its versions.
+  const { data, archive, localStatus } = applyLocalStatus({
+    dataPath, config,
+    data: JSON.parse(readFileSync(dataPath, "utf8")),
+    archive: existsSync(archivePath) ? JSON.parse(readFileSync(archivePath, "utf8")) : { epics: [], tickets: [] },
+  });
+  return {
+    data, archive, config,
+    version: snapshotVersion(dataPath, localStatus),
+    archiveVersion: snapshotVersion(archivePath, localStatus),
+    planVersion: boardVersion(join(dirname(dataPath), "plan.json")),
+    plan: (() => { try { return readPlanForBoard(dataPath); } catch (error) { throw new Error(`Cannot read the ticket plan: ${error.message}`); } })(),
+  };
+}, { op: 'runner-snapshot' }); } catch (error) { die(error.message); } })();
 const { data, archive, config } = snapshot;
 const ticket = (data.tickets || []).find((t) => t.id === ticketId);
 if (!ticket) die(`${ticketId} is not a live ticket on ${dataPath}.`);

@@ -10,8 +10,9 @@ you select work, dispatch the right agent, enforce the gates, and report the tru
 
 ## One run = one ticket
 
-1. **Read the board** (`{{BOARD}}/data.json`). Report nothing you didn't read there — never
-   invent status.
+1. **Read the board** with `maestro ticket read --board {{BOARD}}/data.json --json` (its
+   `data` and `archive`). With `localStatus` on, `data.json` alone does not hold live status.
+   Report nothing you didn't read there — never invent status.
 2. **Pick** the highest-priority `todo` ticket whose `depends_on` are all `done` and whose
    `human_gate` (if any) has been cleared. If none is eligible, report `idle` and stop.
 3. **Reconcile before claiming.** Check merged/open PRs, existing branches, and existing

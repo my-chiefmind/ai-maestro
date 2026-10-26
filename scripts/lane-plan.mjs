@@ -16,6 +16,7 @@
  * tickets conflict, so it is usable in a script.
  */
 
+import { applyLocalStatus } from "./local-status.mjs";
 import { existsSync, readFileSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { eligibleTickets, scopeBlockedTickets } from "./board-core.mjs";
@@ -73,12 +74,17 @@ const readJSON = (p, fallback) => {
   try { return JSON.parse(readFileSync(p, "utf8")); } catch { return fallback; }
 };
 
-const board = readJSON(boardPath, null);
-if (!board) die(`${boardPath} is not valid JSON.`);
-const archive = readJSON(join(dirname(boardPath), "archive.json"), { epics: [], tickets: [] });
+const fileBoard = readJSON(boardPath, null);
+if (!fileBoard) die(`${boardPath} is not valid JSON.`);
+const fileArchive = readJSON(join(dirname(boardPath), "archive.json"), { epics: [], tickets: [] });
 
 const configPath = flag("config") ?? join(dirname(boardPath), "..", "config.json");
 const config = readJSON(configPath, null);
+// config.localStatus: schedule from the logical board (files + the shared status store).
+const { data: board, archive } = (() => {
+  try { return applyLocalStatus({ dataPath: boardPath, config, data: fileBoard, archive: fileArchive }); }
+  catch (e) { die(e.message); }
+})();
 // --max is an override for trying a different pool size without editing config.
 const effectiveConfig = flag("max")
   ? { ...(config ?? {}), orchestration: { ...(config?.orchestration ?? {}), maxWorktrees: Number(flag("max")) } }

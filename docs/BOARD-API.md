@@ -118,3 +118,26 @@ canonical verdict, and changes only an eligible ticket to `in-progress`. Its res
 any changed input refuses the claim. The CLI equivalent is `maestro ticket claim T-012` with
 the three `--expect-*version` flags. `setTicketStatus` remains available for ordinary lifecycle
 transitions but is not a dispatch claim.
+
+## Local shared status
+
+When a project turns on `"localStatus": { "enabled": true }` in `config.json`, a ticket's progress
+fields live in a machine-local store that every git worktree shares, not in `data.json`. Those
+fields are status, current and next agent, evidence, `done_at`, claim and lane. Every function
+above then reads and writes the logical board, which is the files with the store laid over
+them. `version` and `archiveVersion` also cover the store, so `expectVersion` notices a status
+change made from another worktree. With the mode off, nothing here changes.
+
+```js
+import { readTicket, overlayLocalStatus, syncLocalStatus } from "@mychiefmind/ai-maestro/board";
+
+const { ticket, location, source } = readTicket({ boardPath, id: "T-012" });
+// location: "board" | "archive"; source: "local-status" | "files"
+const atCommit = overlayLocalStatus({ boardPath, data: dataAtSha, archive: archiveAtSha });
+const sync = syncLocalStatus({ boardPath }); // { changed, files, archived, ... }; no-op when unchanged
+```
+
+The other exports are `readLocalStatus`, `localStatusLog`, `exportLocalStatus`,
+`importLocalStatus` and `DEFAULT_STATUS_FIELDS`. The CLI equivalents are
+`maestro status show | list | sync | log | export | import | where` and `maestro ticket read --json`.
+See [Local shared status](./LOCAL-STATUS.md) for the store, locking, the daily sync and backups.

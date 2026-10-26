@@ -72,8 +72,9 @@ Enable, Disable, and Stop still work.
 
 Before every initial run and after recovery from a systemic failure:
 
-1. Run `maestro swarm status --json`, then read `{{BOARD}}/data.json` and
-   `{{BOARD}}/archive.json`. Confirm the swarm is enabled. The status command resolves the
+1. Run `maestro swarm status --json`, then read the board with
+   `maestro ticket read --board {{BOARD}}/data.json --json`. Its `data` and `archive` include
+   machine-local status when `localStatus` is on. Confirm the swarm is enabled. The status command resolves the
    project-owned config correctly in vendored, sibling-kit, and package layouts.
 2. Run the `board-validate` and `orchestration-health` skills. Do not dispatch against an
    invalid board, an unexplained `in-progress` claim, or an orphaned worktree. After either

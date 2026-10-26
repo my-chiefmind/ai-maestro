@@ -1,6 +1,6 @@
 {
   "name": "@mychiefmind/ai-maestro",
-  "version": "0.6.18",
+  "version": "0.6.19",
   "description": "Conduct a roster of AI coding agents against a work board.",
   "type": "module",
   "license": "MIT",
@@ -53,6 +53,7 @@
   "scripts": {
     "prepublishOnly": "node scripts/validate-board.mjs starters/orchestrated-project/board/data.json && node scripts/sync-version.mjs --check",
     "version": "node scripts/sync-version.mjs && git add VERSION",
+    "test": "node --test test/",
     "test:upgrade": "node test/upgrade-safety.mjs",
     "setup": "node bin/cli.mjs setup",
     "init": "node bin/cli.mjs init",
