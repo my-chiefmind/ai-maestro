@@ -68,7 +68,7 @@ import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { eligibleTickets } from "./board-core.mjs";
 import { runStage as runStageRaw } from "./run-stage.mjs";
-import { boardVersion, effectiveVersion, withBoardLock } from "./board-io.mjs";
+import { boardVersion, snapshotVersion, withBoardLock } from "./board-io.mjs";
 import { applyLocalStatus } from "./local-status.mjs";
 import { claimTicket } from "./board-api.mjs";
 import { reviewVerdict } from "./review-verdict.mjs";
@@ -177,15 +177,15 @@ if (!existsSync(dataPath)) die(`Board file not found: ${dataPath}. Pass --board 
 const snapshot = (() => { try { return withBoardLock(dirname(dataPath), () => {
   const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : null;
   // config.localStatus: the logical board (files + the shared status store) and its versions.
-  const { data, archive } = applyLocalStatus({
+  const { data, archive, localStatus } = applyLocalStatus({
     dataPath, config,
     data: JSON.parse(readFileSync(dataPath, "utf8")),
     archive: existsSync(archivePath) ? JSON.parse(readFileSync(archivePath, "utf8")) : { epics: [], tickets: [] },
   });
   return {
     data, archive, config,
-    version: effectiveVersion(dataPath, { dataPath, configPath }),
-    archiveVersion: effectiveVersion(archivePath, { dataPath, configPath }),
+    version: snapshotVersion(dataPath, localStatus),
+    archiveVersion: snapshotVersion(archivePath, localStatus),
     planVersion: boardVersion(join(dirname(dataPath), "plan.json")),
     plan: (() => { try { return readPlanForBoard(dataPath); } catch (error) { throw new Error(`Cannot read the ticket plan: ${error.message}`); } })(),
   };

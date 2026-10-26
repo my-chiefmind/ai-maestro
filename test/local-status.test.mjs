@@ -6,7 +6,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import childProcess, { spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, cpSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -378,3 +379,60 @@ test("config: localStatus is validated", () => {
   writeFileSync(join(outside, "maestro", "config.json"), JSON.stringify({ ...config, localStatus: { enabled: true } }));
   assert.throws(() => readBoard({ boardPath: join(outside, "maestro", "board", "data.json") }), /not inside a git repository/);
 });
+
+// Force a real write from another worktree immediately after the snapshot's store blob
+// is read. This deterministically exercises the gap before version/source calculation.
+for (const reader of ["board", "ticket", "eligibility"]) {
+  test(`snapshot: ${reader} retains the overlaid generation during a concurrent write`, () => {
+    const fx = fixture();
+    const boardPath = fx.board(fx.wt1);
+    setTicketStatus({ boardPath, id: "T-002", status: "in-progress" });
+    const before = readBoard({ boardPath });
+    const originalSpawn = childProcess.spawnSync;
+    let wrote = false;
+    let snapshot;
+    childProcess.spawnSync = function (command, args, options) {
+      const result = originalSpawn(command, args, options);
+      if (!wrote && command === "git" && args.includes("cat-file") &&
+          args.some((arg) => arg.endsWith(":record.json"))) {
+        wrote = true;
+        const write = originalSpawn(process.execPath, ["--input-type=module", "-e",
+          `import { setTicketStatus } from ${JSON.stringify(BOARD_API)};
+           setTicketStatus({ boardPath: ${JSON.stringify(fx.board(fx.wt2))},
+             id: "T-001", status: "in-progress" });`,
+        ], { encoding: "utf8" });
+        assert.equal(write.status, 0, write.stderr);
+      }
+      return result;
+    };
+    syncBuiltinESMExports();
+    try {
+      snapshot = reader === "board" ? readBoard({ boardPath })
+        : reader === "ticket" ? readTicket({ boardPath, id: "T-001" })
+        : listTicketEligibility({ boardPath });
+    } finally {
+      childProcess.spawnSync = originalSpawn;
+      syncBuiltinESMExports();
+    }
+    assert.equal(wrote, true, "another worktree wrote during the read");
+    assert.equal(snapshot.version, before.version, "version belongs to the returned snapshot");
+    assert.equal(snapshot.archiveVersion, before.archiveVersion);
+    if (reader === "board") assert.equal(findTicket(snapshot, "T-001").status, "todo");
+    if (reader === "ticket") {
+      assert.equal(snapshot.ticket.status, "todo");
+      assert.equal(snapshot.source, "files", "source belongs to the same store generation");
+    }
+    if (reader === "eligibility") {
+      assert.equal(snapshot.verdicts.find((v) => v.ticketId === "T-001").eligible, true);
+    }
+    assert.equal(readTicket({ boardPath, id: "T-001" }).ticket.status, "in-progress");
+    assert.notEqual(snapshot.version, getBoardVersion({ boardPath }));
+    assert.throws(() => setTicketStatus({ boardPath, id: "T-001", status: "blocked",
+      expectVersion: snapshot.version }), BoardConflictError, "a stale snapshot cannot overwrite the new status");
+    const claim = claimTicket({ boardPath, id: "T-003", expectVersion: snapshot.version,
+      expectArchiveVersion: snapshot.archiveVersion,
+      expectPlanVersion: boardVersion(join(dirname(boardPath), "plan.json")) });
+    assert.equal(claim.result.claimed, false, "a stale eligibility snapshot cannot claim work");
+    assert.ok(claim.result.conflicts.length);
+  });
+}

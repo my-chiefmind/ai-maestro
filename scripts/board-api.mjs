@@ -6,7 +6,7 @@ import { applyGuardedBoardTransition, criteriaFor } from './delivery-policy.mjs'
  * Supported public API for reading and applying targeted Maestro board changes.
  * Callers provide a board directory or data.json path; no whole-board replacement is exposed.
  */
-import { withBoardLock, mutateBoard, boardVersion, effectiveVersion } from "./board-io.mjs";
+import { withBoardLock, mutateBoard, boardVersion, effectiveVersion, snapshotVersion } from "./board-io.mjs";
 import { join } from "node:path";
 import { loadBoardContext, resolveBoardPaths, validateBoardContext } from "./board-context.mjs";
 import {
@@ -40,7 +40,7 @@ export function readBoard(options = {}) {
     const verdict = validateBoardContext(context);
     return {
       data: context.data, archive: context.archive, config: context.config, plan: context.plan,
-      version: effectiveVersion(paths.dataPath, paths), archiveVersion: effectiveVersion(paths.archivePath, paths),
+      version: snapshotVersion(paths.dataPath, context.localStatus), archiveVersion: snapshotVersion(paths.archivePath, context.localStatus),
       errors: verdict.errors, warnings: verdict.warnings,
       ...(context.localStatus ? { localStatus: { ref: context.localStatus.ref, oid: context.localStatus.oid } } : {}),
     };
@@ -60,8 +60,8 @@ function eligibilitySnapshot(options = {}) {
       }));
       return {
         verdicts,
-        version: effectiveVersion(paths.dataPath, paths),
-        archiveVersion: effectiveVersion(paths.archivePath, paths),
+        version: snapshotVersion(paths.dataPath, context.localStatus),
+        archiveVersion: snapshotVersion(paths.archivePath, context.localStatus),
         planVersion: boardVersion(join(paths.boardDir, "plan.json")),
       };
     }, { op: "read-eligibility", ...(options.lockOptions ?? {}) });

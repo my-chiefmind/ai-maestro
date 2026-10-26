@@ -5,7 +5,7 @@
  */
 import { existsSync, readFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { withBoardLock, withStatusLock, writeAtomic, boardVersion, effectiveVersion } from "./board-io.mjs";
+import { withBoardLock, withStatusLock, writeAtomic, boardVersion, effectiveVersion, snapshotVersion } from "./board-io.mjs";
 import { tryBackup } from "./board-backup.mjs";
 import { loadBoardContext, resolveBoardPaths, validateBoardContext } from "./board-context.mjs";
 import { archiveTicketOperation } from "./board-operations.mjs";
@@ -55,12 +55,12 @@ export function readTicket(options = {}) {
     if (!live && !archived) throw new BoardNotFoundError(`Ticket ${id} was not found.`, { id, kind: "ticket" });
     let source = "files";
     if (context.localStatus) {
-      const { store } = readStore(context.localStatus.settings);
+      const { store } = context.localStatus;
       if (Object.prototype.hasOwnProperty.call(store.tickets, id)) source = "local-status";
     }
     return {
       ticket: live ?? archived, location: live ? "board" : "archive", source,
-      version: effectiveVersion(paths.dataPath, paths), archiveVersion: effectiveVersion(paths.archivePath, paths),
+      version: snapshotVersion(paths.dataPath, context.localStatus), archiveVersion: snapshotVersion(paths.archivePath, context.localStatus),
       localStatus: context.localStatus ? { ref: context.localStatus.ref, oid: context.localStatus.oid } : null,
     };
   }, { op: "read-ticket", ...(options.lockOptions ?? {}) });

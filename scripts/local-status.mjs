@@ -312,7 +312,7 @@ export function applyLocalStatus({ dataPath, configPath, config, data, archive }
   const s = localStatusSettings({ dataPath, configPath, config });
   if (!s) return { data, archive, localStatus: null };
   const { oid, store } = readStore(s);
-  return { ...overlayBoard(data, archive, store), localStatus: { ref: s.ref, oid, settings: s } };
+  return { ...overlayBoard(data, archive, store), localStatus: { ref: s.ref, oid, settings: s, store } };
 }
 
 export function assertLocations(store) {

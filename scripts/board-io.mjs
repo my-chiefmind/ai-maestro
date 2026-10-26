@@ -346,3 +346,9 @@ function readJSONOr(p, fallback) {
     );
   }
 }
+
+/** Version of the exact local-status generation used to build a read snapshot. */
+export function snapshotVersion(path, localStatus) {
+  const fileVersion = boardVersion(path);
+  return localStatus ? compositeVersion(fileVersion, localStatus.oid) : fileVersion;
+}
