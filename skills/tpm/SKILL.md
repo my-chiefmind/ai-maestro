@@ -23,7 +23,8 @@ status-narration workflow.
 ## Gather evidence before deciding
 
 1. Run the `board-validate` and `orchestration-health` skills. Read
-   `{{BOARD}}/data.json` and `{{BOARD}}/archive.json`; use the project’s supported board CLI
+   the board with `maestro ticket read --board {{BOARD}}/data.json --json` (the files plus any
+   machine-local status); use the project’s supported board CLI
    for any authorized mutation, never a hand edit.
 2. Inspect the relevant repository state: primary checkout status, active worktrees and their
    branches, commits relative to the default branch, open/merged pull requests, and current

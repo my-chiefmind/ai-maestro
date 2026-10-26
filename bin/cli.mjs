@@ -8,6 +8,7 @@
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *   maestro run <id> [...]    (thin passthrough to scripts/run-ticket.mjs)
  *   maestro swarm <op> [...]  (enable, disable, or inspect continuous pool policy)
+ *   maestro status <op> [...] (machine-local ticket status shared by every worktree; opt-in)
  *   maestro usage [...]       (thin passthrough to scripts/usage-report.mjs)
  *   maestro spec [...]        (thin passthrough to scripts/spec-write.mjs)
  *
@@ -1410,6 +1411,11 @@ function help() {
               writers can't silently overwrite each other. 'import' bulk-adds a whole planned
               board in one write and only ever ADDS — an existing id is an error, never an
               overwrite. Run 'maestro ticket --help' for the full list.
+  status      Machine-local ticket status shared by every worktree — show | list | sync | log | export | import
+              Opt-in with "localStatus": { "enabled": true } in config.json. Status, agent and
+              evidence then live in one store in the git common dir instead of data.json, so
+              a status change or archive needs no commit. 'maestro status sync' writes it into
+              the board files once a day for one PR. See docs/LOCAL-STATUS.md.
   delivery    Guarded delivery: preflight | claim | qa | gate | submit | merge | accept | repair | archive
               Run maestro delivery --help for structured evidence and recovery operations.
   run         Run a cross-review-enabled ticket: dev → PR → reviewer
@@ -1596,6 +1602,7 @@ async function dispatch(command, args) {
     case "run": process.exit(run("scripts/run-ticket.mjs", args)); break;
     case "lanes": process.exit(run("scripts/lane-plan.mjs", args)); break;
     case "swarm": process.exit(run("scripts/swarm-config.mjs", args)); break;
+    case "status": process.exit(run("scripts/status-write.mjs", args)); break;
     case "usage": process.exit(args[0] === "sync" ? run("scripts/usage-sync.mjs", args.slice(1))
       : args[0] === "commit" ? run("scripts/usage-commit.mjs", args.slice(1))
       : run("scripts/usage-report.mjs", args)); break;

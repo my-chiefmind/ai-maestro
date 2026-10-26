@@ -27,11 +27,14 @@
 import { createHash } from "crypto";
 import {
   existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, openSync, closeSync, statSync,
-  fsyncSync,
+  fsyncSync, mkdirSync,
 } from "fs";
 import { dirname, join, basename } from "path";
 import { tryBackup } from "./board-backup.mjs";
 import { BoardConflictError, BoardInputError, BoardLockError, BoardValidationError } from "./board-errors.mjs";
+import {
+  localStatusSettings, readStore, commitStore, overlayBoard, splitBoard, compositeVersion, logEntry,
+} from "./local-status.mjs";
 
 export { BoardConflictError, BoardLockError, BoardValidationError } from "./board-errors.mjs";
 
@@ -197,12 +200,21 @@ export function withBoardLock(boardDir, fn, opts = {}) {
  * a crash between the renames.
  * @returns {{result: any, version: string, archiveVersion: string, changed: boolean}}
  */
-export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, validate, op = "write", dryRun = false, lockOptions = {}, _afterFirstWrite }) {
+export function mutateBoard({ dataPath, archivePath, configPath, mutate, expectVersion, validate, op = "write", dryRun = false, lockOptions = {}, _afterFirstWrite }) {
   const boardDir = dirname(dataPath);
   const archPath = archivePath ?? join(boardDir, "archive.json");
+  // Opt-in machine-local status (config.localStatus). Off: everything below is exactly the
+  // file-only path. On: the shared status lock is taken INSIDE the board lock (always that
+  // order, so two writers cannot deadlock), and the mutation sees and changes the logical board.
+  const status = localStatusSettings({ dataPath, configPath });
 
-  return withBoardLock(boardDir, () => {
-    const onDisk = boardVersion(dataPath);
+  return withBoardLock(boardDir, () => status
+    ? withStatusLock(status, () => mutateLocked(status), { op, ...lockOptions })
+    : mutateLocked(null), { op, ...lockOptions });
+
+  function mutateLocked(status) {
+    const shared = status ? readStore(status) : null;
+    const onDisk = status ? compositeVersion(boardVersion(dataPath), shared.oid) : boardVersion(dataPath);
     // CAS against writers that never took the lock (hand edits, the web dashboard, a stray agent).
     if (expectVersion != null && expectVersion !== onDisk) {
       throw new BoardConflictError(
@@ -213,8 +225,12 @@ export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, vali
       );
     }
 
-    const data = readJSONOr(dataPath, { epics: [], tickets: [] });
-    const archive = readJSONOr(archPath, { epics: [], tickets: [] });
+    const fileData = readJSONOr(dataPath, { epics: [], tickets: [] });
+    const fileArchive = readJSONOr(archPath, { epics: [], tickets: [] });
+    const view = status ? overlayBoard(fileData, fileArchive, shared.store) : null;
+    const data = view ? view.data : fileData;
+    const archive = view ? view.archive : fileArchive;
+    const viewBefore = view ? structuredClone(view) : null;
 
     const out = mutate({ data, archive }) ?? {};
     const nextData = out.data ?? data;
@@ -228,7 +244,7 @@ export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, vali
       return {
         result: out.result,
         version: onDisk,
-        archiveVersion: boardVersion(archPath),
+        archiveVersion: status ? compositeVersion(boardVersion(archPath), shared.oid) : boardVersion(archPath),
         changed: false,
         warnings: [],
       };
@@ -245,11 +261,26 @@ export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, vali
       );
     }
 
-    const dataText = JSON.stringify(nextData, null, 2) + "\n";
-    const archText = JSON.stringify(nextArchive, null, 2) + "\n";
-    const dataChanged = !existsSync(dataPath) || readFileSync(dataPath, "utf8") !== dataText;
-    const archChanged = out.archive !== undefined &&
+    // Local status: definitions go to the files, progress to the shared store.
+    const split = status ? splitBoard({
+      files: { data: fileData, archive: fileArchive }, before: viewBefore,
+      after: { data: nextData, archive: nextArchive }, store: shared.store, fields: status.fields,
+    }) : null;
+    const dataText = JSON.stringify(split ? split.data : nextData, null, 2) + "\n";
+    const archText = JSON.stringify(split ? split.archive : nextArchive, null, 2) + "\n";
+    // With local status a file is rewritten only when its CONTENT changed: a status change must
+    // not turn into a formatting-only diff of a hand-formatted data.json.
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const dataChanged = (!split || !same(split.data, fileData)) &&
+      (!existsSync(dataPath) || readFileSync(dataPath, "utf8") !== dataText);
+    const archChanged = (split ? !same(split.archive, fileArchive) : out.archive !== undefined) &&
       (!existsSync(archPath) || readFileSync(archPath, "utf8") !== archText);
+    let storeOid = shared?.oid ?? null;
+    // The store goes first: its compare-and-swap is the step that can lose to a concurrent
+    // writer, and failing it must leave the files untouched too.
+    if (split?.storeChanged && !dryRun) {
+      storeOid = commitStore(status, shared.oid, split.store, logEntry(status, op, split.changes));
+    }
 
     // Recovery copies of whatever is about to be replaced (T-034). Best effort: a failed
     // backup is reported, never allowed to block a write that already passed validation.
@@ -266,15 +297,37 @@ export function mutateBoard({ dataPath, archivePath, mutate, expectVersion, vali
       });
     }
 
+    const version = status ? compositeVersion(boardVersion(dataPath), storeOid) : boardVersion(dataPath);
     return {
       result: out.result,
-      version: dryRun ? onDisk : boardVersion(dataPath),
-      archiveVersion: boardVersion(archPath),
-      changed: dataChanged || archChanged,
+      version: dryRun ? onDisk : version,
+      archiveVersion: status ? compositeVersion(boardVersion(archPath), storeOid) : boardVersion(archPath),
+      changed: dataChanged || archChanged || Boolean(split?.storeChanged),
       warnings,
+      ...(status ? { localStatus: { ref: status.ref, oid: dryRun ? shared.oid : storeOid, changes: split.changes } } : {}),
       ...(backupError ? { backupError } : {}),
     };
-  }, { op, ...lockOptions });
+  }
+}
+
+/**
+ * Exclusive lock on one board's shared status store. It lives in the git common dir, so it is
+ * one lock for every worktree (the board lock is per checkout and cannot be). Same primitive and
+ * stale rules as the board lock; the store's ref compare-and-swap backs it up.
+ */
+export function withStatusLock(status, fn, opts = {}) {
+  mkdirSync(status.lockDir, { recursive: true });
+  return withBoardLock(status.lockDir, fn, { ...opts, lockName: status.lockName });
+}
+
+/**
+ * The version callers compare for CAS. Off: the file hash, unchanged. On: the file hash plus the
+ * store generation, so a status change made from another worktree also moves the version.
+ */
+export function effectiveVersion(path, { dataPath = path, configPath } = {}) {
+  const status = localStatusSettings({ dataPath, configPath });
+  if (!status) return boardVersion(path);
+  return compositeVersion(boardVersion(path), readStore(status).oid);
 }
 
 /** @param {string} p @param {any} fallback */

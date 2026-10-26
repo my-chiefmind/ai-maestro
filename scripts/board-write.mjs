@@ -19,6 +19,7 @@ import { loadBoardContext } from "./board-context.mjs";
  *   maestro ticket unarchive <id> [--status <s>] [--with-epic]
  *   maestro ticket archive-epic <id>
  *   maestro ticket version
+ *   maestro ticket read --json          the board as every reader sees it (local status applied)
  *
  * Common flags:
  *   --board <path>            board/data.json (default: ./board/data.json)
@@ -37,7 +38,7 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { validateBoard, agentFileToCode, STATUSES, ARCHIVE_ONLY_STATUSES, PRIORITY, SWAG, initiativeModeActive, epicOwnershipVerdict, ownershipVerdict } from "./board-core.mjs";
-import { mutateBoard, boardVersion, BoardConflictError, BoardLockError } from "./board-io.mjs";
+import { mutateBoard, boardVersion, effectiveVersion, BoardConflictError, BoardLockError } from "./board-io.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planItems, planIsGating, scopeVerdict, TRACEABLE_PREFIXES, initiativeMap } from "./plan-core.mjs";
 import {
@@ -54,7 +55,7 @@ const KIT_ROOT = resolve(__dir, "..");
 const argv = process.argv.slice(2);
 const OPS = new Set([
   "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "unarchive", "archive-epic", "version",
-  "add", "edit", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop", "eligibility", "claim",
+  "add", "edit", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop", "eligibility", "claim", "read",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
@@ -110,6 +111,7 @@ function usage() {
     maestro ticket unarchive <id>             restore a mistakenly archived ticket to the board
     maestro ticket archive-epic <id>          retire an epic that has no live tickets
     maestro ticket version                    print the board's content version
+    maestro ticket read --json                print the board as readers see it (local status applied)
     maestro ticket eligibility [id]           read canonical dispatch eligibility (all or one)
     maestro ticket claim <id>                 atomically claim if still eligible
 
@@ -225,6 +227,20 @@ if (op === "eligibility") {
         process.stdout.write(`${row.ticketId}\t${row.state}${why ? `\t${why}` : ""}\n`);
       }
     }
+    process.exit(0);
+  } catch (error) {
+    die(error.message, error.code === "EBOARDLOCK" ? 2 : 1);
+  }
+}
+
+if (op === "read") {
+  // The logical board: with config.localStatus on, the files overlaid with the shared status
+  // store. Agents read this instead of opening data.json, which no longer holds live status.
+  try {
+    const { data, archive, version, archiveVersion, errors, warnings, localStatus } =
+      readBoard({ dataPath, archivePath, ...(flag("config") ? { configPath: resolve(flag("config")) } : {}) });
+    if (JSON_OUT) process.stdout.write(JSON.stringify({ ok: true, data, archive, version, archiveVersion, errors, warnings, localStatus: localStatus ?? null }) + "\n");
+    else process.stdout.write(JSON.stringify({ data, archive }, null, 2) + "\n");
     process.exit(0);
   } catch (error) {
     die(error.message, error.code === "EBOARDLOCK" ? 2 : 1);
@@ -732,11 +748,11 @@ try {
   if (DRY_RUN) {
     // Same code path, then throw to roll back — a dry run that used a different path
     // would not actually be testing the write it claims to preview.
-    const before = boardVersion(dataPath);
+    const before = effectiveVersion(dataPath, { dataPath, configPath: flag("config") ?? undefined });
     let preview;
     try {
       mutateBoard({
-        dataPath, archivePath, expectVersion, validate, op: `${op}(dry-run)`,
+        dataPath, archivePath, configPath: flag("config") ?? undefined, expectVersion, validate, op: `${op}(dry-run)`,
         mutate: (ctx) => {
           const context = { ...loadBoardContext({ dataPath, archivePath, configPath: flag("config") ?? undefined }), ...ctx };
           const delivery = deliverySettings(context, { write: true });
@@ -762,7 +778,7 @@ try {
   }
 
   const { result, version, changed } = mutateBoard({
-    dataPath, archivePath, expectVersion, validate, op,
+    dataPath, archivePath, configPath: flag("config") ?? undefined, expectVersion, validate, op,
     mutate: (ctx) => {
       const context = { ...loadBoardContext({ dataPath, archivePath, configPath: flag("config") ?? undefined }), ...ctx };
       const delivery = deliverySettings(context, { write: true });

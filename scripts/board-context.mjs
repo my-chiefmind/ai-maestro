@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { agentFileToCode, validateBoard as validateBoardCore } from "./board-core.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { BoardInputError, BoardNotFoundError } from "./board-errors.mjs";
+import { applyLocalStatus } from "./local-status.mjs";
 
 const KIT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -46,9 +47,13 @@ function codesFromDir(path) {
 /** Load all validation inputs. Call this only while holding the board-directory lock. */
 export function loadBoardContext(options = {}, { requireData = true } = {}) {
   const paths = resolveBoardPaths(options);
-  const data = readJSON(paths.dataPath, { epics: [], tickets: [] }, requireData);
-  const archive = readJSON(paths.archivePath, { epics: [], tickets: [] });
   const config = readJSON(paths.configPath, null);
+  // With config.localStatus on, the board is the files overlaid with the shared status store.
+  const { data, archive, localStatus } = applyLocalStatus({
+    dataPath: paths.dataPath, config,
+    data: readJSON(paths.dataPath, { epics: [], tickets: [] }, requireData),
+    archive: readJSON(paths.archivePath, { epics: [], tickets: [] }),
+  });
   let plan = null;
   try { plan = readPlanForBoard(paths.dataPath); }
   catch (error) { throw new BoardInputError(error.message, { path: join(paths.boardDir, "plan.json") }); }
@@ -59,7 +64,7 @@ export function loadBoardContext(options = {}, { requireData = true } = {}) {
     agentCodes = new Set(config.roster.map((name) => agentFileToCode(String(name).replace(/\.md$/, ""))));
   } else agentCodes = codesFromDir(join(KIT_ROOT, "agents"));
 
-  return { ...paths, data, archive, config, plan, agentCodes, executionRepo: options.executionRepo, forgeAdapter: options.forgeAdapter };
+  return { ...paths, data, archive, config, plan, agentCodes, localStatus, executionRepo: options.executionRepo, forgeAdapter: options.forgeAdapter };
 }
 
 export function validateBoardContext({ data, archive, config, plan, agentCodes }) {

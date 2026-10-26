@@ -49,7 +49,7 @@ session. The idea in three sentences:
 | :--: | --- |
 | **1** | You keep a **board** of epics and tickets, bounded by a **project plan**. |
 | **2** | Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on. |
-| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it. The default is one ticket per run; optional [swarm mode](./docs/SWARM.md) continuously replenishes a bounded lane pool. |
+| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it. The default is one ticket per run; optional [swarm mode](./docs/SWARM.md) continuously replenishes a bounded lane pool, and optional [local shared status](./docs/LOCAL-STATUS.md) keeps ticket status out of git so lanes need no commit per status change. |
 
 It's the distilled, product-neutral version of a system I've been running across a
 multi-repo portfolio for months. This repo shares the structure so you can adopt the
