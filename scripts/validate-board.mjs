@@ -18,7 +18,7 @@ import { fileURLToPath } from "url";
 import { validateBoard, agentFileToCode } from "./board-core.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planCompleteness, planIsGating, planCoverage } from "./plan-core.mjs";
-import { assignLanes, parallelismLostToVagueness, laneCount } from "./lane-core.mjs";
+import { assignLanes, parallelismLostToVagueness, laneCount, laneLabel } from "./lane-core.mjs";
 import { eligibleTickets } from "./board-core.mjs";
 import { validateSwarmConfig } from "./swarm-core.mjs";
 
@@ -237,7 +237,7 @@ function finish(errors, warnings, eligibleCount, plan, board, archive, config) {
         const { lanes } = assignLanes(ready, config);
         const startable = lanes.filter((l) => !l.exclusive).length;
         const lost = parallelismLostToVagueness(ready, config);
-        console.log(`  ${startable} of ${laneCount(config)} lane(s) would start in parallel.` +
+        console.log(`  ${startable} of ${laneLabel(laneCount(config))} lane(s) would start in parallel.` +
           (lost.length ? ` ${lost.length} pair(s) held back only by undeclared \`touches\` — see 'maestro lanes plan'.` : ""));
       }
     }

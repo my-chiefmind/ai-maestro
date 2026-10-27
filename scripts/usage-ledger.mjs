@@ -36,8 +36,8 @@ export const USAGE_RECORD_VERSION = 1;
 const RECORD_FIELDS = ["v", "key", "runtime", "provider", "model", "ts", "sessionId", "agentType",
   "branch", "ticketId", "confidence", "evidenceKind", "usage"];
 const RECORD_FIELD_SET = new Set(RECORD_FIELDS);
-const USAGE_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "total"];
-const USAGE_FIELD_SET = new Set(USAGE_FIELDS);
+const USAGE_FIELDS = /** @type {const} */ (["input", "output", "cacheRead", "cacheWrite", "reasoning", "total"]);
+const USAGE_FIELD_SET = new Set(/** @type {readonly string[]} */ (USAGE_FIELDS));
 
 export class UsageLedgerInputError extends Error {
   /** @param {string} message @param {Record<string, any>} [detail] */
@@ -79,8 +79,8 @@ export function validateUsageRecord(record) {
   if (!object(u)) throw new UsageLedgerInputError("usage must be an object.", { field: "usage" });
   const extraUsage = Object.keys(u).filter((k) => !USAGE_FIELD_SET.has(k));
   if (extraUsage.length) throw new UsageLedgerInputError(`Unknown usage field: ${extraUsage.join(", ")}.`, { fields: extraUsage });
-  /** @type {Record<string, number>} */
-  const usage = {};
+  /** @type {Record<typeof USAGE_FIELDS[number], number>} */
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, total: 0 };
   for (const f of USAGE_FIELDS) {
     if (!Number.isSafeInteger(u[f]) || u[f] < 0) throw new UsageLedgerInputError(`usage.${f} must be a non-negative safe integer.`, { field: `usage.${f}` });
     usage[f] = u[f];
