@@ -37,12 +37,12 @@ import { loadBoardContext } from "./board-context.mjs";
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { validateBoard, agentFileToCode, STATUSES, ARCHIVE_ONLY_STATUSES, PRIORITY, SWAG, initiativeModeActive, epicOwnershipVerdict, ownershipVerdict } from "./board-core.mjs";
+import { validateBoard, agentFileToCode, STATUSES, ARCHIVE_ONLY_STATUSES, PRIORITY, SWAG, initiativeModeActive, epicOwnershipVerdict, ownershipVerdict, ticketCreationIssues, ticketReadinessSettings, touchesIssues } from "./board-core.mjs";
 import { mutateBoard, boardVersion, effectiveVersion, BoardConflictError, BoardLockError } from "./board-io.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planItems, planIsGating, scopeVerdict, TRACEABLE_PREFIXES, initiativeMap } from "./plan-core.mjs";
 import {
-  createTicket, editTicket, setTicketStatus, setTicketEpic, createEpic, editEpic,
+  createTicket, editTicket, editTickets, setTicketStatus, setTicketEpic, createEpic, editEpic,
   archiveTicket, dropTicket, unarchiveTicket, archiveEpic, getBoardVersion, readBoard,
   getTicketEligibility, listTicketEligibility, claimTicket,
   BoardConflictError as PublicConflictError, BoardLockError as PublicLockError,
@@ -55,7 +55,7 @@ const KIT_ROOT = resolve(__dir, "..");
 const argv = process.argv.slice(2);
 const OPS = new Set([
   "set-status", "set-routing", "set-testcmd", "set-epic", "block", "archive", "unarchive", "archive-epic", "version",
-  "add", "edit", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop", "eligibility", "claim", "read",
+  "add", "edit", "edit-many", "add-epic", "edit-epic", "import", "next-id", "retrace", "drop", "eligibility", "claim", "read",
 ]);
 
 // Ops that name a ticket as argv[1]. The rest either take no subject (version, next-id, add,
@@ -71,6 +71,27 @@ const has = (name) => argv.includes(`--${name}`);
 const listFlag = (name) => {
   const v = flag(name);
   return v == null ? null : v.split(",").map((s2) => s2.trim()).filter(Boolean);
+};
+/**
+ * `--touches` takes a JSON array (`'["src/a/**","src/b.mjs"]'`) or a comma-separated list
+ * (`src/a/**,src/b.mjs`). Absent → null. Anything that looks like JSON but does not parse to a
+ * list of non-empty strings is refused, rather than split on commas into quoted fragments.
+ */
+const touchesFlag = () => {
+  const v = flag("touches");
+  if (v == null) return null;
+  const text = v.trim();
+  if (text.startsWith("[") || text.startsWith("\"")) {
+    let parsed;
+    try { parsed = JSON.parse(text); } catch (e) { die(`--touches is not valid JSON (${e.message}). Pass a JSON array of globs, e.g. '["src/api/**"]', or a comma-separated list.`); }
+    if (!Array.isArray(parsed) || !parsed.length || parsed.some((x) => typeof x !== "string" || !x.trim())) {
+      die(`--touches must be a non-empty JSON array of glob strings, e.g. '["src/api/**"]'. Got: ${text}`);
+    }
+    return parsed.map((x) => x.trim());
+  }
+  const list = text.split(",").map((s2) => s2.trim()).filter(Boolean);
+  if (!list.length) die("--touches is empty. Pass a JSON array of globs or a comma-separated list.");
+  return list;
 };
 
 const JSON_OUT = has("json");
@@ -96,6 +117,7 @@ function usage() {
 
     maestro ticket add                        file a new ticket
     maestro ticket edit <id>                  change ticket fields with --changes <json>
+    maestro ticket edit-many --changes-file f  edit several tickets in one validated write
     maestro ticket add-epic                   file a new epic
     maestro ticket edit-epic <id>             change an epic (initiative, name, desc, traces)
     maestro ticket import <file.json|->       bulk-add epics + tickets in one atomic write
@@ -121,9 +143,20 @@ function usage() {
     --name <text>  --desc <text>  (required)
     --id  --epic  --area  --priority <P0-P3>  --swag <XS-XL>  --status  --depends-on a,b
     --agent-plan a,b  --model  --execution-mode  --traces-to FR-1,FR-2  --human-gate  --test-cmd
+    --touches <globs>  a JSON array '["src/a/**"]' or a comma list src/a/**,src/b.mjs
+    --acceptance-criteria <json>
+    --gates <json>  --inputs <json>   (required when config.ticketReadiness is on, together
+                                       with --touches, --acceptance-criteria and --test-cmd)
+    --gates   {"merge":bool,"dev-deploy":bool,"paid-run":bool,"needs-owner-input":bool}
+    --inputs  [{"id":"...","name":"...","from":"owner|operator|agent|repo|external",
+                "location":"where it lives","status":"available|missing"}]  ([] when none)
 
   edit flags:
     --changes <json>   allowlisted field patch; null clears an optional field
+    --touches <globs>  same forms as add; merged into --changes
+
+  edit-many flags:
+    --changes-file <file.json>   {"T-1": {...changes}, "T-2": {...}} — all or nothing
 
   add-epic flags:
     --name <text>  (required)   --id  --desc  --traces-to  --initiative I-1
@@ -281,7 +314,7 @@ if (OPS_TAKING_ID.has(op) && !ticketId) die(`${op} needs an id: maestro ticket $
 
 // Public operations are the implementation used by both library consumers and the CLI.
 // Keep this adapter limited to translating argv into object input and rendering the result.
-const PUBLIC_OPS = new Set(["add", "edit", "set-status", "set-epic", "add-epic", "edit-epic", "archive", "drop", "unarchive", "archive-epic", "claim"]);
+const PUBLIC_OPS = new Set(["add", "edit", "edit-many", "set-status", "set-epic", "add-epic", "edit-epic", "archive", "drop", "unarchive", "archive-epic", "claim"]);
 if (PUBLIC_OPS.has(op)) {
   const common = {
     dataPath, archivePath, expectVersion: flag("expect-version") ?? undefined,
@@ -291,6 +324,11 @@ if (PUBLIC_OPS.has(op)) {
     ...(has("config") ? { configPath: flag("config") } : {}),
   };
   const list = (name) => listFlag(name) ?? undefined;
+  const jsonFlag = (name) => {
+    const raw = flag(name);
+    if (raw == null) return undefined;
+    try { return JSON.parse(raw); } catch (e) { die(`--${name} is not valid JSON: ${e.message}`); }
+  };
   let call;
   try {
     if (op === "add") call = createTicket({ ...common,
@@ -302,13 +340,23 @@ if (PUBLIC_OPS.has(op)) {
       depends_on: list("depends-on") ?? [], agent_plan: list("agent-plan"), model: flag("model") ?? undefined,
       execution_mode: flag("execution-mode") ?? undefined, traces_to: list("traces-to"),
       human_gate: flag("human-gate") ?? undefined, testCmd: flag("test-cmd") ?? undefined,
+      touches: touchesFlag() ?? undefined,
+      gates: jsonFlag("gates"), inputs: jsonFlag("inputs"),
       wave: flag("wave") == null ? undefined : Number(flag("wave")), force: has("force"),
     });
     else if (op === "edit") {
       const raw = flag("changes");
-      if (!raw) die("edit needs --changes <json>.");
-      let changes; try { changes = JSON.parse(raw); } catch (e) { die(`--changes is not valid JSON: ${e.message}`); }
+      const touches = touchesFlag();
+      if (!raw && !touches) die("edit needs --changes <json> (or --touches <globs>).");
+      let changes = {};
+      if (raw) { try { changes = JSON.parse(raw); } catch (e) { die(`--changes is not valid JSON: ${e.message}`); } }
+      if (touches) changes = { ...changes, touches };
       call = editTicket({ ...common, id: ticketId, changes, force: has("force") });
+    } else if (op === "edit-many") {
+      const file = flag("changes-file");
+      if (!file) die("edit-many needs --changes-file <json> mapping ticket id → changes.");
+      let edits; try { edits = JSON.parse(readFileSync(file === "-" ? 0 : file, "utf8")); } catch (e) { die(`--changes-file is not readable JSON: ${e.message}`); }
+      call = editTickets({ ...common, edits, force: has("force") });
     } else if (op === "set-status") call = setTicketStatus({ ...common, id: ticketId, status: argv[2], coordination: {
       ...(has("execution-mode") ? { execution_mode: flag("execution-mode") } : {}),
       ...(has("agent-plan") ? { agent_plan: list("agent-plan") } : {}),
@@ -585,6 +633,12 @@ const RUN = {
       status: "blocked",
       depends_on: [],
     };
+    // With ticket readiness on, a blocker exists to get an owner decision; it is not startable
+    // until that arrives.
+    if (ticketReadinessSettings(config)) {
+      blocker.gates = { merge: false, "dev-deploy": false, "paid-run": false, "needs-owner-input": true };
+      blocker.inputs = [{ id: "owner-decision", name: `Owner decision on blocker ${blockerId} for ${ticketId}`, from: "owner", location: `${blockerId}.desc on the board (record the decision there)`, status: "missing" }];
+    }
     const kind = flag("failure-kind"); if (kind) blocker.failureKind = kind;
     data.tickets.push(blocker);
 
@@ -673,6 +727,20 @@ const RUN = {
       if (liveTickets.has(t.id)) throw usageError(`Ticket ${t.id} already exists on the board. Import only ADDS — it never overwrites. Allocate free ids with 'maestro ticket next-id --count N'.`);
       if (archivedTickets.has(t.id)) throw usageError(`Ticket ${t.id} is already in the archive. Reusing an archived id corrupts dependency resolution — allocate free ids with 'maestro ticket next-id --count N'.`);
       seen.add(t.id);
+    }
+    const badTouches = tickets.map((t) => [t.id, touchesIssues(t.touches)]).filter(([, issues]) => issues.length);
+    if (badTouches.length) throw usageError(`Nothing imported — ${badTouches.map(([id, issues]) => `${id}: ${issues[0]}`).join("; ")}`);
+    // With ticket readiness on, the same creation checklist as `ticket add`: an imported ticket
+    // is not saved until it is complete. Sample placeholders from a starter are exempt;
+    // --replace-sample removes them later.
+    const readiness = ticketReadinessSettings(config);
+    if (readiness) {
+      const incomplete = tickets.filter((t) => !t.sample)
+        .map((t) => [t.id, ticketCreationIssues(t, readiness)]).filter(([, issues]) => issues.length);
+      if (incomplete.length) {
+        throw usageError(`Nothing imported — complete the ticket-creation checklist first:\n` +
+          incomplete.map(([id, issues]) => issues.map((x) => `  • ${id}: ${x}`).join("\n")).join("\n"));
+      }
     }
 
     // Checked as one set: a document tracing half its tickets at a deleted requirement should

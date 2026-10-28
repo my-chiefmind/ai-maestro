@@ -3,7 +3,7 @@
  * maestro — the one command a newcomer runs.
  *
  *   maestro init [--dir <repo>] [--name <name>] [--areas a,b,c] [--starter orchestrated|lightweight] [--yes] [--no-github-actions]
- *   maestro update [--kit <dir>] [--force] [--offline] [--no-github-actions]   (bring a set-up kit to this CLI's version)
+ *   maestro update [--kit <dir>] [--from <dir>] [--base <dir>] [--force] [--offline] [--no-github-actions]   (bring a set-up kit to this CLI's version)
  *   maestro sync [...]        (thin passthrough to render/sync.mjs)
  *   maestro validate [...]    (thin passthrough to scripts/validate-board.mjs)
  *   maestro run <id> [...]    (thin passthrough to scripts/run-ticket.mjs)
@@ -30,6 +30,7 @@ import { tryBackup } from "../scripts/board-backup.mjs";
 import { emptyPlan, renderPlanMd, planCompleteness } from "../scripts/plan-core.mjs";
 import { repairRootPackageScripts } from "../scripts/root-scripts.mjs";
 import { formatMenuLines } from "../scripts/menu-format.mjs";
+import { fileHashes, refreshMergedEntries, VENDOR_BASE_DIR } from "../scripts/kit-vendor.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const KIT_ROOT = resolve(__dir, "..");
@@ -105,6 +106,11 @@ const UPDATE_PENDING_FILE = ".maestro-update-pending";
 // docs told people to put them exactly there (T-011). `file` entries are `<name>.md`,
 // `dir` entries are `<name>/SKILL.md`.
 const OVERLAY_ENTRIES = { agents: "file", skills: "dir" };
+
+// Every other vendored entry is refreshed file by file with a 3-way merge (scripts/kit-vendor.mjs),
+// so a project's own edits to kit scripts survive an update. VERSION is the kit's, never merged.
+const ALWAYS_REPLACED = ["VERSION"];
+const MERGED_ENTRIES = VENDORED.filter((e) => e !== "board" && !(e in OVERLAY_ENTRIES) && !ALWAYS_REPLACED.includes(e));
 
 /** Identity of one overlay item, for the vendor lock: its content, or its SKILL.md's. */
 function overlayItemHash(abs, kind) {
@@ -258,10 +264,11 @@ function vendorKit(dest) {
     if (existsSync(src)) cpSync(src, join(dest, entry), { recursive: true, filter: entry === "board" ? boardFilter : filter });
   }
   writeVendorPackageJson(dest);
-  const lock = { board: boardVendorHashes(join(dest, "board")) };
+  const lock = { kitVersion: readKitVersion(KIT_ROOT), board: boardVendorHashes(join(dest, "board")) };
   for (const [entry, kind] of Object.entries(OVERLAY_ENTRIES)) {
     lock[entry] = overlayVendorHashes(join(dest, entry), kind);
   }
+  lock.files = fileHashes(dest, [...MERGED_ENTRIES, ...ALWAYS_REPLACED], VENDOR_SKIP);
   writeVendorLock(dest, lock);
 }
 
@@ -288,13 +295,22 @@ function boardVendorHashes(destBoard) {
 // vendor lock) and that the new release no longer ships. See T-001: the old rule read a
 // project's own board/specs/, board/reports/, or any future workspace folder as "deleted
 // upstream" and deleted it right along with actual removals.
-function refreshVendoredKit(dest) {
+function refreshVendoredKit(dest, { before = "0.0.0", baseDir = null, offline = false } = {}) {
   const filter = (src) => !VENDOR_SKIP.has(basename(src));
   const priorLock = readVendorLock(dest) ?? {};
   const priorBoard = priorLock.board ?? {};
-  const newLock = {};
+  const target = readKitVersion(KIT_ROOT);
+  const newLock = { kitVersion: target };
   const rescued = []; // project-owned files moved to custom/ — reported by update()
+  // Kit files other than board/, agents/ and skills/: merged, never blindly replaced.
+  const merge = refreshMergedEntries({
+    kitRoot: KIT_ROOT, dest, entries: MERGED_ENTRIES, overwrite: ALWAYS_REPLACED,
+    priorFiles: priorLock.files && typeof priorLock.files === "object" ? priorLock.files : null,
+    skip: VENDOR_SKIP, before, target, baseDir, offline, pkg: PKG_NAME,
+    rescueDir: join(dest, CUSTOM_DIR, RESCUED_DIR),
+  });
   for (const entry of VENDORED) {
+    if (MERGED_ENTRIES.includes(entry) || ALWAYS_REPLACED.includes(entry)) continue;
     const src = join(KIT_ROOT, entry);
     if (!existsSync(src)) continue;
     if (entry === "board") {
@@ -333,14 +349,13 @@ function refreshVendoredKit(dest) {
       newLock.board = newBoardLock;
     } else if (entry in OVERLAY_ENTRIES) {
       newLock[entry] = refreshOverlayEntry(dest, entry, OVERLAY_ENTRIES[entry], priorLock[entry], rescued);
-    } else {
-      rmSync(join(dest, entry), { recursive: true, force: true });
-      cpSync(src, join(dest, entry), { recursive: true, filter });
     }
   }
+  newLock.files = merge.files;
   writeVendorLock(dest, newLock);
   writeVendorPackageJson(dest);
-  return rescued;
+  rescued.push(...merge.rescued);
+  return { rescued, merge };
 }
 
 /**
@@ -1237,6 +1252,25 @@ async function reconcileRoster(kit, kitRel, args, preRefreshLock) {
   console.log(`  ${C.green("✓")} added ${unlistedAgents.length + unlistedSkills.length} entry(ies) to ${kitRel}/config.json`);
 }
 
+/** A vendored kit reachable from the current directory: ./maestro, or the current directory itself. */
+function findVendoredKit(cwd = process.cwd()) {
+  const isKit = (d) => existsSync(join(d, "config.json")) && existsSync(join(d, "render", "sync.mjs")) && existsSync(join(d, "bin", "cli.mjs"));
+  return [join(cwd, "maestro"), cwd].find(isKit) ?? null;
+}
+
+/** Run `update --kit <kit>` with another CLI (`cmd`), passing this run's flags through. */
+function delegateUpdate(cmd, kit, args) {
+  const passthrough = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--kit" || args[i] === "--from") { i++; continue; }
+    passthrough.push(args[i]);
+  }
+  const r = spawnSync(cmd[0], [...cmd.slice(1), "update", "--kit", kit, ...passthrough], {
+    stdio: "inherit", shell: process.platform === "win32" && cmd[0] === "npx",
+  });
+  return r.status ?? 1;
+}
+
 async function update(args) {
   if (has(args, "all")) return updateAll(args);
   // `--kit <dir>` names a vendored kit to refresh — a different job from bringing THIS copy of
@@ -1244,15 +1278,48 @@ async function update(args) {
   // that branch, which meant `update --all` run from a git clone of the kit sent every project
   // through `git pull` on the shared clone, ignored --kit, updated nothing, and still exited 0
   // — a batch that reported "n/n ok" having done none of the work.
-  const explicitKit = flag(args, "kit");
-  if (!IS_PACKAGED && !explicitKit) {
-    if (!isKitClone()) {
-      console.error(`✗ This kit copy has no update channel of its own — it was vendored by 'setup'.
-  Update it from the registry instead (from your repo root):
+  let explicitKit = flag(args, "kit");
+  // `--from <dir>`: update from that copy of the kit (a clone, or an extracted package) instead
+  // of this one. It runs that copy's CLI against the kit being updated.
+  const from = flag(args, "from");
+  if (from) {
+    const fromRoot = resolve(from);
+    if (!existsSync(join(fromRoot, "bin", "cli.mjs"))) {
+      console.error(`✗ --from ${from} is not an AI Maestro kit (no bin/cli.mjs).`);
+      process.exit(2);
+    }
+    const kit = resolve(explicitKit || findVendoredKit() || "");
+    if (!explicitKit && !findVendoredKit()) {
+      console.error("✗ No vendored kit found here (maestro/config.json or ./config.json) — pass --kit <dir>.");
+      process.exit(2);
+    }
+    process.exit(delegateUpdate([NODE, join(fromRoot, "bin", "cli.mjs")], kit, args));
+  }
+  if (!IS_PACKAGED && !isKitClone()) {
+    // A vendored copy (this CLI is <project>/maestro/bin/cli.mjs, or another plain copy). It
+    // cannot update itself from itself, but it knows which kit to update: its own folder when
+    // config.json sits next to it, else a vendored kit found from the current directory.
+    const self = existsSync(join(KIT_ROOT, "config.json")) ? KIT_ROOT : null;
+    const kit = explicitKit ? resolve(explicitKit) : self ?? findVendoredKit();
+    if (kit && !samePath(kit, KIT_ROOT)) {
+      explicitKit = kit; // a different kit: this copy can refresh it, like `--kit`
+    } else if (kit) {
+      if (has(args, "offline")) {
+        console.error(`✗ ${relative(process.cwd(), kit) || "."}/ is this vendored kit itself, and --offline rules out the registry.
+  Update it from another copy of the kit instead:  node ${join(relative(process.cwd(), kit) || ".", "bin", "cli.mjs")} update --from <kit-checkout>`);
+        process.exit(2);
+      }
+      console.log(`→ ${relative(process.cwd(), kit) || "."}/ is a vendored kit — updating it from the registry (${PKG_NAME}@latest) …`);
+      process.exit(delegateUpdate(["npx", "--yes", `${PKG_NAME}@latest`], kit, args));
+    } else {
+      console.error(`✗ This kit copy has no update channel of its own, and no vendored kit was found here
+  (looked for maestro/config.json and ./config.json). Update from the registry at your repo root:
 
     npx @mychiefmind/ai-maestro@latest update`);
       process.exit(2);
     }
+  }
+  if (!IS_PACKAGED && !explicitKit) {
     const before = readKitVersion(KIT_ROOT);
     console.log(`→ Pulling the kit clone at ${KIT_ROOT} …`);
     const pull = spawnSync("git", ["-C", KIT_ROOT, "pull", "--ff-only"], { stdio: "inherit" });
@@ -1325,8 +1392,18 @@ async function update(args) {
   // "unlisted for the last six releases".
   const preRefreshLock = readVendorLock(kit);
   writeFileSync(pendingPath, `${target}\n`);
-  const rescued = refreshVendoredKit(kit);
+  const { rescued, merge } = refreshVendoredKit(kit, {
+    before: preRefreshLock?.kitVersion ?? before, baseDir: flag(args, "base") ? resolve(flag(args, "base")) : null,
+    offline: has(args, "offline"),
+  });
   console.log(`  ✓ kit files refreshed — your config.json, context.md, and board data were kept`);
+  if (merge.merged.length) {
+    console.log(`  ${C.green("✓")} kept your edits to ${merge.merged.length} kit file(s), merged with v${target}${merge.baseSource ? C.dim(` (base: ${merge.baseSource})`) : ""}:`);
+    for (const f of merge.merged) console.log(`     ${kitRel}/${f}`);
+  }
+  if (merge.kept.length) {
+    console.log(`  ${C.dim("·")} left ${merge.kept.length} file(s) of your own in kit folders untouched: ${merge.kept.map((f) => `${kitRel}/${f}`).join(", ")}`);
+  }
 
   // config.json is a project file update() never overwrites (see refreshVendoredKit) — read it
   // fresh to honor a persisted opt-out, and persist one passed here for the first time.
@@ -1338,6 +1415,15 @@ async function update(args) {
     console.log(`  ✓ disabled the GitHub PR template in ${kitRel}/config.json — future updates won't re-add it (delete .github/PULL_REQUEST_TEMPLATE.md yourself if you want the existing file gone too)`);
   }
   if (githubActionsWanted(config)) seedGitHubFiles(projectRootForKit(kit), kit);
+  // A vendored kit renders from itself. A kitSource.path that names no kit (typically
+  // ../node_modules/@mychiefmind/ai-maestro, left from an npm-installed setup) breaks `sync` and
+  // the usage hook, so point it at the vendored copy.
+  const kitPath = config.kitSource?.path;
+  if (typeof kitPath === "string" && !existsSync(join(resolve(kit, kitPath), "render", "sync.mjs"))) {
+    config.kitSource = { mode: "self", path: "." };
+    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+    console.log(`  ✓ kitSource.path "${kitPath}" named no kit — ${kitRel}/config.json now uses the vendored kit (path ".")`);
+  }
   // Name what moved. The line above used to be the whole report, which read as an all-clear
   // even on updates that had just deleted a project's own agents and skills (T-011).
   if (rescued.length) {
@@ -1354,6 +1440,20 @@ async function update(args) {
   if (scriptFixes.length) {
     console.log(`  ✓ repaired ${scriptFixes.length} outdated kit script(s) in package.json:`);
     for (const f of scriptFixes) console.log(`     ${f.name}: ${f.from}  →  ${f.to}`);
+  }
+
+  // Merge conflicts in kit files: stop before re-rendering, with the update still pending, so a
+  // re-run after resolving them finishes the job.
+  if (merge.conflicts.length) {
+    console.error(`
+${C.yellow("✗")} ${merge.conflicts.length} kit file(s) you edited conflict with v${target}. They now hold conflict markers:
+${merge.conflicts.map((f) => `     ${kitRel}/${f}`).join("\n")}
+
+  Between "<<<<<<< local" and "=======" is your version; after it, up to ">>>>>>> kit v${target}", the
+  release's. Resolve each file (keep what both sides need, delete the markers), then re-run
+  this update to finish: it re-renders and re-checks the board.
+  The pristine v${target} copies are in ${kitRel}/${VENDOR_BASE_DIR}/files/ for reference.`);
+    process.exit(1);
   }
 
   await reconcileRoster(kit, kitRel, args, preRefreshLock);
@@ -1402,10 +1502,16 @@ function help() {
               --no-github-actions disables the GitHub PR template (persisted to
               config.json) if you didn't already opt out at setup — it only stops future
               re-adds, it doesn't remove files already in .github/.
+              Kit files you edited (a patched script, say) are kept: each is merged 3-way with
+              the new release. A conflict leaves markers in the file and stops the update until
+              you resolve it and re-run. --base <dir> names a copy of the previous release when
+              the merge base can't be found locally (otherwise it is fetched from npm).
+              Run from a vendored copy (maestro/bin/cli.mjs update), it updates that copy from
+              the registry; --from <kit-dir> updates from a local kit checkout instead.
   sync        Re-render Claude + Codex targets from config.json + context.md
               --all --registry <file> renders every project in a registry (same format as
               'drift', below), one subprocess each, so one broken project can't abort the rest.
-  validate    Check the board's integrity
+  validate    Check the board's integrity (default: board/data.json, then maestro/board/data.json)
   ticket      Change the board safely — add | import | set-status | set-routing | retrace | archive | drop
               The only supported way to write a board: locked, validated and atomic, so two
               writers can't silently overwrite each other. 'import' bulk-adds a whole planned
@@ -1430,11 +1536,19 @@ function help() {
   lanes       What can safely run in parallel — plan | next | check
               A lane is a worktree running a QUEUE of tickets one at a time. Two tickets go in
               different lanes only when nothing suggests they touch the same files. Pool size
-              is config.orchestration.maxWorktrees (default 3, ceiling 5).
-  swarm       Configure the optional continuous delivery pool — enable | disable | status
+              is config.orchestration.maxWorktrees (default 3, ceiling 5, or "unlimited").
+  swarm       Configure the optional continuous delivery pool — enable | disable | status | lock | unlock
               Enabling stores bounded staffing, lane, wave, timeout and auto-merge policy;
               it does not install a daemon or bypass the harness concurrency limit. The
-              rendered swarm skill runs the supervised wave loop.
+              rendered swarm skill runs the supervised wave loop. 'lock'/'unlock' take and
+              release the exclusive merge lock: one merge at a time across every worktree.
+  merge-driver  Merge board data.json/archive.json by ticket id in git — install | status | uninstall
+              Opt-in. Registers a git merge driver in this clone and .gitattributes lines, so
+              two branches that change different tickets merge without conflicts.
+  check       Delivery-process checks over git history — process-ratio | evidence-budget
+              Opt-in, configured by config.json "checks". process-ratio reports how much of the
+              recent work was process (evidence, board, docs) rather than code or tests;
+              evidence-budget fails a branch that commits raw evidence or oversized reports.
   plan        The project plan every ticket is scoped against — status | questions | add | ...
               'maestro plan status' prints how complete the plan is and what's still thin;
               'coverage' shows which requirements no ticket is working. Written under the same
@@ -1486,6 +1600,8 @@ const COMMANDS = [
   { key: "run", label: "Run a cross-review-enabled ticket: dev → PR → reviewer" },
   { key: "lanes", label: "What can safely run in parallel (plan | next | check)" },
   { key: "swarm", label: "Enable, disable, or inspect continuous delivery pool policy" },
+  { key: "merge-driver", label: "Merge board files by ticket id in git (install | status)" },
+  { key: "check", label: "Delivery-process checks (process-ratio | evidence-budget)" },
   { key: "usage", label: "Time and tokens per ticket, by agent, model, runtime and stage" },
   { key: "drift", label: "Report version + hand-edit drift across a registry of projects" },
   { key: "init", label: "Set up as a small capsule pointing at a kit elsewhere" },
@@ -1512,6 +1628,28 @@ async function sync(args) {
   process.exit(run("render/sync.mjs", args));
 }
 
+function validate(args) {
+  // Option values are not board paths. Put the resolved path first for the standalone
+  // validator, whose positional parser expects it before flags. With no path, validate the
+  // board of the kit in the current directory: ./board/data.json, then ./maestro/board/data.json.
+  const options = [];
+  const paths = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--agents" || args[i] === "--config") options.push(args[i], args[++i]);
+    else paths.push(args[i]);
+  }
+  if (paths.length > 1) {
+    console.error("✗ validate takes one board path.");
+    return 2;
+  }
+  const board = paths[0] ?? ["board/data.json", "maestro/board/data.json"].find((p) => existsSync(p));
+  if (!board) {
+    console.error("✗ No board found at board/data.json or maestro/board/data.json.\n  Run 'npx @mychiefmind/ai-maestro setup' first (menu option 1), or pass a board path to validate.\n  Validate checks an existing board; it does not create one.");
+    return 1;
+  }
+  return run("scripts/validate-board.mjs", [board, ...options]);
+}
+
 // ── Argument policy (T-033) ─────────────────────────────────────────────────────────────
 // Parsing fails CLOSED. In the 2026-08-28 board-loss incident `setup --dir <tmp>` silently
 // ignored --dir (setup never had it) and ran against the current directory. So each command
@@ -1531,7 +1669,7 @@ const COMMAND_FLAGS = {
   init: { bool: [], value: ["dir", "name", "starter", "areas", ...BRIEF_FLAGS] },
   update: {
     bool: ["all", "dry-run", "force", "offline", "adopt-new", "no-adopt", "no-github-actions"],
-    value: ["registry", "kit"],
+    value: ["registry", "kit", "from", "base"],
   },
   sync: { bool: ["all", "check"], value: ["project", "kit", "registry", "out"] },
   validate: { bool: [], value: ["agents", "config"] },
@@ -1594,7 +1732,9 @@ async function dispatch(command, args) {
     case "update": await update(args); break;
     case "init": await init(args); break;
     case "sync": await sync(args); break;
-    case "validate": process.exit(run("scripts/validate-board.mjs", args)); break;
+    case "validate": process.exit(validate(args)); break;
+    case "check": process.exit(run("scripts/process-checks.mjs", args)); break;
+    case "merge-driver": process.exit(run("scripts/board-merge-driver.mjs", args)); break;
     case "ticket": process.exit(run("scripts/board-write.mjs", args)); break;
     case "plan": process.exit(run("scripts/plan-write.mjs", args)); break;
     case "spec": process.exit(run("scripts/spec-write.mjs", args)); break;

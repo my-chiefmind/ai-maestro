@@ -14,7 +14,7 @@ import {
 } from "./board-core.mjs";
 import { BoardConflictError, BoardInputError, BoardLockError, BoardNotFoundError } from "./board-errors.mjs";
 import {
-  createTicketOperation, editTicketOperation, setTicketStatusOperation, setTicketEpicOperation,
+  createTicketOperation, editTicketOperation, editTicketsOperation, setTicketStatusOperation, setTicketEpicOperation,
   createEpicOperation, editEpicOperation, archiveTicketOperation, dropTicketOperation,
   unarchiveTicketOperation, archiveEpicOperation,
 } from "./board-operations.mjs";
@@ -248,6 +248,7 @@ function runOperation(options, operation, operationName) {
 
 export const createTicket = (options = {}) => runOperation(options, createTicketOperation, "create-ticket");
 export const editTicket = (options = {}) => runOperation(options, editTicketOperation, "edit-ticket");
+export const editTickets = (options = {}) => runOperation(options, editTicketsOperation, "edit-tickets");
 export const setTicketStatus = (options = {}) => runOperation(options, setTicketStatusOperation, "set-ticket-status");
 export const setTicketEpic = (options = {}) => runOperation(options, setTicketEpicOperation, "set-ticket-epic");
 export const createEpic = (options = {}) => runOperation(options, createEpicOperation, "create-epic");

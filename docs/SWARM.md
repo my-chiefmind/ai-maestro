@@ -9,6 +9,8 @@ maestro swarm enable --agents 10 --worktrees 5 --wave-minutes 30
 maestro swarm enable --auto-merge
 maestro swarm status
 maestro swarm disable
+maestro swarm lock --holder <id> [--ticket T-123] [--pr <url>] [--pid <n>]
+maestro swarm unlock --holder <id>     # or --force to break a lock
 ```
 
 Enabling stores policy in `config.json`; `--agents 10` targets ten active workers plus one
@@ -23,10 +25,33 @@ work to the ticket's implementation agent, independent review to `qa`, and deliv
 to `principal-delivery`. It discovers capacity from the host's live-agent inventory and spawn
 results; the configured target is never presented as measured capacity.
 
-`autoMerge` records intent, but the shipped local coordinator has no cross-process exclusive
-merge lock. `maestro swarm status --json` therefore reports `effectiveAutoMerge: false`, and
-approved PRs wait for an explicitly authorized manual merge. A durable coordinator can enable
-automatic merging only after it supplies and reports a real exclusive merge-lock primitive.
+`--worktrees` takes an integer from 1 to 5, or `unlimited`, which opens a lane for every
+independent ticket (`orchestration.maxWorktrees: "unlimited"`). The lane scheduler still keeps
+tickets that may touch the same files in one lane.
+
+## Merge lock
+
+Since 0.6.20 the kit ships an exclusive merge lock: one merge at a time across every worktree of
+a checkout. It is a file, `maestro-merge.lock`, created atomically in the checkout's common git
+directory, so every worktree sees it and no commit contains it.
+
+- `maestro swarm lock --holder <id>` takes it or exits 3 when another merge holds it (retry on
+  the next wave); `maestro swarm unlock --holder <id>` releases it. Only the holder that took it
+  can release it, unless `--force`.
+- A lock whose recorded holder process (`--pid`) has exited is stale and is retaken. A lock with
+  no pid is stale after an hour. A lock whose holder is still running is never broken.
+- A merge script can hold the lock in its own process instead: `acquireMergeLock`,
+  `releaseMergeLock` and `withMergeLock` from `scripts/swarm-core.mjs`.
+
+`autoMerge` records intent. `maestro swarm status --json` reports `effectiveAutoMerge: true` only
+when `autoMerge` is on and the checkout has the lock (any git checkout does), and reports the lock
+under `runtime.mergeLock` (`available`, `held`, `holder`, `stale`). Outside a git checkout it stays
+`false` and approved PRs wait for a manual merge. Every automatic merge takes the lock first and
+releases it afterwards; the swarm skill's merge rules below still apply.
+
+Projects that set `autoMerge: true` on 0.6.19 or earlier: that request was fail-closed until
+now and becomes effective on upgrade. Run `maestro swarm enable --no-auto-merge` first if you do
+not want agents to merge.
 
 ## Reuse decision
 
@@ -66,8 +91,8 @@ Durability follow-up (T-039): see [research/swarm-durable-coordinator.md](./rese
    remains the coordinator and does not spawn an `orchestrator`.
 3. `T-201` finishes first. The coordinator uses the freed slot for `qa`, waits for the verdict,
    then assigns `principal-delivery`. `T-202` continues independently.
-4. Delivery approves `T-201`. Because runtime status says `effectiveAutoMerge: false`, the PR
-   enters the manual merge queue instead of being merged. The coordinator can assign the newly
+4. Delivery approves `T-201`. With `effectiveAutoMerge: false` the PR enters the manual merge
+   queue; with `true` the coordinator takes the merge lock, merges, and releases it. The coordinator can assign the newly
    free worker slot to QA for `T-202`.
 5. After an authorized one-at-a-time merge, the coordinator archives `T-201`, recomputes lanes,
    and fills only capacity the harness actually reports.

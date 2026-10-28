@@ -74,7 +74,9 @@ See `starters/orchestrated-project/config.json` for a full example. Keys:
 | `skills` | Skill dir names to include (omit = all). |
 | `model.default` / `model.floors` | Default model tier + per-area floors. |
 | `humanGates` | Allowed `human_gate` phrases for tickets. |
-| `orchestration.maxWorktrees` | Maximum concurrent worktree lanes (1–5). |
+| `orchestration.maxWorktrees` | Maximum concurrent worktree lanes: an integer from 1 to 5, or `"unlimited"`. |
+| `ticketReadiness.enabled` | Opt-in: every live ticket needs `gates` and `inputs`, and `ticket add`/`import` refuse an incomplete ticket. See docs/KIT-UPGRADES.md. |
+| `checks.processRatio` / `checks.evidenceBudget` | Targets for `maestro check process-ratio` / `evidence-budget`. |
 | `orchestration.swarm` | Optional continuous-pool policy; disabled by default. Configure with `maestro swarm`. |
 | `targets.claude` / `targets.codex` | Enable either runtime target; both default to `true`. |
-| `kitSource.mode` / `kitSource.path` | Where the kit lives (`sibling` / `vendor`). |
+| `kitSource.mode` / `kitSource.path` | Where the kit lives (`sibling` / `vendor` / `self`). A vendored kit uses `path: "."`; a path that names no kit falls back to the kit running `sync`, and `maestro update` rewrites it. |

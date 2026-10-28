@@ -32,9 +32,14 @@
  * Pure functions, no I/O — the CLI, the validator, and the orchestrator all read one answer.
  */
 
-/** Hard ceiling regardless of config. Past this, a human cannot hold the state in their head. */
+/**
+ * Ceiling for a numeric pool size. Past this, a human cannot hold the state in their head; a
+ * project that schedules unattended (the swarm) opts out with `maxWorktrees: "unlimited"`.
+ */
 export const MAX_LANES = 5;
 export const DEFAULT_LANES = 3;
+/** `orchestration.maxWorktrees: "unlimited"` opens a lane for every independent ticket. */
+export const UNLIMITED_LANES = "unlimited";
 
 /**
  * Files whose merge semantics are hostile no matter how careful the plan is: a lockfile, a
@@ -47,12 +52,16 @@ export const DEFAULT_SERIAL_FILES = [
   "**/migrations/**", "**/schema.prisma", "**/db/schema.rb",
 ];
 
-/** @param {object|null} config @returns {number} */
+/** @param {object|null} config @returns {number} Infinity when the pool is unlimited */
 export function laneCount(config) {
   const raw = config?.orchestration?.maxWorktrees;
+  if (raw === UNLIMITED_LANES) return Infinity;
   const n = Number.isInteger(raw) ? raw : DEFAULT_LANES;
   return Math.max(1, Math.min(MAX_LANES, n));
 }
+
+/** A lane count as people and JSON read it: a number, or "unlimited". */
+export const laneLabel = (n) => (Number.isFinite(n) ? n : UNLIMITED_LANES);
 
 /** @param {object|null} config @returns {string[]} */
 export function serialFiles(config) {

@@ -228,7 +228,7 @@ By default one ticket runs at a time. Set `orchestration.maxWorktrees` to opt in
 
 ```jsonc
 "orchestration": {
-  "maxWorktrees": 3,                        // pool size; hard ceiling is 5
+  "maxWorktrees": 3,                        // pool size: 1–5, or "unlimited"
   "serialFiles": ["infra/terraform/**"]     // added to the built-in serial patterns
 }
 ```
@@ -439,6 +439,11 @@ propagate too), keeps everything that's yours — `config.json`, `context.md`, a
 run any time: if you're already current it says so and stops, and it refuses to downgrade
 unless you pass `--force`. Review the diff before committing, like any other change.
 
+If you edited kit files in `maestro/` (a patched script, say), `update` merges each one with the
+new release instead of overwriting it, and stops with conflict markers where both changed the
+same lines. Commit `maestro/` after every update so the next one can find what it merged against.
+See [Kit upgrades](./KIT-UPGRADES.md).
+
 The same command covers the other install shapes:
 
 | You installed via… | Update with |
@@ -446,6 +451,7 @@ The same command covers the other install shapes:
 | `npx` (the default) | `npx @mychiefmind/ai-maestro@latest update` |
 | Local dependency | `npm update @mychiefmind/ai-maestro`, then `npx ai-maestro update` |
 | Git clone | `node <kit>/bin/cli.mjs update` — pulls the clone, then re-renders |
+| The vendored copy itself | `node maestro/bin/cli.mjs update` — updates it from the registry (`--from <dir>` for a local kit copy) |
 
 For a **shared clone** used by several repos, `update` pulls once and prints the re-render
 command to run per project. The old built-in dashboard folder an older release left in `maestro/` is no

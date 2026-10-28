@@ -210,12 +210,16 @@ schedule remains valid.
 ## Merge and authority policy
 
 `autoMerge` is a requested policy, not proof that automatic merging is available. Read
-`maestro swarm status --json` and require `runtime.effectiveAutoMerge: true`. The shipped local
-coordinator currently reports it as false because it has no exclusive merge-lock primitive;
-therefore it fails closed and queues approved PRs for manual merge.
+`maestro swarm status --json` and require `runtime.effectiveAutoMerge: true`. It is true only
+when `autoMerge` is enabled and the checkout has the exclusive merge lock
+(`runtime.mergeLock.available`). When it is false, fail closed and queue approved PRs for manual
+merge.
 
-A future runtime may allow automatic merge only when `autoMerge` is enabled and all of these
-are true:
+Merge one PR at a time: take the lock with `maestro swarm lock --holder <your session id>
+--ticket <id>` (exit 3 means another merge holds it — leave the PR queued for the next wave),
+merge, then `maestro swarm unlock --holder <your session id>`, also when the merge fails.
+
+Automatic merge is allowed only when `autoMerge` is enabled and all of these are true:
 
 - independent QA passed the current revision;
 - the delivery gate passed the current revision;

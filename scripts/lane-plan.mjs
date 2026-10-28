@@ -23,7 +23,7 @@ import { eligibleTickets, scopeBlockedTickets } from "./board-core.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import {
   assignLanes, startableNow, conflictReason, parallelismLostToVagueness,
-  laneCount, serialFiles, touchesOf, MAX_LANES,
+  laneCount, laneLabel, serialFiles, touchesOf, MAX_LANES,
 } from "./lane-core.mjs";
 
 const argv = process.argv.slice(2);
@@ -58,7 +58,7 @@ function usage() {
   and either both declaring disjoint \`touches\` globs or being in different epics AND areas.
 
   Flags: --board <path>  --config <path>  --max <n>  --json
-  Pool size comes from config.orchestration.maxWorktrees (default 3, hard ceiling ${MAX_LANES}).
+  Pool size comes from config.orchestration.maxWorktrees (default 3; an integer up to ${MAX_LANES}, or "unlimited").
 `);
   process.exit(argv.length ? 1 : 0);
 }
@@ -87,7 +87,7 @@ const { data: board, archive } = (() => {
 })();
 // --max is an override for trying a different pool size without editing config.
 const effectiveConfig = flag("max")
-  ? { ...(config ?? {}), orchestration: { ...(config?.orchestration ?? {}), maxWorktrees: Number(flag("max")) } }
+  ? { ...(config ?? {}), orchestration: { ...(config?.orchestration ?? {}), maxWorktrees: flag("max") === "unlimited" ? "unlimited" : Number(flag("max")) } }
   : config;
 
 // The plan, so lanes only ever schedule work the scope gate would actually let run. Scheduling
@@ -148,7 +148,7 @@ if (op === "next") {
       exclusive: startable.exclusive?.id ?? null,
       waiting: startable.waiting.map((t) => t.id),
       scopeBlocked: blockedByScope.map((r) => r.ticket.id),
-      max: schedule.max,
+      max: laneLabel(schedule.max),
     }) + "\n");
     process.exit(0);
   }
@@ -164,7 +164,7 @@ if (op === "next") {
 if (JSON_OUT) {
   process.stdout.write(JSON.stringify({
     ok: true,
-    max: schedule.max,
+    max: laneLabel(schedule.max),
     lanes: schedule.lanes.map((l) => ({
       index: l.index, exclusive: l.exclusive, reason: l.reason,
       tickets: l.tickets.map((t) => ({ id: t.id, name: t.name, area: t.area, epicId: t.epicId, touches: touchesOf(t) })),
@@ -193,7 +193,7 @@ if (!ready.length) {
   out("");
   process.exit(0);
 }
-out(`  ${ready.length} eligible ticket(s) across ${schedule.lanes.length} lane(s) — pool cap ${schedule.max}.`);
+out(`  ${ready.length} eligible ticket(s) across ${schedule.lanes.length} lane(s) — pool cap ${laneLabel(schedule.max)}.`);
 out("");
 for (const l of schedule.lanes) {
   const head = l.tickets[0];
@@ -223,7 +223,7 @@ if (vague.length) {
 }
 const serial = serialFiles(effectiveConfig).length;
 out("");
-out(`  ${laneCount(effectiveConfig)} lane(s) configured; ${serial} serial-only file pattern(s) in force.`);
+out(`  ${laneLabel(laneCount(effectiveConfig))} lane(s) configured; ${serial} serial-only file pattern(s) in force.`);
 out("");
 
 /** @param {any} t */

@@ -20,7 +20,7 @@ All reads and writes take the board-directory lock. A write reloads `data.json`,
 targeted operation, validates the result, and atomically replaces only its owned board files.
 There is deliberately no whole-board PUT operation.
 
-The write operations are `createTicket`, `editTicket`, `setTicketStatus`, `setTicketEpic`,
+The write operations are `createTicket`, `editTicket`, `editTickets`, `setTicketStatus`, `setTicketEpic`,
 `createEpic`, `editEpic`, `archiveTicket`, and `dropTicket`. Every write accepts
 `expectVersion` for compare-and-swap and `dryRun`. `readBoard` returns the board, archive, plan,
 config, content versions, and validator errors/warnings. An explicit `agentsDir` overrides the
@@ -35,6 +35,15 @@ whitespace-only string removes it so the ticket inherits `config.crossReview` (t
 `set-routing` rejects blank values; use `--clear` there). A non-string value throws `BoardInputError` with
 `field` naming the key (e.g. `{ code: "EBOARDINPUT", field: "dev_runtime", value: 42 }`). Setting
 any field to `null` removes it; unknown keys throw `BoardInputError` with `fields`.
+
+`touches` must be a list of non-empty glob strings; a string, or entries that are fragments of a
+JSON array (`'["a"'`), throw `BoardInputError` with `field: "touches"`. `gates` and `inputs` are
+editable too (see `config.ticketReadiness` in [Kit upgrades and opt-in rules](./KIT-UPGRADES.md)).
+
+`editTickets({ edits: { "T-1": changes, "T-2": changes } })` applies several `editTicket` changes
+in one locked, validated write, all or nothing. Use it when a board-wide rule changes: one edit
+at a time would leave the board invalid in between, so each would be refused. CLI:
+`maestro ticket edit-many --changes-file edits.json`.
 
 | Class | Code | Structured details |
 | --- | --- | --- |

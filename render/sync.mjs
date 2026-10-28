@@ -116,9 +116,17 @@ const OUT = argValue("--out")
     ? resolve(PROJECT, config.outDir)
     : PROJECT;
 
-// Resolve the kit root: explicit --kit, else config.kitSource.path, else this repo.
+// Resolve the kit root: explicit --kit, else config.kitSource.path, else this repo. A
+// kitSource.path that names no kit (e.g. ../node_modules/@mychiefmind/ai-maestro in a project
+// whose kit is vendored) falls back to this kit with a warning instead of failing the render;
+// `maestro update` rewrites the setting.
+const configuredKit = config.kitSource?.path ? resolve(PROJECT, config.kitSource.path) : null;
+const kitUsable = (dir) => existsSync(join(dir, "agents"));
+if (!kitArg && configuredKit && !kitUsable(configuredKit) && kitUsable(THIS_KIT)) {
+  console.warn(`  ⚠ config.kitSource.path "${config.kitSource.path}" names no kit (${configuredKit}) — using ${THIS_KIT}. Set kitSource.path to "." for a vendored kit (maestro update does this).`);
+}
 const KIT = resolve(
-  kitArg ?? (config.kitSource?.path ? join(PROJECT, config.kitSource.path) : THIS_KIT)
+  kitArg ?? (configuredKit && (kitUsable(configuredKit) || !kitUsable(THIS_KIT)) ? configuredKit : THIS_KIT)
 );
 if (!existsSync(join(KIT, "agents"))) {
   console.error(`Error: kit not found at ${KIT} (no agents/ dir).`);
