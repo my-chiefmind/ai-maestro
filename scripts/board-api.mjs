@@ -6,7 +6,7 @@ import { applyGuardedBoardTransition, criteriaFor } from './delivery-policy.mjs'
  * Supported public API for reading and applying targeted Maestro board changes.
  * Callers provide a board directory or data.json path; no whole-board replacement is exposed.
  */
-import { withBoardLock, mutateBoard, boardVersion } from "./board-io.mjs";
+import { withBoardLock, mutateBoard, boardVersion, effectiveVersion, snapshotVersion } from "./board-io.mjs";
 import { join } from "node:path";
 import { loadBoardContext, resolveBoardPaths, validateBoardContext } from "./board-context.mjs";
 import {
@@ -14,7 +14,7 @@ import {
 } from "./board-core.mjs";
 import { BoardConflictError, BoardInputError, BoardLockError, BoardNotFoundError } from "./board-errors.mjs";
 import {
-  createTicketOperation, editTicketOperation, setTicketStatusOperation, setTicketEpicOperation,
+  createTicketOperation, editTicketOperation, editTicketsOperation, setTicketStatusOperation, setTicketEpicOperation,
   createEpicOperation, editEpicOperation, archiveTicketOperation, dropTicketOperation,
   unarchiveTicketOperation, archiveEpicOperation,
 } from "./board-operations.mjs";
@@ -28,7 +28,7 @@ export {
 
 export function getBoardVersion(options = {}) {
   const paths = resolveBoardPaths(options);
-  return withBoardLock(paths.boardDir, () => boardVersion(paths.dataPath), {
+  return withBoardLock(paths.boardDir, () => effectiveVersion(paths.dataPath, paths), {
     op: "read-version", ...(options.lockOptions ?? {}),
   });
 }
@@ -40,8 +40,9 @@ export function readBoard(options = {}) {
     const verdict = validateBoardContext(context);
     return {
       data: context.data, archive: context.archive, config: context.config, plan: context.plan,
-      version: boardVersion(paths.dataPath), archiveVersion: boardVersion(paths.archivePath),
+      version: snapshotVersion(paths.dataPath, context.localStatus), archiveVersion: snapshotVersion(paths.archivePath, context.localStatus),
       errors: verdict.errors, warnings: verdict.warnings,
+      ...(context.localStatus ? { localStatus: { ref: context.localStatus.ref, oid: context.localStatus.oid } } : {}),
     };
   }, { op: "read-board", ...(options.lockOptions ?? {}) });
 }
@@ -59,8 +60,8 @@ function eligibilitySnapshot(options = {}) {
       }));
       return {
         verdicts,
-        version: boardVersion(paths.dataPath),
-        archiveVersion: boardVersion(paths.archivePath),
+        version: snapshotVersion(paths.dataPath, context.localStatus),
+        archiveVersion: snapshotVersion(paths.archivePath, context.localStatus),
         planVersion: boardVersion(join(paths.boardDir, "plan.json")),
       };
     }, { op: "read-eligibility", ...(options.lockOptions ?? {}) });
@@ -145,6 +146,7 @@ export function claimTicket(options = {}) {
   return mutateBoard({
     dataPath: paths.dataPath,
     archivePath: paths.archivePath,
+    configPath: paths.configPath,
     dryRun: options.dryRun === true,
     op: "claim-ticket",
     lockOptions: options.lockOptions,
@@ -156,8 +158,8 @@ export function claimTicket(options = {}) {
         data, archivedTickets: archive.tickets ?? [], archivedEpics: archive.epics ?? [], plan: context.plan,
       });
       const versions = {
-        version: boardVersion(paths.dataPath),
-        archiveVersion: boardVersion(paths.archivePath),
+        version: effectiveVersion(paths.dataPath, paths),
+        archiveVersion: effectiveVersion(paths.archivePath, paths),
         planVersion: boardVersion(planPath),
       };
       const expected = {
@@ -196,6 +198,7 @@ function runOperation(options, operation, operationName) {
   return mutateBoard({
     dataPath: paths.dataPath,
     archivePath: paths.archivePath,
+    configPath: paths.configPath,
     expectVersion: options.expectVersion,
     dryRun: options.dryRun === true,
     op: operationName,
@@ -203,7 +206,7 @@ function runOperation(options, operation, operationName) {
     mutate: ({ data, archive }) => {
       // archive.json CAS, checked under the same lock mutateBoard holds for data.json.
       if (options.expectArchiveVersion != null) {
-        const actual = boardVersion(paths.archivePath);
+        const actual = effectiveVersion(paths.archivePath, paths);
         if (actual !== options.expectArchiveVersion) {
           throw new BoardConflictError(
             `The archive at ${paths.archivePath} changed on disk since you read it ` +
@@ -245,6 +248,7 @@ function runOperation(options, operation, operationName) {
 
 export const createTicket = (options = {}) => runOperation(options, createTicketOperation, "create-ticket");
 export const editTicket = (options = {}) => runOperation(options, editTicketOperation, "edit-ticket");
+export const editTickets = (options = {}) => runOperation(options, editTicketsOperation, "edit-tickets");
 export const setTicketStatus = (options = {}) => runOperation(options, setTicketStatusOperation, "set-ticket-status");
 export const setTicketEpic = (options = {}) => runOperation(options, setTicketEpicOperation, "set-ticket-epic");
 export const createEpic = (options = {}) => runOperation(options, createEpicOperation, "create-epic");
@@ -253,3 +257,14 @@ export const archiveTicket = (options = {}) => runOperation(options, archiveTick
 export const dropTicket = (options = {}) => runOperation(options, dropTicketOperation, "drop-ticket");
 export const unarchiveTicket = (options = {}) => runOperation(options, unarchiveTicketOperation, "unarchive-ticket");
 export const archiveEpic = (options = {}) => runOperation(options, archiveEpicOperation, "archive-epic");
+
+/**
+ * Machine-local shared status (opt-in, `config.localStatus`). Every read above already returns
+ * the overlaid board; these read one ticket, overlay contents read elsewhere, and run the daily
+ * sync, backups and the change log. See docs/LOCAL-STATUS.md.
+ */
+export {
+  readTicket, overlayLocalStatus, readLocalStatus, localStatusLog,
+  syncLocalStatus, exportLocalStatus, importLocalStatus,
+} from "./local-status-api.mjs";
+export { DEFAULT_STATUS_FIELDS } from "./local-status.mjs";

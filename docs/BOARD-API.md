@@ -20,7 +20,7 @@ All reads and writes take the board-directory lock. A write reloads `data.json`,
 targeted operation, validates the result, and atomically replaces only its owned board files.
 There is deliberately no whole-board PUT operation.
 
-The write operations are `createTicket`, `editTicket`, `setTicketStatus`, `setTicketEpic`,
+The write operations are `createTicket`, `editTicket`, `editTickets`, `setTicketStatus`, `setTicketEpic`,
 `createEpic`, `editEpic`, `archiveTicket`, and `dropTicket`. Every write accepts
 `expectVersion` for compare-and-swap and `dryRun`. `readBoard` returns the board, archive, plan,
 config, content versions, and validator errors/warnings. An explicit `agentsDir` overrides the
@@ -35,6 +35,15 @@ whitespace-only string removes it so the ticket inherits `config.crossReview` (t
 `set-routing` rejects blank values; use `--clear` there). A non-string value throws `BoardInputError` with
 `field` naming the key (e.g. `{ code: "EBOARDINPUT", field: "dev_runtime", value: 42 }`). Setting
 any field to `null` removes it; unknown keys throw `BoardInputError` with `fields`.
+
+`touches` must be a list of non-empty glob strings; a string, or entries that are fragments of a
+JSON array (`'["a"'`), throw `BoardInputError` with `field: "touches"`. `gates` and `inputs` are
+editable too (see `config.ticketReadiness` in [Kit upgrades and opt-in rules](./KIT-UPGRADES.md)).
+
+`editTickets({ edits: { "T-1": changes, "T-2": changes } })` applies several `editTicket` changes
+in one locked, validated write, all or nothing. Use it when a board-wide rule changes: one edit
+at a time would leave the board invalid in between, so each would be refused. CLI:
+`maestro ticket edit-many --changes-file edits.json`.
 
 | Class | Code | Structured details |
 | --- | --- | --- |
@@ -118,3 +127,26 @@ canonical verdict, and changes only an eligible ticket to `in-progress`. Its res
 any changed input refuses the claim. The CLI equivalent is `maestro ticket claim T-012` with
 the three `--expect-*version` flags. `setTicketStatus` remains available for ordinary lifecycle
 transitions but is not a dispatch claim.
+
+## Local shared status
+
+When a project turns on `"localStatus": { "enabled": true }` in `config.json`, a ticket's progress
+fields live in a machine-local store that every git worktree shares, not in `data.json`. Those
+fields are status, current and next agent, evidence, `done_at`, claim and lane. Every function
+above then reads and writes the logical board, which is the files with the store laid over
+them. `version` and `archiveVersion` also cover the store, so `expectVersion` notices a status
+change made from another worktree. With the mode off, nothing here changes.
+
+```js
+import { readTicket, overlayLocalStatus, syncLocalStatus } from "@mychiefmind/ai-maestro/board";
+
+const { ticket, location, source } = readTicket({ boardPath, id: "T-012" });
+// location: "board" | "archive"; source: "local-status" | "files"
+const atCommit = overlayLocalStatus({ boardPath, data: dataAtSha, archive: archiveAtSha });
+const sync = syncLocalStatus({ boardPath }); // { changed, files, archived, ... }; no-op when unchanged
+```
+
+The other exports are `readLocalStatus`, `localStatusLog`, `exportLocalStatus`,
+`importLocalStatus` and `DEFAULT_STATUS_FIELDS`. The CLI equivalents are
+`maestro status show | list | sync | log | export | import | where` and `maestro ticket read --json`.
+See [Local shared status](./LOCAL-STATUS.md) for the store, locking, the daily sync and backups.

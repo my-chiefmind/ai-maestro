@@ -1,6 +1,7 @@
 import {
   ARCHIVE_ONLY_STATUSES, ARCHIVE_STATUSES, MODELS, MODES, PRIORITY, STATUSES, SWAG,
-  epicOwnershipVerdict, initiativeModeActive, ownershipVerdict,
+  epicOwnershipVerdict, initiativeModeActive, ownershipVerdict, ticketCreationIssues, ticketReadinessSettings,
+  touchesIssues,
 } from "./board-core.mjs";
 import { initiativeMap, planIsGating, planItems, TRACEABLE_PREFIXES } from "./plan-core.mjs";
 import { BoardDuplicateError, BoardInputError, BoardNotFoundError } from "./board-errors.mjs";
@@ -73,8 +74,18 @@ export function createTicketOperation(ctx, values = {}) {
   if (values.model != null) input(MODELS.includes(values.model), `--model must be one of ${MODELS.join(", ")}.`, { field: "model" });
   if (values.execution_mode != null) input(MODES.includes(values.execution_mode), `--execution-mode must be one of ${MODES.join(", ")}.`, { field: "execution_mode" });
   const ticket = { id, name: values.name, desc: values.desc, status, priority, swag, depends_on: values.depends_on ?? [] };
-  for (const key of ["epicId", "area", "model", "execution_mode", "agent_plan", "traces_to", "human_gate", "testCmd", "wave", "touches", "acceptanceCriteria"]) {
+  for (const key of ["epicId", "area", "model", "execution_mode", "agent_plan", "traces_to", "human_gate", "testCmd", "wave", "touches", "acceptanceCriteria", "gates", "inputs"]) {
     if (values[key] != null) ticket[key] = values[key];
+  }
+  const badTouches = touchesIssues(ticket.touches);
+  input(!badTouches.length, badTouches[0], { field: "touches" });
+  // Ticket-creation checklist (opt-in, config.ticketReadiness): a ticket is not saved until its
+  // gates and inputs (and, by default, touches, acceptance criteria and test command) are filled
+  // in. Every gap is reported at once so the author fixes the ticket in one round.
+  const readiness = ticketReadinessSettings(ctx.config);
+  if (readiness) {
+    const checklist = ticketCreationIssues(ticket, readiness);
+    input(!checklist.length, `Ticket not saved — complete the creation checklist first:\n${checklist.map((x) => `  • ${x}`).join("\n")}`, { field: "checklist", issues: checklist });
   }
   assertTraceable(ticket.traces_to, plan, values.force);
   data.tickets ??= []; data.tickets.push(ticket);
@@ -94,7 +105,7 @@ function normalizeRouting(changes) {
   return out;
 }
 
-const EDITABLE_TICKET = new Set(["name", "desc", "epicId", "area", "priority", "swag", "depends_on", "agent_plan", "model", "execution_mode", "traces_to", "scope_exception", "human_gate", "testCmd", "touches", "wave", "currentAgent", "nextAgent", "acceptanceCriteria", ...ROUTING_FIELDS]);
+const EDITABLE_TICKET = new Set(["name", "desc", "epicId", "area", "priority", "swag", "depends_on", "agent_plan", "model", "execution_mode", "traces_to", "scope_exception", "human_gate", "testCmd", "touches", "wave", "currentAgent", "nextAgent", "acceptanceCriteria", "gates", "inputs", ...ROUTING_FIELDS]);
 export function editTicketOperation(ctx, { id, changes = {}, force = false } = {}) {
   input(id, "Ticket id is required.", { field: "id" });
   const ticket = find(ctx.data.tickets, id);
@@ -111,9 +122,29 @@ export function editTicketOperation(ctx, { id, changes = {}, force = false } = {
   if (ticket.swag != null) input(SWAG.includes(ticket.swag), `swag must be one of ${SWAG.join(", ")}.`);
   if (ticket.model != null) input(MODELS.includes(ticket.model), `model must be one of ${MODELS.join(", ")}.`);
   if (ticket.execution_mode != null) input(MODES.includes(ticket.execution_mode), `execution_mode must be one of ${MODES.join(", ")}.`);
+  if (own(changes, "touches")) {
+    const badTouches = touchesIssues(ticket.touches);
+    input(!badTouches.length, `${id}: ${badTouches[0]}`, { field: "touches" });
+  }
   assertTraceable(ticket.traces_to, ctx.plan, force);
   assertOwnership(ctx.data, ctx.archive, ctx.plan, `ticket ${id}`);
   return { data: ctx.data, result: { id, ticket }, human: `${id} updated` };
+}
+
+/**
+ * Edit several tickets in one locked, validated write. Needed when a board-wide rule changes
+ * (for example a newly required field): editing tickets one at a time would leave the board
+ * invalid between writes, so each single edit is refused. `edits` maps ticket id → changes.
+ * All or nothing: one bad edit and nothing is written.
+ */
+export function editTicketsOperation(ctx, { edits = {}, force = false } = {}) {
+  input(edits && typeof edits === "object" && !Array.isArray(edits) && Object.keys(edits).length, "edits must be a non-empty object of ticket id → changes.", { field: "edits" });
+  const ids = [];
+  for (const [id, changes] of Object.entries(edits)) {
+    editTicketOperation(ctx, { id, changes, force });
+    ids.push(id);
+  }
+  return { data: ctx.data, result: { ids }, human: `${ids.length} ticket(s) updated: ${ids.join(", ")}` };
 }
 
 export function setTicketStatusOperation(ctx, { id, status, coordination = {} } = {}) {

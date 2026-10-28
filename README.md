@@ -49,7 +49,7 @@ session. The idea in three sentences:
 | :--: | --- |
 | **1** | You keep a **board** of epics and tickets, bounded by a **project plan**. |
 | **2** | Every ticket declares **which agents work it** (a pipeline like `plan → build → qa → merge`) and **which model** each stage runs on. |
-| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it. The default is one ticket per run; optional [swarm mode](./docs/SWARM.md) continuously replenishes a bounded lane pool. |
+| **3** | An **orchestrator** picks the next unblocked ticket, runs it through that pipeline in an isolated git worktree, gates it, and lands it. The default is one ticket per run; optional [swarm mode](./docs/SWARM.md) continuously replenishes a bounded lane pool, and optional [local shared status](./docs/LOCAL-STATUS.md) keeps ticket status out of git so lanes need no commit per status change. |
 
 It's the distilled, product-neutral version of a system I've been running across a
 multi-repo portfolio for months. This repo shares the structure so you can adopt the
@@ -129,7 +129,7 @@ single coordinator. Every wave it:
 | **Staff** | Delegates each stage to the right specialist: planning, implementation, independent QA, delivery approval, and repair. |
 | **Gate** | No change lands without QA by an agent that did not write it, then the delivery gate. |
 | **Split stale work** | A ticket past its size budget is checkpointed and split into smaller tickets, never discarded. |
-| **Land** | Approved PRs merge one at a time. Automatic merge stays off until a real exclusive merge lock exists, so PRs wait for you. |
+| **Land** | Approved PRs merge one at a time under an exclusive merge lock shared by every worktree. Automatic merge happens only if you enable it (`--auto-merge`); otherwise PRs wait for you. |
 | **Report** | Each wave reports lanes, gate queues, merges, blockers, and target vs. actual capacity. |
 
 `--agents` is a target, not a promise: the pool never exceeds what your agent host can
@@ -272,8 +272,9 @@ Open your project in Claude Code or Codex and run these once, in order:
 > troubleshooting: [`docs/GETTING-STARTED.md`](./docs/GETTING-STARTED.md).
 >
 > Already set up and a new version is out? `npx @mychiefmind/ai-maestro@latest update`
-> refreshes the kit in `maestro/` and re-renders — your config, brief, and board are kept
-> ([details](./docs/GETTING-STARTED.md#updating-the-kit)).
+> refreshes the kit in `maestro/` and re-renders — your config, brief, and board are kept, and
+> edits you made to kit scripts are merged with the release, not overwritten
+> ([details](./docs/GETTING-STARTED.md#updating-the-kit), [kit upgrades](./docs/KIT-UPGRADES.md)).
 >
 > Running several projects? The [web dashboard](#web-dashboard) shows them all in
 > one local browser tab.

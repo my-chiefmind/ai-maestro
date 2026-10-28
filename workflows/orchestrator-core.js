@@ -548,7 +548,12 @@ function boardInflationReport(board) {
 
 async function readBoard() {
   return await agent(
-    `Read ${BOARD} as the active board and ${ARCHIVE} as the archive. Return the active board's epics and tickets arrays plus archiveTickets containing every archived ticket. If a file is absent or empty, use an empty array. Do not treat a missing dependency as archived.
+    `Run EXACTLY this command to read the board:
+    ${TICKET_CMD} read --board ${shellArg(BOARD)} --archive ${shellArg(ARCHIVE)} --json
+  Its output is { ok, data: { epics, tickets }, archive: { epics, tickets } } — the board with any
+  machine-local ticket status applied (config.localStatus), which ${BOARD} alone does not show.
+  Return data.epics and data.tickets as the active board's epics and tickets, and archive.tickets
+  as archiveTickets. Only if that command is unknown, read ${BOARD} as the active board and ${ARCHIVE} as the archive instead. If a file is absent or empty, use an empty array. Do not treat a missing dependency as archived.
 
   Run EXACTLY this command and return its parsed JSON as \`eligibility\`:
     ${TICKET_CMD} eligibility --board ${shellArg(BOARD)} --archive ${shellArg(ARCHIVE)} --json

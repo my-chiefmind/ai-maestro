@@ -72,8 +72,9 @@ Enable, Disable, and Stop still work.
 
 Before every initial run and after recovery from a systemic failure:
 
-1. Run `maestro swarm status --json`, then read `{{BOARD}}/data.json` and
-   `{{BOARD}}/archive.json`. Confirm the swarm is enabled. The status command resolves the
+1. Run `maestro swarm status --json`, then read the board with
+   `maestro ticket read --board {{BOARD}}/data.json --json`. Its `data` and `archive` include
+   machine-local status when `localStatus` is on. Confirm the swarm is enabled. The status command resolves the
    project-owned config correctly in vendored, sibling-kit, and package layouts.
 2. Run the `board-validate` and `orchestration-health` skills. Do not dispatch against an
    invalid board, an unexplained `in-progress` claim, or an orphaned worktree. After either
@@ -209,12 +210,16 @@ schedule remains valid.
 ## Merge and authority policy
 
 `autoMerge` is a requested policy, not proof that automatic merging is available. Read
-`maestro swarm status --json` and require `runtime.effectiveAutoMerge: true`. The shipped local
-coordinator currently reports it as false because it has no exclusive merge-lock primitive;
-therefore it fails closed and queues approved PRs for manual merge.
+`maestro swarm status --json` and require `runtime.effectiveAutoMerge: true`. It is true only
+when `autoMerge` is enabled and the checkout has the exclusive merge lock
+(`runtime.mergeLock.available`). When it is false, fail closed and queue approved PRs for manual
+merge.
 
-A future runtime may allow automatic merge only when `autoMerge` is enabled and all of these
-are true:
+Merge one PR at a time: take the lock with `maestro swarm lock --holder <your session id>
+--ticket <id>` (exit 3 means another merge holds it — leave the PR queued for the next wave),
+merge, then `maestro swarm unlock --holder <your session id>`, also when the merge fails.
+
+Automatic merge is allowed only when `autoMerge` is enabled and all of these are true:
 
 - independent QA passed the current revision;
 - the delivery gate passed the current revision;

@@ -33,11 +33,122 @@ export const ARCHIVE_STATUSES = [...STATUSES, ...ARCHIVE_ONLY_STATUSES];
  * an enum so merge failures are classifiable rather than free text. Unknown values
  * are a warning, not an error, so a newer board doesn't hard-fail an older validator.
  */
-export const FAILURE_KINDS = ["merge-conflict", "merge-schema-invalid", "merge-unknown-status", "merge-missing-sha"];
+export const FAILURE_KINDS = ["merge-conflict", "merge-schema-invalid", "merge-unknown-status", "merge-missing-sha", "external"];
 
 export const PRIORITY = ["P0", "P1", "P2", "P3"];
 export const SWAG = ["XS", "S", "M", "L", "XL"];
 export const MODELS = ["haiku", "sonnet", "opus"];
+
+/**
+ * Ticket readiness: delivery gates and inputs (opt-in, `config.ticketReadiness.enabled`).
+ *
+ * `gates` says which gates a ticket passes through; `inputs` lists everything the ticket needs
+ * before it can finish, each with who provides it and where it lives. Together they replace
+ * free-text "owner confirms" / "operator supplies" clauses that no agent can act on. An input
+ * from the owner that is still missing makes the ticket not startable: `needs-owner-input` must
+ * be true and the ticket may not be `todo` or `in-progress`.
+ *
+ * Off by default: a board that has not opted in is validated exactly as before.
+ */
+export const GATE_KEYS = ["merge", "dev-deploy", "paid-run", "needs-owner-input"];
+export const INPUT_SOURCES = ["owner", "operator", "agent", "repo", "external"];
+export const INPUT_STATUSES = ["available", "missing"];
+const READINESS_KEYS = new Set(["enabled", "creationChecklist"]);
+
+const isPlainObject = (v) => v != null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * `config.ticketReadiness` as settings, or null when the project has not opted in.
+ * `creationChecklist` (default true) also refuses to create a ticket without touches,
+ * acceptance criteria and a test command.
+ */
+export function ticketReadinessSettings(config) {
+  const raw = config?.ticketReadiness;
+  if (!isPlainObject(raw) || raw.enabled !== true) return null;
+  return { enabled: true, creationChecklist: raw.creationChecklist !== false };
+}
+
+/** Problems with `config.ticketReadiness` itself, as messages. */
+export function ticketReadinessConfigIssues(config) {
+  const raw = config?.ticketReadiness;
+  if (raw == null) return [];
+  if (!isPlainObject(raw)) return ["config.ticketReadiness must be an object, e.g. { \"enabled\": true }."];
+  const issues = [];
+  for (const key of Object.keys(raw)) {
+    if (!READINESS_KEYS.has(key)) issues.push(`config.ticketReadiness.${key} is not a known setting (known: ${[...READINESS_KEYS].join(", ")}).`);
+  }
+  for (const key of READINESS_KEYS) {
+    if (key in raw && typeof raw[key] !== "boolean") issues.push(`config.ticketReadiness.${key} must be true or false.`);
+  }
+  return issues;
+}
+
+/**
+ * Problems with a ticket's `gates` and `inputs`, as messages without the ticket id prefix.
+ * Shared by the validator (every live ticket) and the writer (a ticket is not saved until its
+ * gates and inputs are filled in). An empty array means the two fields are consistent.
+ */
+export function gatesAndInputsIssues(t) {
+  const issues = [];
+  if (!isPlainObject(t.gates)) {
+    issues.push(`gates is required: an object with boolean ${GATE_KEYS.join(", ")}.`);
+  } else {
+    for (const key of GATE_KEYS) {
+      if (typeof t.gates[key] !== "boolean") issues.push(`gates.${key} must be true or false.`);
+    }
+    for (const key of Object.keys(t.gates)) {
+      if (!GATE_KEYS.includes(key)) issues.push(`gates.${key} is not a known gate (known: ${GATE_KEYS.join(", ")}).`);
+    }
+  }
+  if (!Array.isArray(t.inputs)) {
+    issues.push("inputs is required: a list (possibly empty) of {id, name, from, location, status}.");
+  } else {
+    const seen = new Set();
+    t.inputs.forEach((inp, i) => {
+      const label = `inputs[${inp?.id ?? i}]`;
+      if (!isPlainObject(inp)) { issues.push(`${label} must be an object.`); return; }
+      if (typeof inp.id !== "string" || !/^[A-Za-z0-9_-]+$/.test(inp.id)) issues.push(`${label}.id must be a short identifier.`);
+      else if (seen.has(inp.id)) issues.push(`${label}.id is duplicated.`);
+      else seen.add(inp.id);
+      if (typeof inp.name !== "string" || !inp.name.trim()) issues.push(`${label}.name is required.`);
+      if (!INPUT_SOURCES.includes(inp.from)) issues.push(`${label}.from must be one of ${INPUT_SOURCES.join(", ")}.`);
+      if (typeof inp.location !== "string" || !inp.location.trim()) issues.push(`${label}.location is required — say where the input lives or must be placed.`);
+      if (!INPUT_STATUSES.includes(inp.status)) issues.push(`${label}.status must be one of ${INPUT_STATUSES.join(", ")}.`);
+    });
+    if (isPlainObject(t.gates) && typeof t.gates["needs-owner-input"] === "boolean") {
+      const ownerMissing = t.inputs.some((inp) => isPlainObject(inp) && inp.from === "owner" && inp.status === "missing");
+      if (ownerMissing && !t.gates["needs-owner-input"]) {
+        issues.push("gates.needs-owner-input must be true while an input from the owner is missing.");
+      }
+      if (!ownerMissing && t.gates["needs-owner-input"]) {
+        issues.push("gates.needs-owner-input is true but no input from the owner is missing — clear the gate or record the missing input.");
+      }
+    }
+  }
+  return issues;
+}
+
+/**
+ * The ticket-creation checklist: what a ticket must carry before it is saved. Returned as
+ * messages so the writer can refuse with every gap at once instead of one per run.
+ * `creationChecklist: false` keeps only the gates/inputs half.
+ */
+export function ticketCreationIssues(t, settings = { creationChecklist: true }) {
+  const issues = gatesAndInputsIssues(t);
+  if (settings?.creationChecklist === false) return issues;
+  if (!(Array.isArray(t.touches) && t.touches.length)) issues.push("touches is required: the glob patterns the ticket is expected to change.");
+  if (!(Array.isArray(t.acceptanceCriteria) && t.acceptanceCriteria.length)) issues.push("acceptanceCriteria is required: at least one {id, text, phase}.");
+  if (typeof t.testCmd !== "string" || !t.testCmd.trim()) issues.push("testCmd is required: the exact command that proves the acceptance criteria.");
+  return issues;
+}
+
+/** Problems with a ticket's `touches`, when present: a list of non-empty glob strings. */
+export function touchesIssues(touches) {
+  if (touches == null) return [];
+  if (!Array.isArray(touches)) return [`touches must be a list of glob patterns, not ${typeof touches === "string" ? `the string ${JSON.stringify(touches)}` : typeof touches}.`];
+  const bad = touches.filter((x) => typeof x !== "string" || !x.trim() || /^\[\s*"|"\s*\]$|^"|"$/.test(x.trim()));
+  return bad.length ? [`touches has malformed entries: ${bad.map((x) => JSON.stringify(x)).join(", ")} — pass a JSON array or a comma-separated list of globs.`] : [];
+}
 export const MODES = ["single-agent", "multi-agent"];
 
 /** Stable machine codes returned by the public eligibility API. */
@@ -553,6 +664,8 @@ export function validateBoard(data, opts = {}) {
   const warnings = [];
   const err = (m) => errors.push(m);
   const warn = (m) => warnings.push(m);
+  const readiness = ticketReadinessSettings(config);
+  for (const issue of ticketReadinessConfigIssues(config)) err(issue);
 
   if (!Array.isArray(data?.epics)) err("Missing or non-array `epics`.");
   if (!Array.isArray(data?.tickets)) err("Missing or non-array `tickets`.");
@@ -667,6 +780,21 @@ export function validateBoard(data, opts = {}) {
     // match it reliably (this is what the board-validate skill promises).
     if (config?.humanGates?.length && t.human_gate && !config.humanGates.includes(t.human_gate)) {
       warn(`${id}: human_gate "${t.human_gate}" isn't in config.humanGates — use one of: ${config.humanGates.join(", ")}.`);
+    }
+
+    // A warning, not an error: boards written before writers checked this must still load. The
+    // writers (createTicket / editTicket) refuse a malformed value outright.
+    for (const issue of touchesIssues(t.touches)) warn(`${id}: ${issue}`);
+
+    // Opt-in readiness (config.ticketReadiness): gates and inputs are required on every live
+    // ticket; see gatesAndInputsIssues. A ticket waiting on an owner input is not startable, so
+    // todo/in-progress is an error.
+    if (readiness) {
+      for (const issue of gatesAndInputsIssues(t)) err(`${id}: ${issue}`);
+      if (t.gates?.["needs-owner-input"] === true && (t.status === "todo" || t.status === "in-progress")) {
+        const missing = (Array.isArray(t.inputs) ? t.inputs : []).filter((inp) => inp?.from === "owner" && inp?.status === "missing").map((inp) => inp.id);
+        err(`${id}: not startable — owner input missing (${missing.join(", ") || "see inputs"}) but status is "${t.status}"; keep it in backlog or blocked until the input is available.`);
+      }
     }
 
     // Routing contract: a runnable ticket needs the fields the orchestrator dispatches on.

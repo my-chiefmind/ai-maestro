@@ -219,7 +219,7 @@ function evidenceText(rec) {
  *   ts: number, kind: "turn" | "evidence", cwd: string, cwdAncestors?: string[], branch: string | null, sessionId: string,
  *   agentId: string | null, agentType: string | null,
  *   runtime?: string, provider?: string,
- *   responseId?: string,
+ *   responseId?: string, turnKey?: string,
  *   model?: string, usage?: Usage,
  *   mentions: string[], commands: Array<{ verb: string, id: string }>,
  * }} UsageEvent
@@ -282,7 +282,7 @@ export function distill(filePath, opts = {}) {
   const seen = new Set();
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
-    if (e.kind !== "turn" || !e.responseId) continue;
+    if (!e || e.kind !== "turn" || !e.responseId) continue;
     if (seen.has(e.responseId)) {
       const { model: _m, usage: _u, responseId: _r, ...rest } = e;
       events[i] = { ...rest, kind: "evidence" };

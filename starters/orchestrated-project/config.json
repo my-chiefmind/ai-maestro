@@ -48,7 +48,8 @@
     "orchestration-health",
     "repo-audit",
     "scale",
-    "data-model"
+    "data-model",
+    "tracker"
   ],
   "model": {
     "default": "sonnet",

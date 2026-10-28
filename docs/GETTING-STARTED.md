@@ -45,7 +45,29 @@ what that summary leaves out.
 **Answering non-interactively** — for scripts, CI, or an agent running setup on your behalf —
 pass any of `--name`, `--areas`, `--outcome`, `--users`, `--stack`, `--constraints`, `--run`,
 `--test`, plus `--yes`. Anything you omit falls back to `propose one`, which becomes an open
-question in your brief rather than a silent blank.
+question in your brief rather than a silent blank. The optional tracker takes `--tracker`
+(`none`, `atlassian`, `monday`, `both` or `other`; default `none`), `--jira-project`,
+`--confluence-space`, `--monday-board` and `--tracker-runtimes claude,codex`. A re-run keeps
+the saved tracker, and any of these flags passed on the re-run update it. `other` reuses an
+MCP server your runtime already has: name it with `--tracker-server <name>`.
+
+**Connecting the tracker** — `--connect-trackers` adds the missing Atlassian or monday.com MCP
+servers to each runtime (`claude mcp add --scope local …`, `codex mcp add …`); an interactive
+setup asks instead, and offers to start sign-in. A server the runtime already has, even under
+another name, is kept and never overwritten. Afterwards:
+
+```sh
+maestro tracker check            # each service, per runtime; --json for scripts
+maestro tracker connect --login  # add what's missing and start each runtime's own sign-in
+```
+
+`check` exits 0 when nothing needs attention, 1 when a connection does, and 2 when the command
+or the config can't be used. It never prints what the runtime returns, and destination and
+write access always stay *unverified*: run the **tracker** skill (`/tracker` in Claude Code,
+`$tracker` in Codex) to read the destination with the session's real tools. Tokens stay in
+each runtime's own sign-in storage; nothing is synced in the background. If your organization
+registers the server under its own name, set `"servers": { "atlassian": "<name>" }` in the
+`tracker` block of `config.json`.
 
 **From a clone** — cloning the kit instead of using npx gives the identical layout
 (`git clone https://github.com/my-chiefmind/ai-maestro.git maestro`); `npm run setup`
@@ -228,7 +250,7 @@ By default one ticket runs at a time. Set `orchestration.maxWorktrees` to opt in
 
 ```jsonc
 "orchestration": {
-  "maxWorktrees": 3,                        // pool size; hard ceiling is 5
+  "maxWorktrees": 3,                        // pool size: 1–5, or "unlimited"
   "serialFiles": ["infra/terraform/**"]     // added to the built-in serial patterns
 }
 ```
@@ -439,6 +461,11 @@ propagate too), keeps everything that's yours — `config.json`, `context.md`, a
 run any time: if you're already current it says so and stops, and it refuses to downgrade
 unless you pass `--force`. Review the diff before committing, like any other change.
 
+If you edited kit files in `maestro/` (a patched script, say), `update` merges each one with the
+new release instead of overwriting it, and stops with conflict markers where both changed the
+same lines. Commit `maestro/` after every update so the next one can find what it merged against.
+See [Kit upgrades](./KIT-UPGRADES.md).
+
 The same command covers the other install shapes:
 
 | You installed via… | Update with |
@@ -446,6 +473,7 @@ The same command covers the other install shapes:
 | `npx` (the default) | `npx @mychiefmind/ai-maestro@latest update` |
 | Local dependency | `npm update @mychiefmind/ai-maestro`, then `npx ai-maestro update` |
 | Git clone | `node <kit>/bin/cli.mjs update` — pulls the clone, then re-renders |
+| The vendored copy itself | `node maestro/bin/cli.mjs update` — updates it from the registry (`--from <dir>` for a local kit copy) |
 
 For a **shared clone** used by several repos, `update` pulls once and prints the re-render
 command to run per project. The old built-in dashboard folder an older release left in `maestro/` is no

@@ -11,13 +11,14 @@
  * Exit code 0 = valid, 1 = problems found. No third-party dependencies.
  */
 
+import { applyLocalStatus } from "./local-status.mjs";
 import { readFileSync, existsSync, readdirSync, realpathSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { validateBoard, agentFileToCode } from "./board-core.mjs";
 import { readPlanForBoard } from "./plan-io.mjs";
 import { planCompleteness, planIsGating, planCoverage } from "./plan-core.mjs";
-import { assignLanes, parallelismLostToVagueness, laneCount } from "./lane-core.mjs";
+import { assignLanes, parallelismLostToVagueness, laneCount, laneLabel } from "./lane-core.mjs";
 import { eligibleTickets } from "./board-core.mjs";
 import { validateSwarmConfig } from "./swarm-core.mjs";
 
@@ -153,7 +154,7 @@ function main() {
   }
 
   const archivePath = join(dirname(boardPath), "archive.json");
-  const archive = readJSON(archivePath, { epics: [], tickets: [] });
+  let archive = readJSON(archivePath, { epics: [], tickets: [] });
   if (archive instanceof Error) {
     return finish([`Invalid JSON in ${archivePath}: ${archive.message}`], []);
   }
@@ -174,6 +175,13 @@ function main() {
     : configRaw instanceof Error
       ? `${configPath} is not valid JSON (${configRaw.message}) — model-floor and human-gate checks are skipped.`
       : null;
+
+  // config.localStatus: validate the logical board (files + the shared status store).
+  try {
+    ({ data: board, archive } = applyLocalStatus({ dataPath: boardPath, config, data: board, archive }));
+  } catch (e) {
+    return finish([`Local status: ${e.message}`], []);
+  }
 
   // The plan sits beside the board. A missing one reads as an empty plan, which turns the scope
   // gate off rather than failing the board — a project that hasn't planned yet is a normal state.
@@ -229,7 +237,7 @@ function finish(errors, warnings, eligibleCount, plan, board, archive, config) {
         const { lanes } = assignLanes(ready, config);
         const startable = lanes.filter((l) => !l.exclusive).length;
         const lost = parallelismLostToVagueness(ready, config);
-        console.log(`  ${startable} of ${laneCount(config)} lane(s) would start in parallel.` +
+        console.log(`  ${startable} of ${laneLabel(laneCount(config))} lane(s) would start in parallel.` +
           (lost.length ? ` ${lost.length} pair(s) held back only by undeclared \`touches\` — see 'maestro lanes plan'.` : ""));
       }
     }

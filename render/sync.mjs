@@ -28,6 +28,7 @@ import { resolve, dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { readRegistry, findKitDir } from "../scripts/registry.mjs";
+import { trackerGuidance } from "../scripts/tracker-core.mjs";
 import { agentFileToCode } from "../scripts/board-core.mjs";
 import { mergeUsageHooks, usageHookCommand } from "../scripts/usage-hook-settings.mjs";
 
@@ -116,9 +117,17 @@ const OUT = argValue("--out")
     ? resolve(PROJECT, config.outDir)
     : PROJECT;
 
-// Resolve the kit root: explicit --kit, else config.kitSource.path, else this repo.
+// Resolve the kit root: explicit --kit, else config.kitSource.path, else this repo. A
+// kitSource.path that names no kit (e.g. ../node_modules/@mychiefmind/ai-maestro in a project
+// whose kit is vendored) falls back to this kit with a warning instead of failing the render;
+// `maestro update` rewrites the setting.
+const configuredKit = config.kitSource?.path ? resolve(PROJECT, config.kitSource.path) : null;
+const kitUsable = (dir) => existsSync(join(dir, "agents"));
+if (!kitArg && configuredKit && !kitUsable(configuredKit) && kitUsable(THIS_KIT)) {
+  console.warn(`  ⚠ config.kitSource.path "${config.kitSource.path}" names no kit (${configuredKit}) — using ${THIS_KIT}. Set kitSource.path to "." for a vendored kit (maestro update does this).`);
+}
 const KIT = resolve(
-  kitArg ?? (config.kitSource?.path ? join(PROJECT, config.kitSource.path) : THIS_KIT)
+  kitArg ?? (configuredKit && (kitUsable(configuredKit) || !kitUsable(THIS_KIT)) ? configuredKit : THIS_KIT)
 );
 if (!existsSync(join(KIT, "agents"))) {
   console.error(`Error: kit not found at ${KIT} (no agents/ dir).`);
@@ -261,7 +270,9 @@ const allSkills = readdirSync(join(KIT, "skills")).filter((d) =>
 // entry gets passed straight into the readFileSync below and crashes with a raw ENOENT
 // instead of being caught by the warning right next to it.
 const configSkills = renamed(config.skills, "skills");
-const skills = configSkills ? allSkills.filter((s) => configSkills.includes(s)) : allSkills;
+// The tracker skill ships with the kit but renders only for a project that chose an external tracker.
+const skills = (configSkills ? allSkills.filter((s) => configSkills.includes(s)) : allSkills)
+  .filter((s) => s !== "tracker" || config.tracker?.services?.length);
 if (configSkills) {
   const known = new Set([...allSkills, ...projSkillNames]);
   for (const s of configSkills) {
@@ -286,7 +297,9 @@ if (configSkills) {
 const unlistedAgents = roster
   ? allAgentFiles.map((f) => f.replace(/\.md$/, "")).filter((a) => !roster.includes(a))
   : [];
-const unlistedSkills = configSkills ? allSkills.filter((s) => !configSkills.includes(s)) : [];
+const unlistedSkills = configSkills
+  ? allSkills.filter((s) => !configSkills.includes(s) && (s !== "tracker" || config.tracker?.services?.length))
+  : [];
 if (unlistedAgents.length || unlistedSkills.length) {
   const parts = [];
   if (unlistedAgents.length) parts.push(`${unlistedAgents.length} agent(s): ${unlistedAgents.join(", ")}`);
@@ -512,7 +525,7 @@ even if \`agent_plan\` omits them.
 
 ## Project context
 
-${context.trim() || "_(fill in context.md)_"}
+${context.trim() || "_(fill in context.md)_"}${trackerGuidance(config.tracker)}
 `;
 generated.set("CLAUDE.md", claudeMd);
 
@@ -552,7 +565,7 @@ ${codexEffortPolicy}
 
 ## Project context
 
-${context.trim() || "_(fill in context.md)_"}
+${context.trim() || "_(fill in context.md)_"}${trackerGuidance(config.tracker)}
 `;
 generated.set("AGENTS.md", agentsMd);
 
