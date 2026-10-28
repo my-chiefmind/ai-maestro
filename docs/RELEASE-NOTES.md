@@ -14,6 +14,8 @@ Updates:
   re-run. The vendor lock now records a hash per vendored file, and
   `maestro/.maestro-vendor-base/` keeps the pristine copy of each file you edited. `--base <dir>`
   supplies the previous release when it cannot be found locally; otherwise it is fetched from npm.
+  Folders a release stops shipping are removed once their files are gone, instead of lingering
+  empty.
 - The vendored CLI updates its own kit: `node maestro/bin/cli.mjs update` no longer stops at
   "no update channel". `--from <dir>` updates from a local kit copy. A plain (non-git, non-npm)
   copy of the kit finds `./maestro` without `--kit`.

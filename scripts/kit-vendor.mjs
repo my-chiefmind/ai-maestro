@@ -106,6 +106,25 @@ function fromGitHistory(repoRoot, repoPath, hash, limit = 200) {
   return null;
 }
 
+/**
+ * Remove the folders under `root/entry` that are left empty and that `kitRoot` no longer ships.
+ * Deleting a release's removed files one by one leaves their folders behind (a dropped starter
+ * would linger as an empty tree); a folder still holding anything, or still shipped, stays.
+ */
+function pruneEmptyDirs(root, entry, kitRoot) {
+  const abs = join(root, entry);
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) return;
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+    }
+    const rel = relative(root, dir);
+    if (dir !== abs && readdirSync(dir).length === 0 && !existsSync(join(kitRoot, rel))) rmSync(dir, { recursive: true, force: true });
+  };
+  walk(abs);
+}
+
 function gitTopLevel(dir) {
   const r = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : null;
@@ -238,6 +257,7 @@ export function refreshMergedEntries(o) {
         if (conflicted) report.conflicts.push(rel);
         else if (merge.text !== theirs.toString()) report.merged.push(rel);
       }
+      pruneEmptyDirs(dest, entry, kitRoot);
     }
   } finally {
     if (fetched) rmSync(dirname(fetched), { recursive: true, force: true });
